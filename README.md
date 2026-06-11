@@ -52,8 +52,11 @@ Use normal server-side env names for DeepBook Predict deployment IDs and package
 - `PREDICT_DUSDC_TYPE`
 - `PREDICT_PLP_COIN_TYPE`
 - `PREDICT_SOURCE_BRANCH`
+- `PREDICT_ENABLE_ONCHAIN_LOG`
 
 Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` stays server-side unless you manually send it to the client.
+
+`PREDICT_ENABLE_ONCHAIN_LOG=false` is the default gas-optimized mode. Set it to `true` only for demos that need an extra on-chain audit event.
 
 ## Important Files
 

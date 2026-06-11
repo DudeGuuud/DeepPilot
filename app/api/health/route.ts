@@ -1,8 +1,16 @@
 import { NextResponse } from "next/server";
 
+import { onchainAuditEnabled, predictDeployment } from "@/src/lib/predict-config";
+
 export function GET() {
   return NextResponse.json({
     ok: true,
+    predict: {
+      network: predictDeployment.network,
+      serverUrl: predictDeployment.serverUrl,
+      predictId: predictDeployment.predictId,
+      onchainAuditEnabled
+    },
     stack: {
       next: "16.2.9",
       react: "19.2.7",

@@ -190,6 +190,7 @@ Selected sample oracle:
    - Include create/find `PredictManager`, deposit DUSDC, mint/redeem, and receipt refresh path.
    - Show raw `moveCall` target, object IDs, type args, normalized params and digest.
    - If a real testnet mint is blocked by DUSDC availability, demo must still show a signed/buildable PTB path and clearly mark funding requirement.
+   - Keep on-chain audit logging disabled by default for gas efficiency; enable `PREDICT_ENABLE_ONCHAIN_LOG=true` only when a demo needs an extra audit event.
 
 5. Settled-Redeem Keeper
    - Poll or subscribe to oracle settlement and manager summaries.
@@ -327,6 +328,7 @@ DeepPilot is the missing operating layer for DeepBook Predict:
 | Incorrect mid/spread claim | Rename fields to `spot/forward`, `pricing proxy`, `vault liquidity proxy` |
 | AI hallucination | Strict schema, zod validation, no code generation |
 | Sponsored tx object conflict | Dedicated sponsor gas pool, rebuild on stale object error |
+| Extra gas from audit logging | Default `PREDICT_ENABLE_ONCHAIN_LOG=false`; add the log Move call only for explicit audit demos |
 | Vault strategy simulation missing | Do not claim vault strategy in MVP |
 | Mainnet migration | Build with deployment config and final checklist |
 

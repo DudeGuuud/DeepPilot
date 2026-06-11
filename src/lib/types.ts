@@ -45,13 +45,6 @@ export interface PredictDeployment {
   sourceBranch: string;
 }
 
-export interface PredictStatusPipeline {
-  pipeline: string;
-  checkpoint_lag: number;
-  time_lag_ms: number;
-  time_lag_seconds: number;
-}
-
 export interface PredictStatus {
   status: string;
   latest_onchain_checkpoint: number;
@@ -59,7 +52,6 @@ export interface PredictStatus {
   max_lag_pipeline: string;
   max_checkpoint_lag: number;
   max_time_lag_seconds: number;
-  pipelines: PredictStatusPipeline[];
 }
 
 export interface PredictOracleSummary {
@@ -131,7 +123,7 @@ export interface PredictRiskMetrics {
 }
 
 export interface PredictMarketSnapshot {
-  source: "deepbook_predict_testnet";
+  source: "deepbook_predict";
   deployment: PredictDeployment;
   status: PredictStatus;
   oracle: PredictOracleSummary;

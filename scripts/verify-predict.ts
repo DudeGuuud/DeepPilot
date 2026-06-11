@@ -5,7 +5,8 @@ const intent = "Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predi
 const result = await compileIntent(intent);
 
 assert(result.intent.status === "ready", "intent should parse");
-assert(result.market?.source === "deepbook_predict_testnet", "market snapshot should come from Predict testnet");
+assert(result.market?.source === "deepbook_predict", "market snapshot should come from DeepBook Predict");
+assert(result.market.deployment.network === "testnet", "default Predict network should be testnet");
 assert(result.market.oracle.status === "active", "selected oracle should be active");
 assert(result.market.metrics.spot !== null, "spot should be available");
 assert(result.guardian.decision !== "block", "Guardian should not block the smoke intent");

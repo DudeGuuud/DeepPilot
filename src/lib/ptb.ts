@@ -1,4 +1,5 @@
 import { predictDeployment, toDusdcBaseUnits, toPredictPrice } from "./predict";
+import { onchainAuditEnabled } from "./predict-config";
 import type { GuardianResult, ParsedIntent, PredictMarketSnapshot, PtbCommandPreview, PtbPlan, SponsorDecision } from "./types";
 
 const DEMO_SENDER = "0x0000000000000000000000000000000000000000000000000000000000000a11";
@@ -23,6 +24,7 @@ export function buildPtbPlan(
     packageId: predictDeployment.packageId,
     predictObject: predictDeployment.predictId,
     quoteAssetType: predictDeployment.quoteAssetType,
+    onchainAuditEnabled,
     manager: DEMO_MANAGER,
     oracleId: market?.oracle.oracle_id ?? intent.oracleId ?? null,
     intent: {
@@ -119,12 +121,14 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
     });
   }
 
-  commands.push({
-    index: commands.length + 1,
-    command: "Record market snapshot hash and Guardian decision",
-    target: "deep_pilot_log::log::record_intent",
-    riskGate: "receipt"
-  });
+  if (onchainAuditEnabled) {
+    commands.push({
+      index: commands.length + 1,
+      command: "Record market snapshot hash and Guardian decision",
+      target: "deep_pilot_log::log::record_intent",
+      riskGate: "receipt"
+    });
+  }
 
   return commands;
 }
@@ -187,6 +191,13 @@ function buildRequirements(intent: Extract<ParsedIntent, { status: "ready" }>, m
       label: "Clock object",
       satisfied: true,
       detail: "Sui system clock object 0x6."
+    },
+    {
+      label: "Gas audit mode",
+      satisfied: true,
+      detail: onchainAuditEnabled
+        ? "Enabled by PREDICT_ENABLE_ONCHAIN_LOG=true; adds one extra Move call."
+        : "Disabled by default to save one extra Move call; audit can stay off-chain."
     }
   ];
 }

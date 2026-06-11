@@ -28,17 +28,20 @@ export async function getPredictMarketSnapshot(intent: ParsedIntent): Promise<Pr
     return null;
   }
 
-  const [status, oracles, vault] = await Promise.all([
+  const [rawStatus, rawOracles, rawVault] = await Promise.all([
     fetchPredict<PredictStatus>("/status"),
     fetchPredict<PredictOracleSummary[]>(`/predicts/${predictDeployment.predictId}/oracles`),
     fetchPredict<VaultSummary>(`/predicts/${predictDeployment.predictId}/vault/summary`)
   ]);
+  const status = normalizeStatus(rawStatus);
+  const oracles = rawOracles.map(normalizeOracle);
+  const vault = normalizeVault(rawVault);
 
   const oracle = selectOracle(oracles, intent, status.current_time_ms);
-  const oracleState = await fetchPredict<OracleState>(`/oracles/${oracle.oracle_id}/state`);
+  const oracleState = normalizeOracleState(await fetchPredict<OracleState>(`/oracles/${oracle.oracle_id}/state`));
 
   return {
-    source: "deepbook_predict_testnet",
+    source: "deepbook_predict",
     deployment: predictDeployment,
     status,
     oracle,
@@ -46,6 +49,76 @@ export async function getPredictMarketSnapshot(intent: ParsedIntent): Promise<Pr
     vault,
     metrics: buildMetrics(intent, status, oracleState, vault),
     fetchedAt: new Date().toISOString()
+  };
+}
+
+function normalizeStatus(status: PredictStatus): PredictStatus {
+  return {
+    status: status.status,
+    latest_onchain_checkpoint: status.latest_onchain_checkpoint,
+    current_time_ms: status.current_time_ms,
+    max_lag_pipeline: status.max_lag_pipeline,
+    max_checkpoint_lag: status.max_checkpoint_lag,
+    max_time_lag_seconds: status.max_time_lag_seconds
+  };
+}
+
+function normalizeOracle(oracle: PredictOracleSummary): PredictOracleSummary {
+  return {
+    predict_id: oracle.predict_id,
+    oracle_id: oracle.oracle_id,
+    underlying_asset: oracle.underlying_asset,
+    expiry: oracle.expiry,
+    min_strike: oracle.min_strike,
+    tick_size: oracle.tick_size,
+    status: oracle.status,
+    activated_at: oracle.activated_at,
+    settlement_price: oracle.settlement_price,
+    settled_at: oracle.settled_at
+  };
+}
+
+function normalizeOracleState(state: OracleState): OracleState {
+  return {
+    oracle: normalizeOracle(state.oracle),
+    latest_price: state.latest_price
+      ? {
+          spot: state.latest_price.spot,
+          forward: state.latest_price.forward,
+          onchain_timestamp: state.latest_price.onchain_timestamp,
+          checkpoint: state.latest_price.checkpoint,
+          event_digest: state.latest_price.event_digest
+        }
+      : null,
+    latest_svi: state.latest_svi
+      ? {
+          a: state.latest_svi.a,
+          b: state.latest_svi.b,
+          rho: state.latest_svi.rho,
+          m: state.latest_svi.m,
+          sigma: state.latest_svi.sigma,
+          onchain_timestamp: state.latest_svi.onchain_timestamp,
+          checkpoint: state.latest_svi.checkpoint,
+          event_digest: state.latest_svi.event_digest
+        }
+      : null,
+    ask_bounds: state.ask_bounds
+  };
+}
+
+function normalizeVault(vault: VaultSummary): VaultSummary {
+  return {
+    predict_id: vault.predict_id,
+    vault_balance: vault.vault_balance,
+    vault_value: vault.vault_value,
+    total_mtm: vault.total_mtm,
+    total_max_payout: vault.total_max_payout,
+    available_liquidity: vault.available_liquidity,
+    available_withdrawal: vault.available_withdrawal,
+    plp_total_supply: vault.plp_total_supply,
+    plp_share_price: vault.plp_share_price,
+    utilization: vault.utilization,
+    max_payout_utilization: vault.max_payout_utilization
   };
 }
 

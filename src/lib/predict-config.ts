@@ -16,6 +16,8 @@ export const predictDeployment: PredictDeployment = {
   sourceBranch: readEnv("PREDICT_SOURCE_BRANCH", "predict-testnet-4-16")
 };
 
+export const onchainAuditEnabled = readBoolean("PREDICT_ENABLE_ONCHAIN_LOG", false);
+
 function readEnv(name: string, fallback: string) {
   const value = process.env[name]?.trim();
 
@@ -26,4 +28,18 @@ function readNetwork(name: string, fallback: PredictDeployment["network"]) {
   const value = process.env[name]?.trim();
 
   return value === "devnet" || value === "testnet" || value === "mainnet" ? value : fallback;
+}
+
+function readBoolean(name: string, fallback: boolean) {
+  const value = process.env[name]?.trim().toLowerCase();
+
+  if (value === "true" || value === "1" || value === "yes") {
+    return true;
+  }
+
+  if (value === "false" || value === "0" || value === "no") {
+    return false;
+  }
+
+  return fallback;
 }
