@@ -1,8 +1,14 @@
 module deep_pilot_log::log;
 
 use sui::event;
+use sui::object::{Self, UID};
+use sui::transfer;
 use sui::tx_context::{Self, TxContext};
 use std::string::{Self, String};
+
+public struct LogAdminCap has key {
+    id: UID,
+}
 
 public struct RiskRecord has copy, drop {
     user: address,
@@ -12,7 +18,12 @@ public struct RiskRecord has copy, drop {
     sponsored: bool,
 }
 
+fun init(ctx: &mut TxContext) {
+    transfer::transfer(LogAdminCap { id: object::new(ctx) }, tx_context::sender(ctx));
+}
+
 public fun record_intent(
+    _: &LogAdminCap,
     intent_hash: String,
     risk_score: u64,
     sponsored: bool,

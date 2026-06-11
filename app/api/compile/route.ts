@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { compileIntent } from "@/src/lib/compile";
-import { parseJsonBody } from "@/src/lib/http";
+import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http";
 import { createPredictClientPreview } from "@/src/lib/predict";
 
 const bodySchema = z.object({
@@ -10,6 +10,19 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const rateLimit = checkRateLimit(request, {
+    scope: "compile",
+    maxRequests: 30,
+    windowMs: 60_000
+  });
+
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { error: "Too many compile requests" },
+      { status: 429, headers: rateLimitHeaders(rateLimit.retryAfterSeconds) }
+    );
+  }
+
   const body = await parseJsonBody(request, bodySchema);
 
   if (!body.success) {
@@ -21,8 +34,12 @@ export async function POST(request: Request) {
     );
   }
 
-  return NextResponse.json({
-    ...(await compileIntent(body.data.intent)),
-    predict: createPredictClientPreview()
-  });
+  try {
+    return NextResponse.json({
+      ...(await compileIntent(body.data.intent)),
+      predict: createPredictClientPreview()
+    });
+  } catch {
+    return NextResponse.json({ error: "Intent compile failed" }, { status: 502 });
+  }
 }

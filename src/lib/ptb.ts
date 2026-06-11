@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { auditLogPackageId, auditLogPackageIsPublished, previewAccounts } from "./execution-config";
 import { predictDeployment, toDusdcBaseUnits, toPredictPrice } from "./predict";
 import { onchainAuditEnabled } from "./predict-config";
@@ -53,7 +55,7 @@ export function buildPtbPlan(
     commands,
     requirements,
     transactionData,
-    digestPreview: hashish(JSON.stringify(transactionData)).slice(0, 44),
+    digestPreview: digestPreview(JSON.stringify(transactionData)),
     simulated: {
       status: "not_submitted",
       reason:
@@ -132,7 +134,10 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
       index: commands.length + 1,
       command: "Record market snapshot hash and Guardian decision",
       target: `${auditLogPackageId}::log::record_intent`,
-      riskGate: "receipt"
+      riskGate: "receipt",
+      inputs: {
+        adminCapRequired: true
+      }
     });
   }
 
@@ -226,13 +231,6 @@ function shortId(value?: string | null) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
-function hashish(input: string) {
-  let hash = 0x811c9dc5;
-
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-
-  return `0x${(hash >>> 0).toString(16).padStart(8, "0")}${input.length.toString(16).padStart(8, "0")}`;
+function digestPreview(input: string) {
+  return `0x${createHash("sha256").update(input).digest("hex")}`;
 }

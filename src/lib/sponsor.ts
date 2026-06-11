@@ -30,6 +30,7 @@ const sponsorPlanCheckLabels = new Set([
   "PTB preview exists",
   "programmable transaction kind",
   "gas budget within sponsor cap",
+  "all sponsored amounts within cap",
   "all Move targets allowlisted"
 ]);
 
@@ -46,8 +47,12 @@ export function decideGasMode(
   }
 
   if (intent.action === "stablecoin_transfer") {
-    return decision("gasless_stablecoin_transfer", !guardian.blocked, "Gasless DUSDC transfer preview", [
+    const transferSize = Number(intent.amount);
+    const withinCap = amountWithinSponsorCap(transferSize);
+
+    return decision("gasless_stablecoin_transfer", !guardian.blocked && withinCap, "Gasless DUSDC transfer preview", [
       ["DUSDC transfer", true],
+      ["transfer size within sponsor cap", withinCap],
       ["guardian not blocked", !guardian.blocked]
     ]);
   }
@@ -60,12 +65,12 @@ export function decideGasMode(
   }
 
   const tradeSize = market?.metrics.notionalDusdc ?? Number(intent.amount);
-  const sponsorApproved = !guardian.blocked && tradeSize <= sponsorPolicy.maxTradeSizeDusdc;
+  const sponsorApproved = !guardian.blocked && amountWithinSponsorCap(tradeSize);
 
   return decision("sponsored", sponsorApproved, "Sponsored by DeepPilot", [
     ["Predict package allowlisted", sponsorPolicy.allowedPackages.includes(predictDeployment.packageId)],
     ["Predict Move call allowlisted", true],
-    ["trade size within demo cap", tradeSize <= sponsorPolicy.maxTradeSizeDusdc],
+    ["trade size within demo cap", amountWithinSponsorCap(tradeSize)],
     ["guardian not blocked", !guardian.blocked]
   ]);
 }
@@ -76,6 +81,7 @@ export function validateSponsorPlan(gas: SponsorDecision, ptb: PtbPlan | null): 
     ["PTB preview exists", Boolean(ptb)],
     ["programmable transaction kind", ptb?.transactionKind === "ProgrammableTransaction"],
     ["gas budget within sponsor cap", Boolean(ptb && ptb.gasBudget <= sponsorPolicy.maxGasBudget)],
+    ["all sponsored amounts within cap", Boolean(ptb && ptb.commands.every(commandAmountWithinSponsorCap))],
     ["all Move targets allowlisted", Boolean(ptb && ptb.commands.every((command) => isAllowedTarget(command.target)))]
   ];
   const passed = checks.every(([, checkPassed]) => checkPassed);
@@ -91,6 +97,20 @@ export function validateSponsorPlan(gas: SponsorDecision, ptb: PtbPlan | null): 
       }))
     ]
   };
+}
+
+function amountWithinSponsorCap(value: number) {
+  return Number.isFinite(value) && value > 0 && value <= sponsorPolicy.maxTradeSizeDusdc;
+}
+
+function commandAmountWithinSponsorCap(command: PtbPlan["commands"][number]) {
+  const amountBaseUnits = command.inputs?.amountBaseUnits ?? command.inputs?.quantityBaseUnits;
+
+  if (typeof amountBaseUnits !== "number") {
+    return true;
+  }
+
+  return Number.isSafeInteger(amountBaseUnits) && amountBaseUnits >= 0 && amountBaseUnits <= sponsorPolicy.maxTradeSizeDusdc * 1_000_000;
 }
 
 function isAllowedTarget(target: string) {

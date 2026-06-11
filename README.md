@@ -66,7 +66,7 @@ flowchart TD
 
   SponsorApi --> Recompile["Recompile on server\nnever trust browser PTB"]
   Recompile --> SponsorPolicy
-  SponsorPolicy --> SponsorReceipt["signed_preview receipt\nsubmitted=false"]
+  SponsorPolicy --> SponsorReceipt["preview_authorized receipt\nsubmitted=false"]
   SponsorReceipt --> UI
 
   PTB --> AuditGate{"PREDICT_ENABLE_ONCHAIN_LOG"}

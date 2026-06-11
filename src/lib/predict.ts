@@ -1,4 +1,5 @@
 import { predictDeployment } from "./predict-config";
+import { z } from "zod";
 import type {
   OracleState,
   ParsedIntent,
@@ -10,6 +11,69 @@ import type {
 
 const PRICE_SCALE = 1_000_000_000;
 const DUSDC_SCALE = 1_000_000;
+const PREDICT_TIMEOUT_MS = 5_000;
+
+const oracleSummarySchema: z.ZodType<PredictOracleSummary> = z.object({
+  predict_id: z.string(),
+  oracle_id: z.string().regex(/^0x[a-fA-F0-9]{1,64}$/),
+  underlying_asset: z.literal("BTC"),
+  expiry: z.number().finite(),
+  min_strike: z.number().finite(),
+  tick_size: z.number().finite(),
+  status: z.string(),
+  activated_at: z.number().finite().nullable(),
+  settlement_price: z.number().finite().nullable(),
+  settled_at: z.number().finite().nullable()
+});
+
+const predictStatusSchema: z.ZodType<PredictStatus> = z.object({
+  status: z.string(),
+  latest_onchain_checkpoint: z.number().finite(),
+  current_time_ms: z.number().finite(),
+  max_lag_pipeline: z.string(),
+  max_checkpoint_lag: z.number().finite(),
+  max_time_lag_seconds: z.number().finite()
+});
+
+const vaultSummarySchema: z.ZodType<VaultSummary> = z.object({
+  predict_id: z.string(),
+  vault_balance: z.number().finite(),
+  vault_value: z.number().finite(),
+  total_mtm: z.number().finite(),
+  total_max_payout: z.number().finite(),
+  available_liquidity: z.number().finite(),
+  available_withdrawal: z.number().finite(),
+  plp_total_supply: z.number().finite(),
+  plp_share_price: z.number().finite(),
+  utilization: z.number().finite(),
+  max_payout_utilization: z.number().finite()
+});
+
+const oracleStateSchema: z.ZodType<OracleState> = z.object({
+  oracle: oracleSummarySchema,
+  latest_price: z
+    .object({
+      spot: z.number().finite(),
+      forward: z.number().finite(),
+      onchain_timestamp: z.number().finite(),
+      checkpoint: z.number().finite().optional(),
+      event_digest: z.string().optional()
+    })
+    .nullable(),
+  latest_svi: z
+    .object({
+      a: z.number().finite(),
+      b: z.number().finite(),
+      rho: z.number().finite(),
+      m: z.number().finite().optional(),
+      sigma: z.number().finite().optional(),
+      onchain_timestamp: z.number().finite().optional(),
+      checkpoint: z.number().finite().optional(),
+      event_digest: z.string().optional()
+    })
+    .nullable(),
+  ask_bounds: z.unknown().nullable()
+});
 
 export { predictDeployment };
 
@@ -37,16 +101,16 @@ export async function getPredictMarketSnapshot(intent: ParsedIntent): Promise<Pr
 
 async function getSnapshotForNextActiveOracle(intent: Extract<ParsedIntent, { status: "ready" }>) {
   const [rawStatus, rawOracles, rawVault] = await Promise.all([
-    fetchPredict<PredictStatus>("/status"),
-    fetchPredict<PredictOracleSummary[]>(`/predicts/${predictDeployment.predictId}/oracles`),
-    fetchPredict<VaultSummary>(`/predicts/${predictDeployment.predictId}/vault/summary`)
+    fetchPredict("/status", predictStatusSchema),
+    fetchPredict(`/predicts/${predictDeployment.predictId}/oracles`, z.array(oracleSummarySchema)),
+    fetchPredict(`/predicts/${predictDeployment.predictId}/vault/summary`, vaultSummarySchema)
   ]);
   const status = normalizeStatus(rawStatus);
   const oracles = rawOracles.map(normalizeOracle);
   const vault = normalizeVault(rawVault);
 
   const oracle = selectOracle(oracles, status.current_time_ms);
-  const oracleState = normalizeOracleState(await fetchPredict<OracleState>(`/oracles/${oracle.oracle_id}/state`));
+  const oracleState = normalizeOracleState(await fetchPredict(`/oracles/${oracle.oracle_id}/state`, oracleStateSchema));
 
   return buildSnapshot(intent, status, vault, oracleState);
 }
@@ -54,9 +118,9 @@ async function getSnapshotForNextActiveOracle(intent: Extract<ParsedIntent, { st
 async function getSnapshotForOracle(intent: Extract<ParsedIntent, { status: "ready" }>, oracleId: string) {
   // Direct oracle lookup avoids fetching the full oracle list when the user already provided an id.
   const [rawStatus, rawVault, rawOracleState] = await Promise.all([
-    fetchPredict<PredictStatus>("/status"),
-    fetchPredict<VaultSummary>(`/predicts/${predictDeployment.predictId}/vault/summary`),
-    fetchPredict<OracleState>(`/oracles/${oracleId}/state`)
+    fetchPredict("/status", predictStatusSchema),
+    fetchPredict(`/predicts/${predictDeployment.predictId}/vault/summary`, vaultSummarySchema),
+    fetchPredict(`/oracles/${oracleId}/state`, oracleStateSchema)
   ]);
 
   return buildSnapshot(
@@ -171,17 +235,34 @@ function normalizeVault(vault: VaultSummary): VaultSummary {
   };
 }
 
-async function fetchPredict<T>(path: string): Promise<T> {
-  const response = await fetch(`${predictDeployment.serverUrl}${path}`, {
-    headers: { accept: "application/json" },
-    cache: "no-store"
-  });
+async function fetchPredict<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PREDICT_TIMEOUT_MS);
+  let response: Response;
+
+  try {
+    response = await fetch(`${predictDeployment.serverUrl}${path}`, {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+      signal: controller.signal
+    });
+  } catch {
+    throw new Error("Predict server request failed.");
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`Predict server ${path} returned ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  const parsed = schema.safeParse(await response.json());
+
+  if (!parsed.success) {
+    throw new Error("Predict server returned an invalid payload.");
+  }
+
+  return parsed.data;
 }
 
 function selectOracle(oracles: PredictOracleSummary[], nowMs: number) {
@@ -261,5 +342,11 @@ export function toPredictPrice(value: number) {
 }
 
 export function toDusdcBaseUnits(value: number) {
-  return Math.round(value * DUSDC_SCALE);
+  const baseUnits = Math.round(value * DUSDC_SCALE);
+
+  if (!Number.isFinite(value) || value < 0 || !Number.isSafeInteger(baseUnits)) {
+    throw new Error("Invalid DUSDC amount.");
+  }
+
+  return baseUnits;
 }

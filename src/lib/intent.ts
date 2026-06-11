@@ -6,6 +6,7 @@ const unsafeInstructionPattern =
   /(ignore|bypass|skip|disable|绕过|忽略|关闭).*(guardian|guard|risk|risk check|风控|守护)|private key|seed phrase|mnemonic/i;
 
 const objectIdPattern = /0x[a-fA-F0-9]{16,64}/;
+const MAX_PARSED_AMOUNT_DUSDC = 1_000_000_000;
 
 const intentSchema = z.object({
   text: z.string().trim().min(1).max(500)
@@ -35,6 +36,10 @@ export function parseIntent(input: string): ParsedIntent {
   const oracleId = normalized.match(objectIdPattern)?.[0];
   const range = parseRange(normalized);
   const strike = parseStrike(normalized, range);
+
+  if (amount && !isValidDusdcAmount(amount)) {
+    return needsClarification(raw, ["amount"], "Use a positive DUSDC amount with at most 6 decimals.");
+  }
 
   if (action === "stablecoin_transfer") {
     const recipient = oracleId;
@@ -134,6 +139,13 @@ function parseAmount(text: string) {
   const fallback = text.match(/(?:buy|mint|spend|用|买入|购买)\D{0,12}(\d+(?:\.\d+)?)/i);
 
   return fallback?.[1];
+}
+
+function isValidDusdcAmount(value: string) {
+  const decimalPlaces = value.split(".")[1]?.length ?? 0;
+  const amount = Number(value);
+
+  return Number.isFinite(amount) && amount > 0 && amount <= MAX_PARSED_AMOUNT_DUSDC && decimalPlaces <= 6;
 }
 
 function parseRange(text: string) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { DAppKitProvider, useCurrentAccount, useCurrentNetwork } from "@mysten/dapp-kit-react";
+import { DAppKitProvider, useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
 import { ConnectButton } from "@mysten/dapp-kit-react/ui";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -47,6 +47,11 @@ type SponsorReceipt = {
   receipt?: {
     digest: string;
     status: string;
+    walletAddress: string;
+    network: "devnet" | "testnet";
+    nonce: string;
+    expiresAt: string;
+    intentHash: string;
     sender: string;
     sponsor: string;
     gasMode: string;
@@ -67,6 +72,7 @@ export default function DeepPilotTerminal() {
 
 function TerminalExperience() {
   const { toast } = useToast();
+  const dAppKit = useDAppKit();
   const account = useCurrentAccount();
   const network = useCurrentNetwork();
   const [intent, setIntent] = useState(DEFAULT_INTENT);
@@ -123,14 +129,51 @@ function TerminalExperience() {
       return;
     }
 
+    if (!account) {
+      toast({
+        variant: "destructive",
+        title: "Wallet required",
+        description: "Connect a wallet before authorizing a sponsor preview."
+      });
+      return;
+    }
+
     setBusy("sponsor");
     setError(null);
 
     try {
+      const sponsorNetwork = network === "devnet" ? "devnet" : "testnet";
+      const challengeParams = new URLSearchParams({
+        walletAddress: account.address,
+        network: sponsorNetwork,
+        ptbDigest: compiled.ptb.digestPreview
+      });
+      const challengeResponse = await fetch(`/api/sponsor?${challengeParams.toString()}`);
+
+      if (!challengeResponse.ok) {
+        throw new Error("Sponsor authorization challenge failed.");
+      }
+
+      const challenge = (await challengeResponse.json()) as {
+        nonce: string;
+        expiresAt: string;
+        message: string;
+      };
+      const signed = await dAppKit.signPersonalMessage({
+        message: new TextEncoder().encode(challenge.message)
+      });
       const response = await fetch("/api/sponsor", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ intent })
+        body: JSON.stringify({
+          intent,
+          walletAddress: account.address,
+          network: sponsorNetwork,
+          ptbDigest: compiled.ptb.digestPreview,
+          nonce: challenge.nonce,
+          expiresAt: challenge.expiresAt,
+          signature: signed.signature
+        })
       });
       const payload = (await response.json()) as SponsorReceipt;
       setReceipt(payload);
@@ -140,7 +183,7 @@ function TerminalExperience() {
       }
 
       toast({
-        title: "Transaction preview signed",
+        title: "Transaction preview authorized",
         description: payload.receipt ? `${payload.receipt.digest} · not submitted` : "Sponsored transaction preview is ready."
       });
     } catch (sponsorError) {
