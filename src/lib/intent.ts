@@ -98,7 +98,7 @@ export function parseIntent(input: string): ParsedIntent {
 }
 
 function detectAction(text: string): Extract<ParsedIntent, { status: "ready" }>["action"] {
-  if (/\b(redeem|claim|settle)\b/i.test(text) || /赎回|领取|结算/.test(text)) {
+  if (/\b(sell|close|exit|redeem|claim|settle)\b/i.test(text) || /卖出|平仓|关闭|赎回|领取|结算/.test(text)) {
     return "predict_redeem";
   }
 

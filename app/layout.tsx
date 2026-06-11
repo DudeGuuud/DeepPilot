@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import { DeepPilotProvider } from "@/components/deep-pilot-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -20,8 +21,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <DeepPilotProvider>{children}</DeepPilotProvider>
+      </body>
     </html>
   );
 }
-

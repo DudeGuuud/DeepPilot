@@ -1,0 +1,144 @@
+"use client";
+
+import { ArrowDown, ArrowUp, Play } from "lucide-react";
+import { useEffect, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import type { PredictDirection, PredictMarketSnapshot } from "@/src/lib/types";
+import { cn } from "@/src/lib/utils";
+
+type TicketMode = "quote" | "buy" | "sell";
+
+export function TradeTicket({
+  market,
+  initialOracleId,
+  initialStrike,
+  onGenerate
+}: {
+  market: PredictMarketSnapshot | null;
+  initialOracleId?: string | null;
+  initialStrike?: number | null;
+  onGenerate: (intent: string) => void;
+}) {
+  const [direction, setDirection] = useState<PredictDirection>("up");
+  const [mode, setMode] = useState<TicketMode>("quote");
+  const [amount, setAmount] = useState("10");
+  const [strike, setStrike] = useState("62500");
+
+  useEffect(() => {
+    if (market?.metrics.selectedStrike) {
+      setStrike(String(market.metrics.selectedStrike));
+    } else if (typeof initialStrike === "number") {
+      setStrike(String(initialStrike));
+    }
+  }, [initialStrike, market?.metrics.selectedStrike]);
+
+  const oracleId = market?.oracle.oracle_id ?? initialOracleId ?? undefined;
+  const canRedeem = Boolean(oracleId);
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle>Trade Ticket</CardTitle>
+            <CardDescription>Quote, buy, or close a Predict position.</CardDescription>
+          </div>
+          <Badge variant="outline" className="border-border text-muted-foreground">
+            {oracleId ? shortAddress(oracleId) : "next oracle"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={direction === "up" ? "default" : "outline"}
+            onClick={() => setDirection("up")}
+          >
+            <ArrowUp />
+            UP
+          </Button>
+          <Button
+            type="button"
+            variant={direction === "down" ? "default" : "outline"}
+            onClick={() => setDirection("down")}
+          >
+            <ArrowDown />
+            DOWN
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          {(["quote", "buy", "sell"] as const).map((ticketMode) => (
+            <button
+              key={ticketMode}
+              type="button"
+              disabled={ticketMode === "sell" && !canRedeem}
+              className={cn(
+                "h-9 rounded-md border border-border bg-background text-xs font-medium uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45",
+                mode === ticketMode && "bg-accent text-foreground"
+              )}
+              onClick={() => setMode(ticketMode)}
+            >
+              {ticketMode}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <label className="space-y-1">
+            <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Amount</span>
+            <input
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              inputMode="decimal"
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Strike</span>
+            <input
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              inputMode="decimal"
+              value={strike}
+              onChange={(event) => setStrike(event.target.value)}
+            />
+          </label>
+        </div>
+
+        <Button className="h-10 w-full" onClick={() => onGenerate(buildIntent(mode, direction, amount, strike, oracleId))}>
+          <Play />
+          Generate intent
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+function buildIntent(
+  mode: TicketMode,
+  direction: PredictDirection,
+  amount: string,
+  strike: string,
+  oracleId?: string
+) {
+  if (mode === "sell") {
+    return oracleId
+      ? `Sell or redeem my BTC Predict position using oracle ${oracleId}`
+      : "Sell or redeem my BTC Predict position";
+  }
+
+  const verb = mode === "quote" ? "Quote" : "Buy";
+  const directionText = direction === "up" ? "UP" : "DOWN";
+  const oracleText = oracleId ? ` using oracle ${oracleId}` : " on the next active DeepBook Predict oracle";
+  const strikeText = strike.trim() ? ` near ${strike.trim()}` : "";
+
+  return `${verb} ${amount.trim() || "10"} DUSDC BTC ${directionText}${strikeText}${oracleText}`;
+}
+
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}

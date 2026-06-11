@@ -1,13 +1,11 @@
 "use client";
 
-import { DAppKitProvider, useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
-import { ConnectButton } from "@mysten/dapp-kit-react/ui";
+import { useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
   Check,
   ChevronDown,
-  Circle,
   CircleDashed,
   Fuel,
   LockKeyhole,
@@ -17,16 +15,19 @@ import {
   Wallet,
   X
 } from "lucide-react";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
+import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/components/ui/use-toast";
-import { dAppKit } from "@/src/lib/dapp-kit";
+import { PredictMarketChart } from "@/components/predict-market-chart";
+import { TradeTicket } from "@/components/trade-ticket";
+import { storePreviewReceipt } from "@/src/lib/receipts";
 import { cn } from "@/src/lib/utils";
 import type { CompileResult, GuardianFinding, PredictMarketSnapshot, RiskLevel } from "@/src/lib/types";
 
@@ -62,12 +63,7 @@ type SponsorReceipt = {
 };
 
 export default function DeepPilotTerminal() {
-  return (
-    <DAppKitProvider dAppKit={dAppKit}>
-      <TerminalExperience />
-      <Toaster />
-    </DAppKitProvider>
-  );
+  return <TerminalExperience />;
 }
 
 function TerminalExperience() {
@@ -75,7 +71,11 @@ function TerminalExperience() {
   const dAppKit = useDAppKit();
   const account = useCurrentAccount();
   const network = useCurrentNetwork();
-  const [intent, setIntent] = useState(DEFAULT_INTENT);
+  const searchParams = useSearchParams();
+  const urlOracleId = useMemo(() => oracleIdFromSearch(searchParams), [searchParams]);
+  const urlStrike = useMemo(() => strikeFromSearch(searchParams), [searchParams]);
+  const defaultIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
+  const [intent, setIntent] = useState(defaultIntent);
   const [compiled, setCompiled] = useState<CompileApiResult | null>(null);
   const [receipt, setReceipt] = useState<SponsorReceipt | null>(null);
   const [busy, setBusy] = useState<"compile" | "sponsor" | null>(null);
@@ -83,8 +83,9 @@ function TerminalExperience() {
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
 
   useEffect(() => {
-    void compile(DEFAULT_INTENT);
-  }, []);
+    setIntent(defaultIntent);
+    void compile(defaultIntent);
+  }, [defaultIntent]);
 
   const chips = useMemo(
     () =>
@@ -186,6 +187,10 @@ function TerminalExperience() {
         title: "Transaction preview authorized",
         description: payload.receipt ? `${payload.receipt.digest} · not submitted` : "Sponsored transaction preview is ready."
       });
+
+      if (payload.receipt) {
+        savePreviewReceipt(payload.receipt, intent, compiled);
+      }
     } catch (sponsorError) {
       const message = sponsorError instanceof Error ? sponsorError.message : "Sponsor preview failed.";
       setError(message);
@@ -201,38 +206,31 @@ function TerminalExperience() {
 
   const guardian = compiled?.guardian;
   const blocked = guardian?.blocked ?? true;
+  const marketStrike = compiled?.market?.metrics.selectedStrike;
+  const intentStrike = compiled?.intent.status === "ready" ? compiled.intent.strike : undefined;
+  const selectedOracleId =
+    compiled?.market?.oracle.oracle_id ??
+    (compiled?.intent.status === "ready" ? compiled.intent.oracleId : undefined) ??
+    urlOracleId ??
+    undefined;
+  const selectedStrike =
+    typeof marketStrike === "number" ? marketStrike : typeof intentStrike === "number" ? intentStrike : urlStrike;
 
   return (
-    <main className="terminal-shell px-4 py-4 sm:px-6 lg:px-8">
-      <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-4">
-        <header className="flex flex-col gap-4 py-2 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-3">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-card">
-                <Circle className="h-3 w-3 fill-white text-white" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">DeepPilot</p>
-                <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
-                  Trade by intent. Execute with proof.
-                </h1>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
-              {compiled?.predict?.transport ?? "Predict server"}
-            </Badge>
-            <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
-              {network ?? "testnet"}
-            </Badge>
-            <div className="h-8 rounded-md border border-border bg-card px-2 [&_button]:h-6 [&_button]:rounded-sm [&_button]:text-xs">
-              <ConnectButton />
-            </div>
-          </div>
-        </header>
-
+    <AppShell
+      title="Trade BTC Predict with risk proof"
+      description="Use the ticket for quote, buy, and sell previews; the intent compiler adds a transparent Guardian and sponsor-policy audit layer."
+      meta={
+        <>
+          <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
+            {compiled?.predict?.transport ?? "Predict server"}
+          </Badge>
+          <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
+            {network ?? "testnet"}
+          </Badge>
+        </>
+      }
+    >
         <div className="terminal-grid">
           <section className="flex min-w-0 flex-col gap-3">
             <Card className="glass-line">
@@ -240,7 +238,7 @@ function TerminalExperience() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <CardTitle>Intent</CardTitle>
-                    <CardDescription>Natural language, constrained output.</CardDescription>
+                    <CardDescription>Editable compiler input from the trade ticket.</CardDescription>
                   </div>
                   <Button size="sm" onClick={() => compile()} disabled={busy !== null}>
                     {busy === "compile" ? <RefreshCw className="animate-spin" /> : <Play />}
@@ -269,11 +267,21 @@ function TerminalExperience() {
               </CardContent>
             </Card>
 
+            <TradeTicket
+              market={compiled?.market ?? null}
+              initialOracleId={urlOracleId}
+              initialStrike={urlStrike}
+              onGenerate={(nextIntent) => {
+                setIntent(nextIntent);
+                void compile(nextIntent);
+              }}
+            />
             <CompilerCard compiled={compiled} busy={busy === "compile"} />
             <PtbCard compiled={compiled} />
           </section>
 
           <section className="market-column flex min-w-0 flex-col gap-3">
+            <PredictMarketChart oracleId={selectedOracleId} strike={selectedStrike} />
             <MarketCard compiled={compiled} />
             <VaultCard compiled={compiled} />
           </section>
@@ -295,8 +303,7 @@ function TerminalExperience() {
             />
           </aside>
         </div>
-      </div>
-    </main>
+    </AppShell>
   );
 }
 
@@ -591,6 +598,55 @@ function ExecutionCard({
       </CardContent>
     </Card>
   );
+}
+
+function defaultIntentFromSearch(searchParams: { get(name: string): string | null }) {
+  const oracleId = oracleIdFromSearch(searchParams);
+  const strike = strikeFromSearch(searchParams);
+
+  if (!oracleId) {
+    return DEFAULT_INTENT;
+  }
+
+  const strikeText = typeof strike === "number" ? ` near ${strike}` : "";
+  return `Quote 10 DUSDC BTC UP${strikeText} using oracle ${oracleId}`;
+}
+
+function oracleIdFromSearch(searchParams: { get(name: string): string | null }) {
+  const oracleId = searchParams.get("oracleId");
+
+  if (!oracleId || !/^0x[a-fA-F0-9]{16,64}$/.test(oracleId)) {
+    return null;
+  }
+
+  return oracleId;
+}
+
+function strikeFromSearch(searchParams: { get(name: string): string | null }) {
+  const strike = searchParams.get("strike");
+  const numericStrike = strike ? Number(strike) : NaN;
+
+  return Number.isFinite(numericStrike) ? numericStrike : null;
+}
+
+function savePreviewReceipt(
+  receipt: NonNullable<SponsorReceipt["receipt"]>,
+  intent: string,
+  compiled: CompileApiResult
+) {
+  storePreviewReceipt({
+    id: receipt.digest,
+    time: new Date().toISOString(),
+    type: "sponsor_preview",
+    oracleId: compiled.market?.oracle.oracle_id,
+    digest: receipt.digest,
+    guardianDecision: compiled.guardian.decision,
+    summary: `Preview authorized for: ${intent}`,
+    walletAddress: receipt.walletAddress,
+    network: receipt.network,
+    status: receipt.status,
+    note: receipt.note
+  });
 }
 
 function SectionHeading({ title, detail, icon }: { title: string; detail: string; icon?: React.ReactNode }) {

@@ -8,6 +8,8 @@ export const dAppKit = createDAppKit({
   defaultNetwork: clientNetwork,
   // Burner wallets are useful for demos, but production sponsor flows need explicit wallet custody.
   enableBurnerWallet: false,
+  // Avoid auto-registering the hosted Slush wallet; extension wallets remain available via Wallet Standard.
+  slushWalletConfig: null,
   createClient(network) {
     return new SuiGrpcClient({
       network,

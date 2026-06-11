@@ -20,14 +20,25 @@ This repository targets DeepBook Predict testnet. It does not pretend to expose 
 - vault liquidity, utilization, and max-payout utilization
 - ask-bounds when available, with an explicit fallback when the endpoint returns `null`
 
+## Product Routes
+
+- `/markets` discovers live BTC Predict oracles, filters by status, expiry, and Guardian quick risk, paginates the result set, caches discovery in client context, and only prefetches full oracle state for the current page plus the selected market.
+- `/trade` exposes a quote/buy/sell ticket first, then compiles constrained intent text as the audit layer. It accepts `oracleId` and `strike` query params from market discovery.
+- `/profile` shows wallet status, PredictManager linkage, and browser-local preview receipts. It does not invent positions or PnL when a manager is not linked.
+
 ## How It Works
 
 ```mermaid
 flowchart TD
-  User["User / demo operator"] --> UI["Next.js UI\ncomponents/deep-pilot-terminal.tsx"]
+  User["User / demo operator"] --> UI["Next.js UI\n/markets /trade /profile"]
+  UI --> AppShell["AppShell + TopNav\ncomponents/app-shell.tsx"]
+  AppShell --> MarketContext["MarketDataProvider\n20s discovery TTL\nmanual refresh"]
   UI --> Wallet["DApp Kit wallet provider\nsrc/lib/dapp-kit.ts"]
   Wallet --> SuiGrpc["Sui gRPC fullnode\nNEXT_PUBLIC_SUI_*"]
 
+  MarketContext --> MarketsApi["GET /api/markets\nmarket discovery"]
+  UI --> HistoryApi["GET /api/oracles/:id/history\nchart data"]
+  UI --> ProfileApi["GET /api/profile\nmanager/linkage state"]
   UI --> CompileApi["POST /api/compile\napp/api/compile/route.ts"]
   UI --> SponsorApi["POST /api/sponsor\napp/api/sponsor/route.ts"]
   UI --> HealthApi["GET /api/health\napp/api/health/route.ts"]
@@ -40,6 +51,12 @@ flowchart TD
   Intent --> IntentGate{"Intent type"}
   IntentGate -->|"stablecoin_transfer"| NoPredictRead["Skip Predict API reads"]
   IntentGate -->|"quote / mint / range / redeem"| PredictRead["getPredictMarketSnapshot\nsrc/lib/predict.ts"]
+
+  MarketsApi --> MarketBatch["Promise.all\n/status\n/predicts/:id/oracles\n/predicts/:id/vault/summary"]
+  MarketBatch --> PageSlice["Server pagination\npage/pageSize, max 12"]
+  PageSlice --> TopNState["Current-page + selected oracle state prefetch\navoids list N+1"]
+  HistoryApi --> HistoryBatch["Promise.all\n/oracles/:id/state\n/oracles/:id/prices\n/oracles/:id/svi"]
+  ProfileApi --> ProfileState["PredictManager summary when managerId exists\notherwise honest not-linked state"]
 
   PredictRead --> OracleMode{"Oracle id supplied?"}
   OracleMode -->|"no"| BatchA["Promise.all\n/status\n/predicts/:id/oracles\n/predicts/:id/vault/summary"]
@@ -86,15 +103,20 @@ flowchart TD
 Key boundaries:
 
 - `/api/compile` is the read and planning path. It returns a live Predict snapshot, Guardian result, sponsor-policy decision, and PTB preview.
+- `/api/markets` is the discovery path. It returns one page at a time and does not fetch full state for every oracle; it prefetches current-page rows plus the selected oracle only.
+- `/api/oracles/:id/history` returns bounded, normalized chart data so browser components do not query Predict history directly.
+- `/api/profile` returns honest manager linkage state. Missing manager data stays empty instead of fabricating PnL.
 - `/api/sponsor` recompiles on the server before producing a preview receipt. It does not trust a PTB returned to the browser.
+- `MarketDataProvider` keeps `/markets` results in a short-lived client cache. It avoids per-render polling and leaves fast price ticks to explicit refresh or selected-oracle history reads.
 - `quote-only` intents stop after market and Guardian review. They never build a mint PTB and never receive sponsor approval.
+- `Buy` maps to Predict mint preview. `Sell` maps to redeem/close preview because this demo does not pretend to have a secondary market or order book.
 - Real submission is intentionally not hidden behind the preview receipt. A submitted transaction still needs wallet-selected coin inputs, a funded Predict manager, and exact on-chain execution wiring.
 
-The frontend is a single cockpit rather than a generic chat app. `components/deep-pilot-terminal.tsx` owns the intent textarea, market cards, Guardian panel, PTB preview, gas policy checks, and preview receipt. It calls `/api/compile` when the user edits or runs an intent, and calls `/api/sponsor` only after a PTB exists and Guardian has not blocked it. Wallet state is browser-only through DApp Kit; the public RPC URLs use `NEXT_PUBLIC_*` because they are safe to ship to the client.
+The frontend is a three-page product surface rather than a generic chat app. `/markets` is for discovery, `/trade` is the execution workbench, and `/profile` is wallet/receipt/manager state. `components/deep-pilot-terminal.tsx` owns the ticket, intent textarea, market cards, Guardian panel, PTB preview, gas policy checks, and preview receipt. It calls `/api/compile` when the user edits or runs an intent, and calls `/api/sponsor` only after a PTB exists and Guardian has not blocked it. Wallet state is browser-only through DApp Kit; the public RPC URLs use `NEXT_PUBLIC_*` because they are safe to ship to the client.
 
 The backend is deliberately split into small modules. `src/lib/intent.ts` parses a constrained Predict intent and refuses unsafe or incomplete inputs. `src/lib/predict.ts` is the only DeepBook Predict public API reader. `src/lib/guardian.ts` turns live market state into `allow`, `reduce`, or `block`. `src/lib/ptb.ts` builds an auditable PTB preview with exact Move targets, while `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and gas budget. `src/lib/compile.ts` is the orchestrator that wires these pieces together.
 
-Request flow is kept tight. A normal "next active oracle" trade needs three parallel Predict reads first, then one selected oracle-state read. If the user already supplies an oracle id, the app skips the full oracle-list read and performs the remaining three reads in parallel. After direct oracle lookup, the app still checks that the oracle and vault belong to the configured Predict object, so the optimization does not weaken protocol safety.
+Request flow is kept tight. A normal "next active oracle" trade needs three parallel Predict reads first, then one selected oracle-state read. If the user already supplies an oracle id, the app skips the full oracle-list read and performs the remaining three reads in parallel. Market discovery uses a 20 second client TTL plus manual refresh, not a high-frequency ticker. After direct oracle lookup, the app still checks that the oracle and vault belong to the configured Predict object, so the optimization does not weaken protocol safety.
 
 Environment configuration is split by exposure. `NEXT_PUBLIC_*` values are only for wallet/network client config. Predict package ids, Predict object ids, preview accounts, sponsor limits, and audit-log package ids use normal server-side env names because they are read by API routes and server-side scripts. There is no `NEXT_PRIVATE_*` convention in Next.js; the rule is simply that anything without `NEXT_PUBLIC_` is not bundled into the browser unless the app sends it there.
 
@@ -150,17 +172,24 @@ Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` 
 
 `/api/compile` batches independent Predict reads with `Promise.all`. A free-form "next active oracle" intent needs `/status`, `/oracles`, `/vault/summary`, then one selected `/oracles/:id/state` read. If the intent already includes an oracle id, DeepPilot skips the full oracle list and reads `/status`, `/vault/summary`, and `/oracles/:id/state` in parallel, then validates that the oracle and vault belong to the configured Predict object.
 
+`/api/markets` is optimized for discovery, not tick-by-tick trading. It reads `/status`, `/predicts/:id/oracles`, and `/vault/summary` in parallel, applies status/expiry pagination, then fetches state only for the selected oracle plus the visible page. `pageSize` defaults to 6 and is capped at 12. `components/market-data-provider.tsx` caches each market query for 20 seconds and exposes manual refresh. This rejects the obvious N+1 trap without pretending the market list is a streaming index. Quick risk filtering is page-scoped for the same reason: full risk filtering across every oracle would require a full state scan.
+
 ## Important Files
 
 - `.env.example` - Vercel/local deployment configuration template
 - `src/lib/predict.ts` - DeepBook Predict public API client and snapshot builder
+- `src/lib/profile.ts` - PredictManager linkage/profile summary reader
+- `src/lib/receipts.ts` - browser-local preview receipt helpers
 - `src/lib/predict-config.ts` - server-side Predict deployment config
 - `src/lib/client-config.ts` - browser-safe wallet/RPC config
 - `src/lib/intent.ts` - deterministic Predict intent parser
 - `src/lib/guardian.ts` - pre-sign risk policy
 - `src/lib/ptb.ts` - auditable Predict PTB preview
 - `src/lib/sponsor.ts` - sponsor gas policy, Move target allowlist, gas budget guard
-- `components/deep-pilot-terminal.tsx` - client UI
+- `components/markets-page.tsx` - market discovery UI
+- `components/market-data-provider.tsx` - client market discovery cache and refresh cadence
+- `components/deep-pilot-terminal.tsx` - trade workspace UI
+- `components/profile-page.tsx` - profile and receipt UI
 - `final_proposal.md` - final track proposal and risk review
 - `docs/archive/` - original research drafts kept for traceability
 

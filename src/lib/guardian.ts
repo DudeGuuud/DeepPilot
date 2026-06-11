@@ -26,8 +26,9 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
 
   const findings: GuardianFinding[] = [];
   const { metrics, oracle } = market;
+  const redeemOnly = intent.action === "predict_redeem";
 
-  if (oracle.status !== "active" && intent.action !== "predict_redeem") {
+  if (oracle.status !== "active" && !redeemOnly) {
     findings.push({
       type: "ORACLE_NOT_ACTIVE",
       title: "Oracle is not active",
@@ -35,7 +36,7 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
     });
   }
 
-  if (metrics.timeToExpiryMs <= 0 && intent.action !== "predict_redeem") {
+  if (metrics.timeToExpiryMs <= 0 && !redeemOnly) {
     findings.push({
       type: "EXPIRED_ORACLE",
       title: "Oracle has expired",
@@ -43,7 +44,8 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
     });
   }
 
-  if (metrics.oracleAgeMs === null || metrics.oracleAgeMs > intent.maxOracleAgeMs) {
+  // Redeem/close previews do not price a new position, so ask-bounds and freshness are not buy-side blockers.
+  if (!redeemOnly && (metrics.oracleAgeMs === null || metrics.oracleAgeMs > intent.maxOracleAgeMs)) {
     findings.push({
       type: "ORACLE_STALE",
       title: "Oracle price is stale",
@@ -51,7 +53,7 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
     });
   }
 
-  if (metrics.pipelineLagSeconds > intent.maxPipelineLagSeconds) {
+  if (!redeemOnly && metrics.pipelineLagSeconds > intent.maxPipelineLagSeconds) {
     findings.push({
       type: "INDEXER_LAG",
       title: "Predict server is lagging",
@@ -67,7 +69,7 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
     });
   }
 
-  if (metrics.notionalDusdc > metrics.availableLiquidityDusdc / LIQUIDITY_BUFFER_MULTIPLE) {
+  if (!redeemOnly && metrics.notionalDusdc > metrics.availableLiquidityDusdc / LIQUIDITY_BUFFER_MULTIPLE) {
     findings.push({
       type: "SIZE_OVER_LIQUIDITY",
       title: "Trade size is too large",
@@ -75,7 +77,7 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
     });
   }
 
-  if (!metrics.askBoundsAvailable) {
+  if (!redeemOnly && !metrics.askBoundsAvailable) {
     findings.push({
       type: "MISSING_ASK_BOUNDS",
       title: "Ask bounds unavailable",

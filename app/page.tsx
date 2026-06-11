@@ -1,5 +1,6 @@
-import DeepPilotTerminalShell from "@/components/deep-pilot-terminal-shell";
+import { redirect } from "next/navigation";
+import type { Route } from "next";
 
 export default function Home() {
-  return <DeepPilotTerminalShell />;
+  redirect("/markets" as Route);
 }

@@ -9,6 +9,7 @@ export type PredictDirection = "up" | "down";
 export type AmountType = "quote" | "base";
 export type RiskLevel = "low" | "medium" | "high" | "blocked";
 export type GasMode = "sponsored" | "gasless_stablecoin_transfer" | "user_pays_gas";
+export type MarketRiskLevel = RiskLevel | "unknown";
 
 export type ParsedIntent =
   | {
@@ -216,4 +217,100 @@ export interface CompileResult {
     label: string;
     state: "complete" | "blocked" | "pending";
   }>;
+}
+
+export interface MarketListItem {
+  oracleId: string;
+  underlying: "BTC";
+  status: string;
+  expiry: number;
+  minStrike: number;
+  tickSize: number;
+  spot: number | null;
+  forward: number | null;
+  selectedStrike: number | null;
+  oracleAgeMs: number | null;
+  timeToExpiryMs: number;
+  vaultUtilization: number;
+  maxPayoutUtilization: number;
+  availableLiquidityDusdc: number;
+  askBoundsAvailable: boolean;
+  riskLevel: MarketRiskLevel;
+  guardianDecision: GuardianResult["decision"] | "unknown";
+  guardianSummary: string;
+  hasState: boolean;
+}
+
+export interface MarketDiscoveryResult {
+  predict: {
+    network: PredictDeployment["network"];
+    transport: string;
+    endpoint: string;
+    predictId: string;
+    quoteAsset: "DUSDC";
+  };
+  fetchedAt: string;
+  status: PredictStatus;
+  vault: VaultSummary;
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    totalPages: number;
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+  };
+  markets: MarketListItem[];
+  selectedMarket: MarketListItem | null;
+}
+
+export interface PredictChartPoint {
+  time: number;
+  spot: number;
+  forward: number | null;
+}
+
+export interface PredictSviEvent {
+  time: number;
+  checkpoint: number | null;
+  a: number;
+  b: number;
+  rho: number;
+  m: number | null;
+  sigma: number | null;
+}
+
+export interface PredictOracleHistory {
+  oracleId: string;
+  fetchedAt: string;
+  capped: boolean;
+  points: PredictChartPoint[];
+  sviEvents: PredictSviEvent[];
+}
+
+export interface ProfileActivityItem {
+  id: string;
+  time: string;
+  type: "compile" | "sponsor_preview" | "mint" | "redeem" | "keeper";
+  oracleId?: string;
+  digest?: string;
+  guardianDecision?: GuardianResult["decision"];
+  summary: string;
+}
+
+export interface ProfileSummary {
+  wallet: string | null;
+  network: PredictDeployment["network"];
+  managerId: string | null;
+  managerLinked: boolean;
+  message: string;
+  openExposureDusdc: number | null;
+  redeemableValueDusdc: number | null;
+  realizedPnlDusdc: number | null;
+  awaitingSettlement: number | null;
+  guardianBlockedCount: number;
+  activity: ProfileActivityItem[];
+  rawManager?: unknown;
+  rawPositions?: unknown;
+  rawPnl?: unknown;
 }

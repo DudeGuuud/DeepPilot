@@ -1,10 +1,16 @@
 import { predictDeployment } from "./predict-config";
+import { runGuardian } from "./guardian";
 import { z } from "zod";
 import type {
+  MarketDiscoveryResult,
+  MarketListItem,
   OracleState,
   ParsedIntent,
+  PredictChartPoint,
+  PredictOracleHistory,
   PredictMarketSnapshot,
   PredictOracleSummary,
+  PredictSviEvent,
   PredictStatus,
   VaultSummary
 } from "./types";
@@ -12,6 +18,10 @@ import type {
 const PRICE_SCALE = 1_000_000_000;
 const DUSDC_SCALE = 1_000_000;
 const PREDICT_TIMEOUT_MS = 5_000;
+const DEFAULT_MARKET_PAGE_SIZE = 6;
+const MAX_MARKET_PAGE_SIZE = 12;
+const HISTORY_POINT_CAP = 240;
+const SVI_EVENT_CAP = 120;
 
 const oracleSummarySchema: z.ZodType<PredictOracleSummary> = z.object({
   predict_id: z.string(),
@@ -75,6 +85,39 @@ const oracleStateSchema: z.ZodType<OracleState> = z.object({
   ask_bounds: z.unknown().nullable()
 });
 
+const oraclePriceHistorySchema = z.array(
+  z.object({
+    spot: z.number().finite(),
+    forward: z.number().finite(),
+    onchain_timestamp: z.number().finite()
+  })
+);
+
+const oracleSviHistorySchema = z.array(
+  z.object({
+    a: z.number().finite(),
+    b: z.number().finite(),
+    rho: z.number().finite(),
+    rho_negative: z.boolean().optional(),
+    m: z.number().finite().optional(),
+    m_negative: z.boolean().optional(),
+    sigma: z.number().finite().optional(),
+    onchain_timestamp: z.number().finite()
+  })
+);
+
+const marketFilterSchema = z.object({
+  status: z.enum(["active", "settled", "all"]).default("active"),
+  asset: z.literal("BTC").default("BTC"),
+  expiry: z.enum(["next", "today", "this_week", "all"]).default("all"),
+  risk: z.enum(["low", "medium", "high", "blocked", "unknown", "all"]).default("all"),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(MAX_MARKET_PAGE_SIZE).default(DEFAULT_MARKET_PAGE_SIZE),
+  selectedOracleId: z.string().regex(/^0x[a-fA-F0-9]{1,64}$/).optional()
+});
+
+export type MarketFilters = z.input<typeof marketFilterSchema>;
+
 export { predictDeployment };
 
 export function createPredictClientPreview() {
@@ -84,6 +127,109 @@ export function createPredictClientPreview() {
     endpoint: predictDeployment.serverUrl,
     predictId: predictDeployment.predictId,
     quoteAsset: "DUSDC"
+  } as const;
+}
+
+export async function getPredictMarkets(input: MarketFilters = {}): Promise<MarketDiscoveryResult> {
+  const filters = marketFilterSchema.parse(input);
+  const [rawStatus, rawOracles, rawVault] = await Promise.all([
+    fetchPredict("/status", predictStatusSchema),
+    fetchPredict(`/predicts/${predictDeployment.predictId}/oracles`, z.array(oracleSummarySchema)),
+    fetchPredict(`/predicts/${predictDeployment.predictId}/vault/summary`, vaultSummarySchema)
+  ]);
+  const status = normalizeStatus(rawStatus);
+  const vault = normalizeVault(rawVault);
+
+  if (vault.predict_id !== predictDeployment.predictId) {
+    throw new Error("Predict vault summary does not match the configured Predict object.");
+  }
+
+  const oracles = rawOracles
+    .map(normalizeOracle)
+    .filter((oracle) => oracle.predict_id === predictDeployment.predictId)
+    .filter((oracle) => oracle.underlying_asset === filters.asset);
+
+  const pageableOracles = filterOracles(oracles, filters.status, filters.expiry, status.current_time_ms);
+  const pagination = marketPagination(pageableOracles.length, filters.page, filters.pageSize);
+  const pageOracles = pageableOracles.slice((pagination.page - 1) * pagination.pageSize, pagination.page * pagination.pageSize);
+  const selectedOracle = filters.selectedOracleId
+    ? pageableOracles.find((oracle) => oracle.oracle_id === filters.selectedOracleId) ?? null
+    : null;
+  const stateIds = selectedStateIds(pageOracles, selectedOracle);
+  const stateEntries = await Promise.allSettled(
+    stateIds.map(async (oracleId) => {
+      const state = normalizeOracleState(await fetchPredict(`/oracles/${oracleId}/state`, oracleStateSchema));
+      assertPredictConsistency(vault, state);
+      return [oracleId, state] as const;
+    })
+  );
+  const states = new Map<string, OracleState>();
+
+  for (const entry of stateEntries) {
+    if (entry.status === "fulfilled") {
+      states.set(entry.value[0], entry.value[1]);
+    }
+  }
+
+  const markets = pageOracles
+    .map((oracle) => buildMarketListItem(oracle, status, vault, states.get(oracle.oracle_id) ?? null))
+    .filter((market) => filters.risk === "all" || market.riskLevel === filters.risk);
+  const selectedMarketFromPage = markets.find((market) => market.oracleId === filters.selectedOracleId);
+  const selectedMarketFromLookup = selectedOracle
+    ? buildMarketListItem(selectedOracle, status, vault, states.get(selectedOracle.oracle_id) ?? null)
+    : null;
+  const selectedMarket =
+    selectedMarketFromPage ?? selectedMarketFromLookup ?? markets[0] ?? null;
+
+  return {
+    predict: createPredictClientPreview(),
+    fetchedAt: new Date().toISOString(),
+    status,
+    vault,
+    pagination,
+    markets,
+    selectedMarket
+  };
+}
+
+export async function getPredictOracleHistory(oracleId: string): Promise<PredictOracleHistory> {
+  const [rawState, rawPrices, rawSvi] = await Promise.all([
+    fetchPredict(`/oracles/${oracleId}/state`, oracleStateSchema),
+    fetchPredict(`/oracles/${oracleId}/prices`, oraclePriceHistorySchema),
+    fetchPredict(`/oracles/${oracleId}/svi`, oracleSviHistorySchema)
+  ]);
+  const state = normalizeOracleState(rawState);
+
+  if (state.oracle.predict_id !== predictDeployment.predictId) {
+    throw new Error("Oracle history does not belong to the configured Predict object.");
+  }
+
+  const points = rawPrices
+    .map((price): PredictChartPoint => ({
+      time: price.onchain_timestamp,
+      spot: normalizePrice(price.spot),
+      forward: normalizePrice(price.forward)
+    }))
+    .sort((left, right) => left.time - right.time);
+  const svi = rawSvi
+    .map((event): PredictSviEvent => ({
+      time: event.onchain_timestamp,
+      checkpoint: null,
+      a: event.a,
+      b: event.b,
+      rho: (event.rho_negative ? -event.rho : event.rho) / PRICE_SCALE,
+      m: typeof event.m === "number" ? (event.m_negative ? -event.m : event.m) : null,
+      sigma: event.sigma ?? null
+    }))
+    .sort((left, right) => left.time - right.time);
+
+  // The history endpoints can return large arrays; the UI only needs a bounded preview.
+  return {
+    oracleId: state.oracle.oracle_id,
+    points: points.slice(-HISTORY_POINT_CAP),
+    sviEvents: svi.slice(-SVI_EVENT_CAP),
+    capped: points.length > HISTORY_POINT_CAP || svi.length > SVI_EVENT_CAP,
+    fetchedAt: new Date().toISOString()
   };
 }
 
@@ -232,6 +378,140 @@ function normalizeVault(vault: VaultSummary): VaultSummary {
     plp_share_price: vault.plp_share_price,
     utilization: vault.utilization,
     max_payout_utilization: vault.max_payout_utilization
+  };
+}
+
+function filterOracles(
+  oracles: PredictOracleSummary[],
+  status: "active" | "settled" | "all",
+  expiry: "next" | "today" | "this_week" | "all",
+  nowMs: number
+) {
+  let filtered = oracles;
+
+  if (status !== "all") {
+    filtered = filtered.filter((oracle) => oracle.status === status);
+  }
+
+  if (expiry === "today") {
+    filtered = filtered.filter((oracle) => oracle.expiry >= nowMs && oracle.expiry <= nowMs + 24 * 60 * 60 * 1_000);
+  } else if (expiry === "this_week") {
+    filtered = filtered.filter((oracle) => oracle.expiry >= nowMs && oracle.expiry <= nowMs + 7 * 24 * 60 * 60 * 1_000);
+  } else if (expiry === "next") {
+    filtered = filtered
+      .filter((oracle) => oracle.expiry >= nowMs)
+      .sort((left, right) => left.expiry - right.expiry)
+      .slice(0, 1);
+  }
+
+  return filtered.sort((left, right) => {
+    if (left.status !== right.status) {
+      return left.status === "active" ? -1 : right.status === "active" ? 1 : left.status.localeCompare(right.status);
+    }
+
+    return left.status === "settled" ? right.expiry - left.expiry : left.expiry - right.expiry;
+  });
+}
+
+function selectedStateIds(pageOracles: PredictOracleSummary[], selectedOracle: PredictOracleSummary | null) {
+  const ids = new Set<string>();
+
+  if (selectedOracle) {
+    ids.add(selectedOracle.oracle_id);
+  }
+
+  // Current-page state prefetch keeps pagination useful without scanning every oracle.
+  for (const oracle of pageOracles) {
+    ids.add(oracle.oracle_id);
+  }
+
+  return [...ids];
+}
+
+function marketPagination(totalItems: number, requestedPage: number, pageSize: number) {
+  const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / pageSize);
+  const page = totalPages === 0 ? 1 : Math.min(requestedPage, totalPages);
+
+  return {
+    page,
+    pageSize,
+    totalItems,
+    totalPages,
+    hasNextPage: totalPages > 0 && page < totalPages,
+    hasPreviousPage: totalPages > 0 && page > 1
+  };
+}
+
+function buildMarketListItem(
+  oracle: PredictOracleSummary,
+  status: PredictStatus,
+  vault: VaultSummary,
+  oracleState: OracleState | null
+): MarketListItem {
+  if (!oracleState) {
+    return {
+      oracleId: oracle.oracle_id,
+      underlying: oracle.underlying_asset,
+      status: oracle.status,
+      expiry: oracle.expiry,
+      minStrike: normalizePrice(oracle.min_strike),
+      tickSize: normalizePrice(oracle.tick_size),
+      spot: null,
+      forward: null,
+      selectedStrike: null,
+      oracleAgeMs: null,
+      timeToExpiryMs: Math.max(0, oracle.expiry - status.current_time_ms),
+      vaultUtilization: vault.utilization,
+      maxPayoutUtilization: vault.max_payout_utilization,
+      availableLiquidityDusdc: normalizeDusdc(vault.available_liquidity),
+      askBoundsAvailable: false,
+      riskLevel: "unknown",
+      guardianDecision: "unknown",
+      guardianSummary: "Oracle state was not prefetched for this list row.",
+      hasState: false
+    };
+  }
+
+  const intent = marketQuoteIntent(oracleState.oracle);
+  const snapshot = buildSnapshot(intent, status, vault, oracleState);
+  const guardian = runGuardian(intent, snapshot);
+
+  return {
+    oracleId: oracle.oracle_id,
+    underlying: oracle.underlying_asset,
+    status: oracle.status,
+    expiry: oracle.expiry,
+    minStrike: normalizePrice(oracle.min_strike),
+    tickSize: normalizePrice(oracle.tick_size),
+    spot: snapshot.metrics.spot,
+    forward: snapshot.metrics.forward,
+    selectedStrike: snapshot.metrics.selectedStrike,
+    oracleAgeMs: snapshot.metrics.oracleAgeMs,
+    timeToExpiryMs: snapshot.metrics.timeToExpiryMs,
+    vaultUtilization: snapshot.metrics.vaultUtilization,
+    maxPayoutUtilization: snapshot.metrics.maxPayoutUtilization,
+    availableLiquidityDusdc: snapshot.metrics.availableLiquidityDusdc,
+    askBoundsAvailable: snapshot.metrics.askBoundsAvailable,
+    riskLevel: guardian.level,
+    guardianDecision: guardian.decision,
+    guardianSummary: guardian.summary,
+    hasState: true
+  };
+}
+
+function marketQuoteIntent(oracle: PredictOracleSummary): Extract<ParsedIntent, { status: "ready" }> {
+  return {
+    status: "ready",
+    action: "predict_quote_only",
+    direction: "up",
+    underlying: "BTC",
+    quoteAsset: "DUSDC",
+    amount: "10",
+    amountType: "quote",
+    maxOracleAgeMs: 20_000,
+    maxPipelineLagSeconds: 5,
+    oracleId: oracle.oracle_id,
+    raw: `Quote 10 DUSDC BTC UP using oracle ${oracle.oracle_id}`
   };
 }
 
