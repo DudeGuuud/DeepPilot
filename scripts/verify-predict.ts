@@ -1,4 +1,7 @@
+import { z } from "zod";
+
 import { compileIntent } from "../src/lib/compile";
+import { parseJsonBody } from "../src/lib/http";
 import { predictDeployment } from "../src/lib/predict";
 
 const intent = "Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle";
@@ -27,6 +30,10 @@ const transfer = await compileIntent(
 );
 const quoteOnly = await compileIntent(`Quote 10 DUSDC BTC UP near 62500 using oracle ${result.market.oracle.oracle_id}`);
 const incompleteRedeem = await compileIntent("Redeem my BTC Predict position");
+const invalidJson = await parseJsonBody(
+  new Request("http://deeppilot.local", { method: "POST", body: "not-json" }),
+  z.object({ intent: z.string() })
+);
 
 assert(transfer.intent.status === "ready", "transfer intent should parse");
 assert(Boolean(transfer.ptb), "transfer PTB should be built");
@@ -40,6 +47,7 @@ assert(quoteOnly.market?.oracle.predict_id === predictDeployment.predictId, "exp
 assert(!quoteOnly.ptb, "quote-only intent should not build a PTB");
 assert(!quoteOnly.gas.approved, "quote-only intent should not be sponsor approved");
 assert(incompleteRedeem.intent.status === "needs_clarification", "redeem without oracle id should ask for clarification");
+assert(!invalidJson.success, "invalid JSON body should be rejected without throwing");
 
 console.log(
   JSON.stringify(

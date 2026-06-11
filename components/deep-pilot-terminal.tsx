@@ -471,7 +471,7 @@ function GasCard({ compiled, accountAddress }: { compiled: CompileApiResult | nu
       <CardContent className="space-y-3">
         <div className="rounded-md border border-border bg-background/60 p-3">
           <p className="text-sm font-medium text-foreground">{gas?.label ?? "Awaiting policy"}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{accountAddress ? shortAddress(accountAddress) : "Mock signer available"}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{accountAddress ? shortAddress(accountAddress) : "Wallet not connected"}</p>
         </div>
         <div className="space-y-1">
           {(gas?.checks ?? []).map((check) => (

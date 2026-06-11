@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { compileIntent } from "@/src/lib/compile";
+import { parseJsonBody } from "@/src/lib/http";
 import { validateSponsorPlan } from "@/src/lib/sponsor";
 
 const bodySchema = z.object({
@@ -9,7 +10,7 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: Request) {
-  const body = bodySchema.safeParse(await request.json());
+  const body = await parseJsonBody(request, bodySchema);
 
   if (!body.success) {
     return NextResponse.json({ error: "Invalid sponsor payload" }, { status: 400 });
