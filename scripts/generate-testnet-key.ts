@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const pilotDir = resolve(root, ".deeppilot");
 const clientConfig = resolve(pilotDir, "client.yaml");
-const metadataPath = resolve(pilotDir, "devnet-key.json");
+const metadataPath = resolve(pilotDir, "testnet-key.json");
 
 mkdirSync(pilotDir, { recursive: true });
 
@@ -36,7 +36,7 @@ function createAddress() {
     "-y",
     "new-address",
     "ed25519",
-    "deeppilot-devnet",
+    "deeppilot-testnet",
     "--json"
   ]);
   const jsonStart = output.lastIndexOf("{");
@@ -52,12 +52,12 @@ if (existsSync(clientConfig)) {
   address = createAddress();
 }
 
-runSui(["client", "--client.config", clientConfig, "switch", "--env", "devnet"]);
+runSui(["client", "--client.config", clientConfig, "switch", "--env", "testnet"]);
 
 const metadata = {
   address,
-  alias: "deeppilot-devnet",
-  network: "devnet",
+  alias: "deeppilot-testnet",
+  network: "testnet",
   clientConfig,
   keystorePath: resolve(dirname(clientConfig), "sui.keystore"),
   generatedAt: new Date().toISOString(),

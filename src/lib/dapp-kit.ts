@@ -1,19 +1,16 @@
 import { createDAppKit } from "@mysten/dapp-kit-core";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 
-const GRPC_URLS = {
-  devnet: "https://fullnode.devnet.sui.io:443",
-  testnet: "https://fullnode.testnet.sui.io:443"
-} as const;
+import { clientGrpcUrls, clientNetwork } from "./client-config";
 
 export const dAppKit = createDAppKit({
   networks: ["devnet", "testnet"],
-  defaultNetwork: "devnet",
+  defaultNetwork: clientNetwork,
   enableBurnerWallet: true,
   createClient(network) {
     return new SuiGrpcClient({
       network,
-      baseUrl: GRPC_URLS[network]
+      baseUrl: clientGrpcUrls[network]
     });
   }
 });
@@ -23,4 +20,3 @@ declare module "@mysten/dapp-kit-react" {
     dAppKit: typeof dAppKit;
   }
 }
-

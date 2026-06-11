@@ -6,10 +6,10 @@ import { Transaction } from "@mysten/sui/transactions";
 import { fromBase64, toBase64 } from "@mysten/sui/utils";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const metadataPath = resolve(root, ".deeppilot", "devnet-key.json");
+const metadataPath = resolve(root, ".deeppilot", "testnet-key.json");
 
 if (!existsSync(metadataPath)) {
-  throw new Error("Run `bun run sui:devnet-key` before signing a mock transaction.");
+  throw new Error("Run `bun run sui:testnet-key` before signing a mock transaction.");
 }
 
 const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {

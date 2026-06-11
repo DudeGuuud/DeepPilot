@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { compileIntent } from "@/src/lib/compile";
-import { createDeepBookClientPreview } from "@/src/lib/deepbook";
+import { createPredictClientPreview } from "@/src/lib/predict";
 
 const bodySchema = z.object({
   intent: z.string().trim().min(1).max(500)
@@ -21,8 +21,7 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({
-    ...compileIntent(body.data.intent),
-    sui: createDeepBookClientPreview()
+    ...(await compileIntent(body.data.intent)),
+    predict: createPredictClientPreview()
   });
 }
-

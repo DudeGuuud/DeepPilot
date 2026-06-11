@@ -1,45 +1,46 @@
-import type { DeepBookQuote, GasMode, GuardianResult, ParsedIntent, SponsorDecision, SponsorPolicy } from "./types";
+import { predictDeployment } from "./predict";
+import type { GasMode, GuardianResult, ParsedIntent, PredictMarketSnapshot, SponsorDecision, SponsorPolicy } from "./types";
 
 export const sponsorPolicy: SponsorPolicy = {
-  allowedPackages: ["@mysten/deepbook-v3", "deep_pilot_log"],
+  allowedPackages: [predictDeployment.packageId, "deep_pilot_log"],
   allowedMoveCalls: [
-    "deepbook::place_market_order",
-    "deepbook::place_limit_order",
-    "deep_pilot_log::record_intent",
+    "predict::mint",
+    "predict::mint_range",
+    "predict::redeem_permissionless",
+    "deep_pilot_log::log::record_intent",
     "coin::transfer"
   ],
   maxGasBudget: 20_000_000,
-  maxTradeSizeUsd: 1_000,
+  maxTradeSizeDusdc: 1_000,
   maxDailySponsoredTxPerWallet: 20
 };
 
 export function decideGasMode(
   intent: ParsedIntent,
   guardian: GuardianResult,
-  quote: DeepBookQuote | null
+  market: PredictMarketSnapshot | null
 ): SponsorDecision {
   if (intent.status !== "ready") {
-    return decision("user_pays_gas", false, "Awaiting complete intent", [
+    return decision("user_pays_gas", false, "Awaiting complete Predict intent", [
       ["complete intent", false],
       ["guardian not blocked", !guardian.blocked]
     ]);
   }
 
   if (intent.action === "stablecoin_transfer") {
-    return decision("gasless_stablecoin_transfer", !guardian.blocked, "Gasless stablecoin transfer", [
-      ["stablecoin transfer", true],
-      ["allowlisted token", ["USDC", "USDT"].includes(intent.baseToken)],
+    return decision("gasless_stablecoin_transfer", !guardian.blocked, "Gasless DUSDC transfer preview", [
+      ["DUSDC transfer", true],
       ["guardian not blocked", !guardian.blocked]
     ]);
   }
 
-  const tradeSize = quote?.orderSizeUsd ?? Number(intent.amount);
-  const sponsorApproved = !guardian.blocked && tradeSize <= sponsorPolicy.maxTradeSizeUsd;
+  const tradeSize = market?.metrics.notionalDusdc ?? Number(intent.amount);
+  const sponsorApproved = !guardian.blocked && tradeSize <= sponsorPolicy.maxTradeSizeDusdc;
 
   return decision("sponsored", sponsorApproved, "Sponsored by DeepPilot", [
-    ["DeepBook Move call allowlisted", true],
-    ["gas budget within policy", true],
-    ["trade size within demo cap", tradeSize <= sponsorPolicy.maxTradeSizeUsd],
+    ["Predict package allowlisted", sponsorPolicy.allowedPackages.includes(predictDeployment.packageId)],
+    ["Predict Move call allowlisted", true],
+    ["trade size within demo cap", tradeSize <= sponsorPolicy.maxTradeSizeDusdc],
     ["guardian not blocked", !guardian.blocked]
   ]);
 }
@@ -55,4 +56,3 @@ function decision(mode: GasMode, approved: boolean, label: string, checks: Array
     }))
   };
 }
-

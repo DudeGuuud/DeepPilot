@@ -8,8 +8,7 @@ export function GET() {
       react: "19.2.7",
       sui: "@mysten/sui 2.17.0",
       dappKit: "@mysten/dapp-kit-react 2.0.3",
-      deepbook: "@mysten/deepbook-v3 1.4.1"
+      deepbookPredict: "predict-server.testnet.mystenlabs.com"
     }
   });
 }
-

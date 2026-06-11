@@ -14,7 +14,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid sponsor payload" }, { status: 400 });
   }
 
-  const compiled = compileIntent(body.data.intent);
+  const compiled = await compileIntent(body.data.intent);
 
   if (!compiled.ptb || compiled.guardian.blocked || !compiled.gas.approved) {
     return NextResponse.json(
@@ -41,4 +41,3 @@ export async function POST(request: Request) {
     }
   });
 }
-

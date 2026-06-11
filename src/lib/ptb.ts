@@ -1,16 +1,13 @@
-import { Transaction } from "@mysten/sui/transactions";
-
-import type { DeepBookQuote, GuardianResult, ParsedIntent, PtbCommandPreview, PtbPlan, SponsorDecision } from "./types";
+import { predictDeployment, toDusdcBaseUnits, toPredictPrice } from "./predict";
+import type { GuardianResult, ParsedIntent, PredictMarketSnapshot, PtbCommandPreview, PtbPlan, SponsorDecision } from "./types";
 
 const DEMO_SENDER = "0x0000000000000000000000000000000000000000000000000000000000000a11";
 const DEMO_SPONSOR = "0x00000000000000000000000000000000000000000000000000000000000005aa";
-const DEMO_DEEPBOOK_PACKAGE = "0x00000000000000000000000000000000000000000000000000000000dee90001";
-const DEMO_LOG_PACKAGE = "0x00000000000000000000000000000000000000000000000000000000d9000001";
-const DEMO_POOL_ID = "0x00000000000000000000000000000000000000000000000000000000b0000001";
+const DEMO_MANAGER = "0x00000000000000000000000000000000000000000000000000000000feed0001";
 
 export function buildPtbPlan(
   intent: ParsedIntent,
-  quote: DeepBookQuote | null,
+  market: PredictMarketSnapshot | null,
   guardian: GuardianResult,
   gas: SponsorDecision
 ): PtbPlan | null {
@@ -18,68 +15,30 @@ export function buildPtbPlan(
     return null;
   }
 
-  const tx = new Transaction();
-  tx.setSender(DEMO_SENDER);
-  tx.setGasBudget(12_000_000);
-  tx.setGasOwner(gas.mode === "sponsored" ? DEMO_SPONSOR : DEMO_SENDER);
-  tx.setExpiration({ None: true });
-
-  const commands: PtbCommandPreview[] = [];
-
-  if (intent.action === "stablecoin_transfer") {
-    tx.moveCall({
-      target: "0x2::coin::transfer",
-      typeArguments: [`0x2::${intent.baseToken.toLowerCase()}::${intent.baseToken}`],
-      arguments: [
-        tx.object("0x00000000000000000000000000000000000000000000000000000000c01a0001"),
-        tx.pure.address(intent.recipient ?? DEMO_SENDER)
-      ]
-    });
-
-    commands.push({
-      index: 1,
-      command: `Gasless ${intent.baseToken} transfer`,
-      target: "0x2::coin::transfer",
-      riskGate: "atomic"
-    });
-  } else {
-    tx.moveCall({
-      target: `${DEMO_DEEPBOOK_PACKAGE}::deepbook::${intent.action === "deepbook_limit_order" ? "place_limit_order" : "place_market_order"}`,
-      arguments: [
-        tx.object(DEMO_POOL_ID),
-        tx.pure.string(intent.side),
-        tx.pure.u64(Math.round(Number(intent.amount) * 1_000_000)),
-        tx.pure.u64(intent.maxSlippageBps),
-        tx.pure.u64(Math.round((quote?.bestAsk ?? 0) * 1_000_000))
-      ],
-      typeArguments: [`0x2::sui::SUI`, `0x2::usdc::USDC`]
-    });
-
-    commands.push({
-      index: 1,
-      command: `${intent.action === "deepbook_limit_order" ? "Place limit" : "Place market"} ${intent.side} on ${quote?.pair ?? "SUI/USDC"}`,
-      target: "deepbook::place_order",
-      riskGate: "atomic"
-    });
-  }
-
-  tx.moveCall({
-    target: `${DEMO_LOG_PACKAGE}::deep_pilot_log::record_intent`,
-    arguments: [
-      tx.pure.string(hashish(intent.raw)),
-      tx.pure.string(intent.action),
-      tx.pure.string(guardian.level),
-      tx.pure.u64(guardian.score),
-      tx.pure.bool(gas.mode === "sponsored")
-    ]
-  });
-
-  commands.push({
-    index: commands.length + 1,
-    command: "Record IntentRecord and RiskRecord",
-    target: "deep_pilot_log::record_intent",
-    riskGate: "receipt"
-  });
+  const commands = buildCommands(intent, market);
+  const requirements = buildRequirements(intent, market);
+  const transactionData = {
+    kind: "ProgrammableTransaction",
+    network: predictDeployment.network,
+    packageId: predictDeployment.packageId,
+    predictObject: predictDeployment.predictId,
+    quoteAssetType: predictDeployment.quoteAssetType,
+    manager: DEMO_MANAGER,
+    oracleId: market?.oracle.oracle_id ?? intent.oracleId ?? null,
+    intent: {
+      action: intent.action,
+      direction: intent.direction,
+      amount: intent.amount,
+      quantityBaseUnits: quantityBaseUnits(intent),
+      strike: market?.metrics.selectedStrike ?? intent.strike ?? null,
+      strikeScaled: scaledStrike(market, intent),
+      lowerStrike: intent.lowerStrike ?? null,
+      lowerStrikeScaled: intent.lowerStrike ? toPredictPrice(intent.lowerStrike) : null,
+      upperStrike: intent.upperStrike ?? null
+    },
+    requirements,
+    commands
+  };
 
   return {
     sender: DEMO_SENDER,
@@ -88,14 +47,166 @@ export function buildPtbPlan(
     gasOwner: gas.mode === "sponsored" ? DEMO_SPONSOR : DEMO_SENDER,
     transactionKind: "ProgrammableTransaction",
     commands,
-    transactionData: tx.getData(),
-    digestPreview: hashish(JSON.stringify(tx.getData())).slice(0, 44),
+    requirements,
+    transactionData,
+    digestPreview: hashish(JSON.stringify(transactionData)).slice(0, 44),
     simulated: {
       status: "not_submitted",
-      reason: "Real deployment is disabled for this milestone; PTB is compiled for local signing preview.",
+      reason:
+        "Preview uses live Predict state and exact Predict targets. Real submission requires a funded DUSDC manager object and wallet-selected coin inputs.",
       explorerReady: false
     }
   };
+}
+
+function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
+  const commands: PtbCommandPreview[] = [];
+  const oracle = market?.oracle;
+
+  if (intent.action === "stablecoin_transfer") {
+    commands.push({
+      index: 1,
+      command: "Transfer DUSDC",
+      target: "0x2::coin::transfer",
+      riskGate: "atomic",
+      inputs: {
+        quoteAssetType: predictDeployment.quoteAssetType,
+        amountBaseUnits: toDusdcBaseUnits(Number(intent.amount)),
+        recipient: intent.recipient ?? null
+      }
+    });
+
+    return commands;
+  }
+
+  if (intent.action === "predict_redeem") {
+    commands.push(binaryKeyCommand(intent, market, 1));
+    commands.push({
+      index: 2,
+      command: `Redeem settled position for ${shortId(market?.oracle.oracle_id ?? intent.oracleId)}`,
+      target: `${predictDeployment.packageId}::predict::redeem_permissionless`,
+      riskGate: "atomic",
+      inputs: predictInputs(intent, market)
+    });
+  } else if (intent.action === "predict_range_mint") {
+    commands.push({
+      index: 1,
+      command: `Build range key ${intent.lowerStrike}-${intent.upperStrike}`,
+      target: `${predictDeployment.packageId}::range_key::new`,
+      riskGate: "pre-sign",
+      inputs: {
+        oracleId: oracle?.oracle_id ?? intent.oracleId ?? null,
+        expiry: oracle?.expiry ?? null,
+        lowerStrikeScaled: intent.lowerStrike ? toPredictPrice(intent.lowerStrike) : null,
+        upperStrikeScaled: intent.upperStrike ? toPredictPrice(intent.upperStrike) : null
+      }
+    });
+    commands.push({
+      index: 2,
+      command: `Mint BTC range ${intent.lowerStrike}-${intent.upperStrike} with ${intent.amount} DUSDC`,
+      target: `${predictDeployment.packageId}::predict::mint_range`,
+      riskGate: "atomic",
+      inputs: predictInputs(intent, market)
+    });
+  } else {
+    commands.push(binaryKeyCommand(intent, market, 1));
+    commands.push({
+      index: 2,
+      command: `Mint BTC ${intent.direction ?? "up"} binary at ${market?.metrics.selectedStrike ?? intent.strike ?? "ATM"} with ${intent.amount} DUSDC`,
+      target: `${predictDeployment.packageId}::predict::mint`,
+      riskGate: "atomic",
+      inputs: predictInputs(intent, market)
+    });
+  }
+
+  commands.push({
+    index: commands.length + 1,
+    command: "Record market snapshot hash and Guardian decision",
+    target: "deep_pilot_log::log::record_intent",
+    riskGate: "receipt"
+  });
+
+  return commands;
+}
+
+function binaryKeyCommand(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null, index: number) {
+  const isUp = (intent.direction ?? "up") === "up";
+
+  return {
+    index,
+    command: `Build ${isUp ? "UP" : "DOWN"} market key`,
+    target: `${predictDeployment.packageId}::market_key::${isUp ? "up" : "down"}`,
+    riskGate: "pre-sign",
+    inputs: {
+      oracleId: market?.oracle.oracle_id ?? intent.oracleId ?? null,
+      expiry: market?.oracle.expiry ?? null,
+      strikeScaled: scaledStrike(market, intent)
+    }
+  } satisfies PtbCommandPreview;
+}
+
+function predictInputs(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
+  return {
+    predictObject: predictDeployment.predictId,
+    managerObject: DEMO_MANAGER,
+    oracleObject: market?.oracle.oracle_id ?? intent.oracleId ?? null,
+    quoteType: predictDeployment.quoteAssetType,
+    quantityBaseUnits: quantityBaseUnits(intent),
+    clockObject: "0x6"
+  };
+}
+
+function buildRequirements(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
+  if (intent.action === "stablecoin_transfer") {
+    return [
+      {
+        label: "DUSDC coin input",
+        satisfied: false,
+        detail: "Wallet must select a DUSDC coin with enough balance for transfer."
+      }
+    ];
+  }
+
+  return [
+    {
+      label: "PredictManager object",
+      satisfied: false,
+      detail: "Create or load the user's shared PredictManager before submitting mint/redeem."
+    },
+    {
+      label: "DUSDC manager balance",
+      satisfied: false,
+      detail: "Mint requires DUSDC already deposited into the PredictManager."
+    },
+    {
+      label: "Oracle object",
+      satisfied: Boolean(market?.oracle.oracle_id ?? intent.oracleId),
+      detail: market?.oracle.oracle_id ?? intent.oracleId ?? "No oracle selected."
+    },
+    {
+      label: "Clock object",
+      satisfied: true,
+      detail: "Sui system clock object 0x6."
+    }
+  ];
+}
+
+function scaledStrike(market: PredictMarketSnapshot | null, intent: Extract<ParsedIntent, { status: "ready" }>) {
+  const strike = market?.metrics.selectedStrike ?? intent.strike;
+
+  return strike ? toPredictPrice(strike) : null;
+}
+
+function quantityBaseUnits(intent: Extract<ParsedIntent, { status: "ready" }>) {
+  return toDusdcBaseUnits(Number(intent.amount));
+}
+
+function shortId(value?: string | null) {
+  if (!value) {
+    return "selected oracle";
+  }
+
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function hashish(input: string) {
@@ -108,4 +219,3 @@ function hashish(input: string) {
 
   return `0x${(hash >>> 0).toString(16).padStart(8, "0")}${input.length.toString(16).padStart(8, "0")}`;
 }
-

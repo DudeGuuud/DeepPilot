@@ -1,27 +1,30 @@
-export type IntentAction =
-  | "deepbook_market_order"
-  | "deepbook_limit_order"
-  | "stablecoin_transfer"
-  | "quote_only";
+export type PredictIntentAction =
+  | "predict_binary_mint"
+  | "predict_range_mint"
+  | "predict_redeem"
+  | "predict_quote_only"
+  | "stablecoin_transfer";
 
-export type TradeSide = "buy" | "sell";
-export type AmountType = "base" | "quote";
+export type PredictDirection = "up" | "down";
+export type AmountType = "quote" | "base";
 export type RiskLevel = "low" | "medium" | "high" | "blocked";
 export type GasMode = "sponsored" | "gasless_stablecoin_transfer" | "user_pays_gas";
 
 export type ParsedIntent =
   | {
       status: "ready";
-      action: IntentAction;
-      side: TradeSide;
-      baseToken: string;
-      quoteToken: string;
+      action: PredictIntentAction;
+      direction?: PredictDirection;
+      underlying: "BTC";
+      quoteAsset: "DUSDC";
       amount: string;
       amountType: AmountType;
-      maxSlippageBps: number;
-      venue: "deepbook";
-      confirmationRequired: true;
-      limitPrice?: string;
+      maxOracleAgeMs: number;
+      maxPipelineLagSeconds: number;
+      strike?: number;
+      lowerStrike?: number;
+      upperStrike?: number;
+      oracleId?: string;
       recipient?: string;
       raw: string;
     }
@@ -32,40 +35,124 @@ export type ParsedIntent =
       raw: string;
     };
 
-export interface OrderBookLevel {
-  price: number;
-  size: number;
-  total: number;
+export interface PredictDeployment {
+  network: "devnet" | "testnet" | "mainnet";
+  serverUrl: string;
+  packageId: string;
+  predictId: string;
+  quoteAssetType: string;
+  plpCoinType: string;
+  sourceBranch: string;
 }
 
-export interface DeepBookQuote {
-  pair: string;
-  poolKey: string;
-  source: "mock_deepbook_v3_ready";
-  baseToken: string;
-  quoteToken: string;
-  midPrice: number;
-  bestBid: number;
-  bestAsk: number;
-  spreadBps: number;
-  estimatedSlippageBps: number;
-  visibleDepthUsd: number;
-  orderSizeUsd: number;
-  quoteAgeMs: number;
-  baseQuantityOut: number;
-  quoteQuantityIn: number;
-  bids: OrderBookLevel[];
-  asks: OrderBookLevel[];
-  deepbookExtension: string;
+export interface PredictStatusPipeline {
+  pipeline: string;
+  checkpoint_lag: number;
+  time_lag_ms: number;
+  time_lag_seconds: number;
+}
+
+export interface PredictStatus {
+  status: string;
+  latest_onchain_checkpoint: number;
+  current_time_ms: number;
+  max_lag_pipeline: string;
+  max_checkpoint_lag: number;
+  max_time_lag_seconds: number;
+  pipelines: PredictStatusPipeline[];
+}
+
+export interface PredictOracleSummary {
+  predict_id: string;
+  oracle_id: string;
+  underlying_asset: "BTC";
+  expiry: number;
+  min_strike: number;
+  tick_size: number;
+  status: "active" | "pending" | "settled" | string;
+  activated_at: number | null;
+  settlement_price: number | null;
+  settled_at: number | null;
+}
+
+export interface OraclePrice {
+  spot: number;
+  forward: number;
+  onchain_timestamp: number;
+  checkpoint?: number;
+  event_digest?: string;
+}
+
+export interface OracleSvi {
+  a: number;
+  b: number;
+  rho: number;
+  m?: number;
+  sigma?: number;
+  onchain_timestamp?: number;
+  checkpoint?: number;
+  event_digest?: string;
+}
+
+export interface OracleState {
+  oracle: PredictOracleSummary;
+  latest_price: OraclePrice | null;
+  latest_svi: OracleSvi | null;
+  ask_bounds: unknown | null;
+}
+
+export interface VaultSummary {
+  predict_id: string;
+  vault_balance: number;
+  vault_value: number;
+  total_mtm: number;
+  total_max_payout: number;
+  available_liquidity: number;
+  available_withdrawal: number;
+  plp_total_supply: number;
+  plp_share_price: number;
+  utilization: number;
+  max_payout_utilization: number;
+}
+
+export interface PredictRiskMetrics {
+  spot: number | null;
+  forward: number | null;
+  selectedStrike: number | null;
+  strikeDistanceBps: number | null;
+  oracleAgeMs: number | null;
+  timeToExpiryMs: number;
+  pipelineLagSeconds: number;
+  notionalDusdc: number;
+  availableLiquidityDusdc: number;
+  vaultUtilization: number;
+  maxPayoutUtilization: number;
+  askBoundsAvailable: boolean;
+}
+
+export interface PredictMarketSnapshot {
+  source: "deepbook_predict_testnet";
+  deployment: PredictDeployment;
+  status: PredictStatus;
+  oracle: PredictOracleSummary;
+  oracleState: OracleState;
+  vault: VaultSummary;
+  metrics: PredictRiskMetrics;
+  fetchedAt: string;
 }
 
 export interface GuardianFinding {
   type:
-    | "HIGH_SLIPPAGE"
-    | "LOW_LIQUIDITY"
-    | "STALE_QUOTE"
-    | "WIDE_SPREAD"
-    | "LARGE_ORDER_SIZE"
+    | "INCOMPLETE_INTENT"
+    | "API_UNAVAILABLE"
+    | "ORACLE_STALE"
+    | "INDEXER_LAG"
+    | "ORACLE_NOT_ACTIVE"
+    | "EXPIRED_ORACLE"
+    | "HIGH_VAULT_UTILIZATION"
+    | "MISSING_ASK_BOUNDS"
+    | "SIZE_OVER_LIQUIDITY"
+    | "DUSDC_REQUIRED"
     | "UNSUPPORTED_INTENT";
   title: string;
   explanation: string;
@@ -75,7 +162,7 @@ export interface GuardianResult {
   score: number;
   level: RiskLevel;
   blocked: boolean;
-  decision: "allow" | "warn" | "block";
+  decision: "allow" | "reduce" | "block";
   findings: GuardianFinding[];
   summary: string;
 }
@@ -85,6 +172,7 @@ export interface PtbCommandPreview {
   command: string;
   target: string;
   riskGate: "pre-sign" | "atomic" | "receipt";
+  inputs?: Record<string, string | number | boolean | null>;
 }
 
 export interface PtbPlan {
@@ -94,6 +182,11 @@ export interface PtbPlan {
   gasOwner: string;
   transactionKind: "ProgrammableTransaction";
   commands: PtbCommandPreview[];
+  requirements: Array<{
+    label: string;
+    satisfied: boolean;
+    detail: string;
+  }>;
   transactionData: unknown;
   digestPreview: string;
   simulated: {
@@ -107,7 +200,7 @@ export interface SponsorPolicy {
   allowedPackages: string[];
   allowedMoveCalls: string[];
   maxGasBudget: number;
-  maxTradeSizeUsd: number;
+  maxTradeSizeDusdc: number;
   maxDailySponsoredTxPerWallet: number;
 }
 
@@ -123,7 +216,7 @@ export interface SponsorDecision {
 
 export interface CompileResult {
   intent: ParsedIntent;
-  quote: DeepBookQuote | null;
+  market: PredictMarketSnapshot | null;
   guardian: GuardianResult;
   gas: SponsorDecision;
   ptb: PtbPlan | null;
@@ -132,4 +225,3 @@ export interface CompileResult {
     state: "complete" | "blocked" | "pending";
   }>;
 }
-

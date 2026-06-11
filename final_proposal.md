@@ -102,9 +102,9 @@ Selected sample oracle:
 
 ### Critical risks
 
-1. Current repo is not yet a DeepBook Predict product.
-   - `src/lib/deepbook.ts` currently uses `@mysten/deepbook-v3` with devnet gRPC and returns mock quote data.
-   - Final submission must switch to Predict testnet API and Predict package/object IDs.
+1. Repository drift from the Predict target.
+   - Status after cleanup: the old `src/lib/deepbook.ts` mock path has been replaced by `src/lib/predict.ts`, which reads Predict testnet status, oracle state and vault summary.
+   - Remaining risk: real submission still needs exact Predict Move-call arguments, funded DUSDC, and a user `PredictManager`.
 
 2. DeepBook Predict is testnet and provisional.
    - Official docs warn package IDs, object layouts and entry points can change before mainnet.[2][3]
@@ -234,12 +234,12 @@ Selected sample oracle:
 ## 8. Implementation Plan Against Current Repo
 
 1. Replace mock quote source.
-   - Update `src/lib/deepbook.ts` into `src/lib/predict.ts`.
-   - Use Predict testnet base URL and IDs from config.
-   - Add typed functions: `getPredictStatus`, `listOracles`, `getOracleState`, `getVaultSummary`, `getAskBounds`.
+   - Done in code: `src/lib/predict.ts` uses Predict testnet base URL and IDs.
+   - Current functions build a typed market snapshot from status, oracle list, oracle state and vault summary.
+   - Next implementation step: add exact on-chain Move-call argument construction for submitted mint/redeem transactions.
 
 2. Add Predict-specific types.
-   - Extend `src/lib/types.ts` with `PredictOracle`, `OraclePrice`, `OracleSvi`, `VaultSummary`, `RiskDecision`, `PredictIntent`.
+   - Done in code: `src/lib/types.ts` now models Predict intents, oracle state, vault summary, risk metrics, Guardian findings and PTB previews.
 
 3. Update intent parsing.
    - Add actions:
@@ -353,7 +353,7 @@ Assumptions:
 
 Estimated probabilities:
 
-- Current repo as-is, with mock data and no real Predict tx: 3% to 6%.
+- Pre-cleanup repo, with mock data and no real Predict tx: 3% to 6%.
 - Proposal-only plus API-backed UI but no real PTB/tx: 8% to 14%.
 - Final recommended MVP delivered with real Predict API, Guardian, PTB preview, and keeper demo: 22% to 32% for any DeepBook prize.
 - Same MVP plus real testnet mint/redeem tx digest and polished video: 30% to 40% for any DeepBook prize.

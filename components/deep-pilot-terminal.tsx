@@ -28,15 +28,17 @@ import { Toaster } from "@/components/ui/toaster";
 import { useToast } from "@/components/ui/use-toast";
 import { dAppKit } from "@/src/lib/dapp-kit";
 import { cn } from "@/src/lib/utils";
-import type { CompileResult, GuardianFinding, RiskLevel } from "@/src/lib/types";
+import type { CompileResult, GuardianFinding, PredictMarketSnapshot, RiskLevel } from "@/src/lib/types";
 
-const DEFAULT_INTENT = "Buy 20 USDC worth of SUI on DeepBook if slippage stays under 0.5%";
+const DEFAULT_INTENT = "Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle";
 
 type CompileApiResult = CompileResult & {
-  sui?: {
+  predict?: {
     network: string;
     transport: string;
-    extension: string;
+    endpoint: string;
+    predictId: string;
+    quoteAsset: string;
   };
 };
 
@@ -177,10 +179,10 @@ function TerminalExperience() {
 
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
-              {compiled?.sui?.transport ?? "SuiGrpcClient"}
+              {compiled?.predict?.transport ?? "Predict server"}
             </Badge>
             <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
-              {network ?? "devnet"}
+              {network ?? "testnet"}
             </Badge>
             <div className="h-8 rounded-md border border-border bg-card px-2 [&_button]:h-6 [&_button]:rounded-sm [&_button]:text-xs">
               <ConnectButton />
@@ -208,7 +210,7 @@ function TerminalExperience() {
                   className="min-h-[132px] resize-none border-border bg-background/70 text-base leading-7"
                   value={intent}
                   onChange={(event) => setIntent(event.target.value)}
-                  placeholder="Buy 20 USDC of SUI on DeepBook if slippage stays under 0.5%"
+                  placeholder="Buy 10 DUSDC BTC UP near 62500 on the next active Predict oracle"
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
                   {chips.map((chip, index) => (
@@ -230,7 +232,7 @@ function TerminalExperience() {
 
           <section className="market-column flex min-w-0 flex-col gap-3">
             <MarketCard compiled={compiled} />
-            <DepthCard compiled={compiled} />
+            <VaultCard compiled={compiled} />
           </section>
 
           <aside className="flex min-w-0 flex-col gap-3">
@@ -258,9 +260,9 @@ function TerminalExperience() {
 function CompilerCard({ compiled, busy }: { compiled: CompileApiResult | null; busy: boolean }) {
   const fallback = [
     "Parsing intent",
-    "Reading DeepBook liquidity",
-    "Compiling PTB",
+    "Reading DeepBook Predict state",
     "Running Guardian checks",
+    "Compiling Predict PTB preview",
     "Awaiting confirmation"
   ];
   const timeline = compiled?.timeline ?? fallback.map((label) => ({ label, state: "pending" as const }));
@@ -321,36 +323,49 @@ function PtbCard({ compiled }: { compiled: CompileApiResult | null }) {
             {compiled?.ptb?.digestPreview ?? "not compiled"}
           </span>
         </MutedBox>
+        {compiled?.ptb?.requirements.length ? (
+          <div className="space-y-2">
+            {compiled.ptb.requirements.map((requirement) => (
+              <div key={requirement.label} className="grid grid-cols-[1fr_18px] items-start gap-2 rounded-md border border-border bg-background/60 p-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">{requirement.label}</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{requirement.detail}</p>
+                </div>
+                {requirement.satisfied ? <Check className="h-4 w-4 text-foreground" /> : <X className="h-4 w-4 text-destructive" />}
+              </div>
+            ))}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );
 }
 
 function MarketCard({ compiled }: { compiled: CompileApiResult | null }) {
-  const quote = compiled?.quote;
+  const market = compiled?.market;
 
   return (
     <Card className="glass-line">
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <CardTitle>Market</CardTitle>
-            <CardDescription>{quote?.pair ?? "SUI/USDC"}</CardDescription>
+            <CardTitle>Oracle</CardTitle>
+            <CardDescription>{market ? shortAddress(market.oracle.oracle_id) : "BTC Predict oracle"}</CardDescription>
           </div>
           <Badge variant="outline" className="border-border text-muted-foreground">
-            DeepBook V3
+            DeepBook Predict
           </Badge>
         </div>
       </CardHeader>
       <CardContent>
-        {!quote ? (
-          <MutedBox>{compiled?.intent.status === "ready" ? "Stablecoin path selected." : "Awaiting DeepBook quote."}</MutedBox>
+        {!market ? (
+          <MutedBox>{compiled?.intent.status === "ready" ? "Predict state unavailable." : "Awaiting Predict state."}</MutedBox>
         ) : (
           <div className="grid gap-3 sm:grid-cols-4">
-            <MarketMetric label="Mid" value={`$${quote.midPrice.toFixed(4)}`} />
-            <MarketMetric label="Bid" value={`$${quote.bestBid.toFixed(4)}`} />
-            <MarketMetric label="Ask" value={`$${quote.bestAsk.toFixed(4)}`} />
-            <MarketMetric label="Spread" value={`${quote.spreadBps} bps`} />
+            <MarketMetric label="Spot" value={formatUsd(market.metrics.spot)} />
+            <MarketMetric label="Forward" value={formatUsd(market.metrics.forward)} />
+            <MarketMetric label="Strike" value={formatUsd(market.metrics.selectedStrike)} />
+            <MarketMetric label="Oracle Age" value={formatAge(market.metrics.oracleAgeMs)} />
           </div>
         )}
       </CardContent>
@@ -358,21 +373,23 @@ function MarketCard({ compiled }: { compiled: CompileApiResult | null }) {
   );
 }
 
-function DepthCard({ compiled }: { compiled: CompileApiResult | null }) {
-  const quote = compiled?.quote;
+function VaultCard({ compiled }: { compiled: CompileApiResult | null }) {
+  const market = compiled?.market;
 
   return (
     <Card>
       <CardHeader className="pb-2">
-        <SectionHeading title="Book Depth" detail={quote ? `$${quote.visibleDepthUsd.toLocaleString()}` : "waiting"} />
+        <SectionHeading title="Vault Risk" detail={market ? `${(market.metrics.vaultUtilization * 100).toFixed(2)}% used` : "waiting"} />
       </CardHeader>
       <CardContent>
-        {!quote ? (
-          <MutedBox>No depth snapshot.</MutedBox>
+        {!market ? (
+          <MutedBox>No vault snapshot.</MutedBox>
         ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
-            <BookSide label="Bids" levels={quote.bids} />
-            <BookSide label="Asks" levels={quote.asks} ask />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <MarketMetric label="Available" value={`${market.metrics.availableLiquidityDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC`} />
+            <MarketMetric label="Notional" value={`${market.metrics.notionalDusdc.toLocaleString()} DUSDC`} />
+            <MarketMetric label="Max Payout Use" value={`${(market.metrics.maxPayoutUtilization * 100).toFixed(2)}%`} />
+            <MarketMetric label="Ask Bounds" value={market.metrics.askBoundsAvailable ? "available" : "fallback"} />
           </div>
         )}
       </CardContent>
@@ -417,7 +434,7 @@ function GuardianCard({
               <p className="text-sm text-foreground">{guardian?.blocked ? "Signing locked" : "Confirmation enabled"}</p>
             </div>
             <p className="text-sm leading-6 text-muted-foreground">
-              {guardian?.decision === "block" ? "Modify intent or refresh quote." : "Pre-sign checks are within policy."}
+              {guardian?.decision === "block" ? "Modify intent or refresh Predict state." : "Pre-sign checks are within policy."}
             </p>
           </div>
         </div>
@@ -566,38 +583,6 @@ function MarketMetric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BookSide({
-  label,
-  levels,
-  ask = false
-}: {
-  label: string;
-  levels: Array<{ price: number; size: number; total: number }>;
-  ask?: boolean;
-}) {
-  const max = Math.max(...levels.map((level) => level.total));
-
-  return (
-    <div className="rounded-md border border-border bg-background/60 p-3">
-      <div className="mb-3 flex items-center justify-between">
-        <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</p>
-        <p className="text-xs text-muted-foreground">Size</p>
-      </div>
-      <div className="space-y-2">
-        {levels.map((level) => (
-          <div key={`${label}-${level.price}`} className="grid grid-cols-[72px_1fr_56px] items-center gap-2 text-xs">
-            <span className="text-foreground/85">{level.price.toFixed(4)}</span>
-            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-              <div className={cn("book-bar", ask && "ask")} style={{ width: `${Math.max(8, level.total / max * 100)}%` }} />
-            </div>
-            <span className="text-right text-muted-foreground">{level.size}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function FindingCard({
   finding,
   expanded,
@@ -640,4 +625,16 @@ function riskColor(level: RiskLevel) {
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function formatUsd(value: number | null) {
+  return value === null ? "--" : `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function formatAge(valueMs: PredictMarketSnapshot["metrics"]["oracleAgeMs"]) {
+  if (valueMs === null) {
+    return "--";
+  }
+
+  return valueMs < 1_000 ? `${valueMs}ms` : `${(valueMs / 1_000).toFixed(1)}s`;
 }
