@@ -28,6 +28,14 @@ export async function getPredictMarketSnapshot(intent: ParsedIntent): Promise<Pr
     return null;
   }
 
+  if (intent.oracleId) {
+    return getSnapshotForOracle(intent, intent.oracleId);
+  }
+
+  return getSnapshotForNextActiveOracle(intent);
+}
+
+async function getSnapshotForNextActiveOracle(intent: Extract<ParsedIntent, { status: "ready" }>) {
   const [rawStatus, rawOracles, rawVault] = await Promise.all([
     fetchPredict<PredictStatus>("/status"),
     fetchPredict<PredictOracleSummary[]>(`/predicts/${predictDeployment.predictId}/oracles`),
@@ -37,14 +45,39 @@ export async function getPredictMarketSnapshot(intent: ParsedIntent): Promise<Pr
   const oracles = rawOracles.map(normalizeOracle);
   const vault = normalizeVault(rawVault);
 
-  const oracle = selectOracle(oracles, intent, status.current_time_ms);
+  const oracle = selectOracle(oracles, status.current_time_ms);
   const oracleState = normalizeOracleState(await fetchPredict<OracleState>(`/oracles/${oracle.oracle_id}/state`));
 
+  return buildSnapshot(intent, status, vault, oracleState);
+}
+
+async function getSnapshotForOracle(intent: Extract<ParsedIntent, { status: "ready" }>, oracleId: string) {
+  // Direct oracle lookup avoids fetching the full oracle list when the user already provided an id.
+  const [rawStatus, rawVault, rawOracleState] = await Promise.all([
+    fetchPredict<PredictStatus>("/status"),
+    fetchPredict<VaultSummary>(`/predicts/${predictDeployment.predictId}/vault/summary`),
+    fetchPredict<OracleState>(`/oracles/${oracleId}/state`)
+  ]);
+
+  return buildSnapshot(
+    intent,
+    normalizeStatus(rawStatus),
+    normalizeVault(rawVault),
+    normalizeOracleState(rawOracleState)
+  );
+}
+
+function buildSnapshot(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  status: PredictStatus,
+  vault: VaultSummary,
+  oracleState: OracleState
+): PredictMarketSnapshot {
   return {
     source: "deepbook_predict",
     deployment: predictDeployment,
     status,
-    oracle,
+    oracle: oracleState.oracle,
     oracleState,
     vault,
     metrics: buildMetrics(intent, status, oracleState, vault),
@@ -135,20 +168,12 @@ async function fetchPredict<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-function selectOracle(oracles: PredictOracleSummary[], intent: Extract<ParsedIntent, { status: "ready" }>, nowMs: number) {
+function selectOracle(oracles: PredictOracleSummary[], nowMs: number) {
   const active = oracles
     .filter((oracle) => oracle.underlying_asset === "BTC")
     .filter((oracle) => oracle.status === "active")
     .filter((oracle) => oracle.expiry > nowMs)
     .sort((left, right) => left.expiry - right.expiry);
-
-  if (intent.oracleId) {
-    const requested = oracles.find((oracle) => oracle.oracle_id === intent.oracleId);
-
-    if (requested) {
-      return requested;
-    }
-  }
 
   if (active.length === 0) {
     throw new Error("No active BTC Predict oracle is available.");

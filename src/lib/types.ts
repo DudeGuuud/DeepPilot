@@ -193,7 +193,6 @@ export interface SponsorPolicy {
   allowedMoveCalls: string[];
   maxGasBudget: number;
   maxTradeSizeDusdc: number;
-  maxDailySponsoredTxPerWallet: number;
 }
 
 export interface SponsorDecision {

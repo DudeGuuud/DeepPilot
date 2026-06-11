@@ -69,6 +69,11 @@ export function parseIntent(input: string): ParsedIntent {
     return needsClarification(raw, ["range"], "Range positions need lower and upper BTC strikes.");
   }
 
+  // Redeem is tied to a settled oracle/position; guessing the next active oracle would be unsafe.
+  if (action === "predict_redeem" && !oracleId) {
+    return needsClarification(raw, ["oracle"], "Redeem needs the settled oracle id or a manager-specific position lookup.");
+  }
+
   return {
     status: "ready",
     action,

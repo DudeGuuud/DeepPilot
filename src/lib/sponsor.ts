@@ -1,3 +1,4 @@
+import { auditLogPackageId, sponsorLimits } from "./execution-config";
 import { predictDeployment } from "./predict";
 import type {
   GasMode,
@@ -10,7 +11,7 @@ import type {
 } from "./types";
 
 export const sponsorPolicy: SponsorPolicy = {
-  allowedPackages: [predictDeployment.packageId, "deep_pilot_log", "0x2"],
+  allowedPackages: [predictDeployment.packageId, auditLogPackageId, "0x2"],
   allowedMoveCalls: [
     "market_key::up",
     "market_key::down",
@@ -18,12 +19,11 @@ export const sponsorPolicy: SponsorPolicy = {
     "predict::mint",
     "predict::mint_range",
     "predict::redeem_permissionless",
-    "deep_pilot_log::log::record_intent",
+    "log::record_intent",
     "coin::transfer"
   ],
-  maxGasBudget: 20_000_000,
-  maxTradeSizeDusdc: 1_000,
-  maxDailySponsoredTxPerWallet: 20
+  maxGasBudget: sponsorLimits.maxGasBudget,
+  maxTradeSizeDusdc: sponsorLimits.maxTradeSizeDusdc
 };
 
 const sponsorPlanCheckLabels = new Set([

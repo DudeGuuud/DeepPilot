@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { auditLogPackageId, sponsorLimits } from "@/src/lib/execution-config";
 import { onchainAuditEnabled, predictDeployment } from "@/src/lib/predict-config";
 
 export function GET() {
@@ -9,8 +10,10 @@ export function GET() {
       network: predictDeployment.network,
       serverUrl: predictDeployment.serverUrl,
       predictId: predictDeployment.predictId,
-      onchainAuditEnabled
+      onchainAuditEnabled,
+      auditLogPackageId
     },
+    sponsor: sponsorLimits,
     stack: {
       next: "16.2.9",
       react: "19.2.7",

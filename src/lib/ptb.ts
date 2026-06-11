@@ -1,10 +1,7 @@
+import { auditLogPackageId, previewAccounts } from "./execution-config";
 import { predictDeployment, toDusdcBaseUnits, toPredictPrice } from "./predict";
 import { onchainAuditEnabled } from "./predict-config";
 import type { GuardianResult, ParsedIntent, PredictMarketSnapshot, PtbCommandPreview, PtbPlan, SponsorDecision } from "./types";
-
-const DEMO_SENDER = "0x0000000000000000000000000000000000000000000000000000000000000a11";
-const DEMO_SPONSOR = "0x00000000000000000000000000000000000000000000000000000000000005aa";
-const DEMO_MANAGER = "0x00000000000000000000000000000000000000000000000000000000feed0001";
 
 export function buildPtbPlan(
   intent: ParsedIntent,
@@ -29,7 +26,7 @@ export function buildPtbPlan(
     predictObject: predictDeployment.predictId,
     quoteAssetType: predictDeployment.quoteAssetType,
     onchainAuditEnabled,
-    manager: DEMO_MANAGER,
+    manager: previewAccounts.manager,
     oracleId: market?.oracle.oracle_id ?? intent.oracleId ?? null,
     intent: {
       action: intent.action,
@@ -47,11 +44,11 @@ export function buildPtbPlan(
   };
 
   return {
-    sender: DEMO_SENDER,
-    sponsor: DEMO_SPONSOR,
+    sender: previewAccounts.sender,
+    sponsor: previewAccounts.sponsor,
     gasBudget: 12_000_000,
     // Sponsored Predict and gasless transfer previews use the sponsor as gas owner.
-    gasOwner: gas.mode === "user_pays_gas" ? DEMO_SENDER : DEMO_SPONSOR,
+    gasOwner: gas.mode === "user_pays_gas" ? previewAccounts.sender : previewAccounts.sponsor,
     transactionKind: "ProgrammableTransaction",
     commands,
     requirements,
@@ -130,7 +127,7 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
     commands.push({
       index: commands.length + 1,
       command: "Record market snapshot hash and Guardian decision",
-      target: "deep_pilot_log::log::record_intent",
+      target: `${auditLogPackageId}::log::record_intent`,
       riskGate: "receipt"
     });
   }
@@ -157,7 +154,7 @@ function binaryKeyCommand(intent: Extract<ParsedIntent, { status: "ready" }>, ma
 function predictInputs(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
   return {
     predictObject: predictDeployment.predictId,
-    managerObject: DEMO_MANAGER,
+    managerObject: previewAccounts.manager,
     oracleObject: market?.oracle.oracle_id ?? intent.oracleId ?? null,
     quoteType: predictDeployment.quoteAssetType,
     quantityBaseUnits: quantityBaseUnits(intent),

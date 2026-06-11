@@ -53,10 +53,20 @@ Use normal server-side env names for DeepBook Predict deployment IDs and package
 - `PREDICT_PLP_COIN_TYPE`
 - `PREDICT_SOURCE_BRANCH`
 - `PREDICT_ENABLE_ONCHAIN_LOG`
+- `PREDICT_PREVIEW_SENDER`
+- `PREDICT_PREVIEW_SPONSOR`
+- `PREDICT_PREVIEW_MANAGER`
+- `DEEP_PILOT_LOG_PACKAGE_ID`
+- `SPONSOR_MAX_GAS_BUDGET`
+- `SPONSOR_MAX_TRADE_SIZE_DUSDC`
 
 Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` stays server-side unless you manually send it to the client.
 
 `PREDICT_ENABLE_ONCHAIN_LOG=false` is the default gas-optimized mode. Set it to `true` only for demos that need an extra on-chain audit event.
+
+## Request Strategy
+
+`/api/compile` batches independent Predict reads with `Promise.all`. A free-form "next active oracle" intent needs `/status`, `/oracles`, `/vault/summary`, then one selected `/oracles/:id/state` read. If the intent already includes an oracle id, DeepPilot skips the full oracle list and reads `/status`, `/vault/summary`, and `/oracles/:id/state` in parallel.
 
 ## Important Files
 

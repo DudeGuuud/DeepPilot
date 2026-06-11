@@ -323,7 +323,9 @@ DeepPilot is the missing operating layer for DeepBook Predict:
 | Risk | Mitigation |
 | --- | --- |
 | API/indexer lag | `/status` guard, max lag threshold, retry and visible stale state |
+| N+1 Predict requests | Batch independent reads; skip full oracle-list request when an oracle id is already provided |
 | Testnet IDs change | Config file/env vars, show deployment source branch |
+| Demo account drift | Configure preview sender, sponsor, manager and sponsor limits through server-side env vars |
 | DUSDC unavailable | Pre-funded demo wallet, token request early, quote-only fallback |
 | `ask-bounds` null | Fallback to lifecycle + vault utilization + price freshness |
 | No trade history | Do not use `trades` as core; treat as optional historical panel |
@@ -331,7 +333,7 @@ DeepPilot is the missing operating layer for DeepBook Predict:
 | AI hallucination | Strict schema, zod validation, no code generation |
 | Sponsored tx object conflict | Dedicated sponsor gas pool, rebuild on stale object error |
 | Sponsor signs arbitrary PTB | Validate PTB kind, gas budget and every Move target against `src/lib/sponsor.ts` allowlist |
-| Extra gas from audit logging | Default `PREDICT_ENABLE_ONCHAIN_LOG=false`; add the log Move call only for explicit audit demos |
+| Extra gas from audit logging | Default `PREDICT_ENABLE_ONCHAIN_LOG=false`; add the log Move call only for explicit audit demos with configured `DEEP_PILOT_LOG_PACKAGE_ID` |
 | Vault strategy simulation missing | Do not claim vault strategy in MVP |
 | Mainnet migration | Build with deployment config and final checklist |
 
