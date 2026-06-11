@@ -28,6 +28,7 @@ bun run typecheck
 bun run lint
 bun run build
 bun run predict:smoke
+bun run move:build
 bun run dev
 bun run sui:testnet-key
 bun run sui:mock-sign
@@ -67,6 +68,7 @@ Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` 
 - `src/lib/intent.ts` - deterministic Predict intent parser
 - `src/lib/guardian.ts` - pre-sign risk policy
 - `src/lib/ptb.ts` - auditable Predict PTB preview
+- `src/lib/sponsor.ts` - sponsor gas policy, Move target allowlist, gas budget guard
 - `components/deep-pilot-terminal.tsx` - client UI
 - `final_proposal.md` - final track proposal and risk review
 - `docs/archive/` - original research drafts kept for traceability

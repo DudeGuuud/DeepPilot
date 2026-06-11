@@ -3,7 +3,7 @@ import { runGuardian } from "./guardian";
 import { parseIntent } from "./intent";
 import { getPredictMarketSnapshot } from "./predict";
 import { buildPtbPlan } from "./ptb";
-import { decideGasMode } from "./sponsor";
+import { decideGasMode, validateSponsorPlan } from "./sponsor";
 
 export async function compileIntent(input: string): Promise<CompileResult> {
   const intent = parseIntent(input);
@@ -19,8 +19,9 @@ export async function compileIntent(input: string): Promise<CompileResult> {
   }
 
   const guardian = marketError ? unavailableGuardian(marketError) : runGuardian(intent, market);
-  const gas = decideGasMode(intent, guardian, market);
-  const ptb = buildPtbPlan(intent, market, guardian, gas);
+  const gasPreview = decideGasMode(intent, guardian, market);
+  const ptb = buildPtbPlan(intent, market, guardian, gasPreview);
+  const gas = validateSponsorPlan(gasPreview, ptb);
 
   return {
     intent,

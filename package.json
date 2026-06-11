@@ -11,6 +11,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "predict:smoke": "bun run scripts/verify-predict.ts",
+    "move:build": "sui move build --path move --build-env testnet",
     "sui:testnet-key": "bun run scripts/generate-testnet-key.ts",
     "sui:mock-sign": "bun run scripts/mock-sign-transaction.ts"
   },

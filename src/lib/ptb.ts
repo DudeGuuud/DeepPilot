@@ -46,7 +46,7 @@ export function buildPtbPlan(
     sender: DEMO_SENDER,
     sponsor: DEMO_SPONSOR,
     gasBudget: 12_000_000,
-    gasOwner: gas.mode === "sponsored" ? DEMO_SPONSOR : DEMO_SENDER,
+    gasOwner: gas.mode === "user_pays_gas" ? DEMO_SENDER : DEMO_SPONSOR,
     transactionKind: "ProgrammableTransaction",
     commands,
     requirements,

@@ -1,9 +1,20 @@
 import { predictDeployment } from "./predict";
-import type { GasMode, GuardianResult, ParsedIntent, PredictMarketSnapshot, SponsorDecision, SponsorPolicy } from "./types";
+import type {
+  GasMode,
+  GuardianResult,
+  ParsedIntent,
+  PredictMarketSnapshot,
+  PtbPlan,
+  SponsorDecision,
+  SponsorPolicy
+} from "./types";
 
 export const sponsorPolicy: SponsorPolicy = {
-  allowedPackages: [predictDeployment.packageId, "deep_pilot_log"],
+  allowedPackages: [predictDeployment.packageId, "deep_pilot_log", "0x2"],
   allowedMoveCalls: [
+    "market_key::up",
+    "market_key::down",
+    "range_key::new",
     "predict::mint",
     "predict::mint_range",
     "predict::redeem_permissionless",
@@ -14,6 +25,13 @@ export const sponsorPolicy: SponsorPolicy = {
   maxTradeSizeDusdc: 1_000,
   maxDailySponsoredTxPerWallet: 20
 };
+
+const sponsorPlanCheckLabels = new Set([
+  "PTB preview exists",
+  "programmable transaction kind",
+  "gas budget within sponsor cap",
+  "all Move targets allowlisted"
+]);
 
 export function decideGasMode(
   intent: ParsedIntent,
@@ -43,6 +61,44 @@ export function decideGasMode(
     ["trade size within demo cap", tradeSize <= sponsorPolicy.maxTradeSizeDusdc],
     ["guardian not blocked", !guardian.blocked]
   ]);
+}
+
+export function validateSponsorPlan(gas: SponsorDecision, ptb: PtbPlan | null): SponsorDecision {
+  const checks: Array<[string, boolean]> = [
+    ["PTB preview exists", Boolean(ptb)],
+    ["programmable transaction kind", ptb?.transactionKind === "ProgrammableTransaction"],
+    ["gas budget within sponsor cap", Boolean(ptb && ptb.gasBudget <= sponsorPolicy.maxGasBudget)],
+    ["all Move targets allowlisted", Boolean(ptb && ptb.commands.every((command) => isAllowedTarget(command.target)))]
+  ];
+  const passed = checks.every(([, checkPassed]) => checkPassed);
+
+  return {
+    ...gas,
+    approved: gas.approved && passed,
+    checks: [
+      ...gas.checks.filter((check) => !sponsorPlanCheckLabels.has(check.label)),
+      ...checks.map(([label, checkPassed]) => ({
+        label,
+        passed: checkPassed
+      }))
+    ]
+  };
+}
+
+function isAllowedTarget(target: string) {
+  const [packageId, moduleName, functionName, extra] = target.split("::");
+
+  if (!packageId || !moduleName || !functionName || extra) {
+    return false;
+  }
+
+  const moveCall = `${moduleName}::${functionName}`;
+  const deepPilotMoveCall = `${packageId}::${moduleName}::${functionName}`;
+
+  return (
+    sponsorPolicy.allowedPackages.includes(packageId) &&
+    (sponsorPolicy.allowedMoveCalls.includes(moveCall) || sponsorPolicy.allowedMoveCalls.includes(deepPilotMoveCall))
+  );
 }
 
 function decision(mode: GasMode, approved: boolean, label: string, checks: Array<[string, boolean]>): SponsorDecision {

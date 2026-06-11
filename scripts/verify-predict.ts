@@ -3,6 +3,9 @@ import { predictDeployment } from "../src/lib/predict";
 
 const intent = "Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle";
 const result = await compileIntent(intent);
+const transfer = await compileIntent(
+  "Transfer 1 DUSDC to 0x0000000000000000000000000000000000000000000000000000000000000b0b"
+);
 
 assert(result.intent.status === "ready", "intent should parse");
 assert(result.market?.source === "deepbook_predict", "market snapshot should come from DeepBook Predict");
@@ -11,10 +14,21 @@ assert(result.market.oracle.status === "active", "selected oracle should be acti
 assert(result.market.metrics.spot !== null, "spot should be available");
 assert(result.guardian.decision !== "block", "Guardian should not block the smoke intent");
 assert(Boolean(result.ptb), "PTB preview should be built");
+assert(result.gas.approved, "sponsor policy should approve the smoke PTB preview");
+assert(result.gas.checks.every((check) => check.passed), "all sponsor policy checks should pass");
 assert(
   result.ptb?.commands.some((command) => command.target === `${predictDeployment.packageId}::predict::mint`),
   "PTB preview should target predict::mint"
 );
+assert(
+  !result.ptb?.commands.some((command) => command.target === "deep_pilot_log::log::record_intent"),
+  "default gas-optimized PTB should not add the audit Move call"
+);
+assert(transfer.intent.status === "ready", "transfer intent should parse");
+assert(Boolean(transfer.ptb), "transfer PTB should be built");
+assert(transfer.ptb?.commands[0]?.target === "0x2::coin::transfer", "transfer PTB should use coin::transfer");
+assert(transfer.gas.approved, "transfer sponsor policy should approve allowlisted coin transfer");
+assert(transfer.ptb.gasOwner === transfer.ptb.sponsor, "gasless transfer should use sponsor as gas owner");
 
 console.log(
   JSON.stringify(
@@ -24,6 +38,7 @@ console.log(
       spot: result.market.metrics.spot,
       oracleAgeMs: result.market.metrics.oracleAgeMs,
       guardian: result.guardian.decision,
+      sponsor: result.gas.approved,
       digestPreview: result.ptb?.digestPreview
     },
     null,

@@ -222,6 +222,7 @@ Selected sample oracle:
 3. Sponsor Guard
    - Sponsor only whitelisted Predict calls.
    - Reject arbitrary package targets.
+   - Re-check every PTB command target, transaction kind and gas budget at the sponsor API boundary.
    - Show sponsor gas mode separately from normal wallet mode.
 
 ### Explicitly defer
@@ -328,6 +329,7 @@ DeepPilot is the missing operating layer for DeepBook Predict:
 | Incorrect mid/spread claim | Rename fields to `spot/forward`, `pricing proxy`, `vault liquidity proxy` |
 | AI hallucination | Strict schema, zod validation, no code generation |
 | Sponsored tx object conflict | Dedicated sponsor gas pool, rebuild on stale object error |
+| Sponsor signs arbitrary PTB | Validate PTB kind, gas budget and every Move target against `src/lib/sponsor.ts` allowlist |
 | Extra gas from audit logging | Default `PREDICT_ENABLE_ONCHAIN_LOG=false`; add the log Move call only for explicit audit demos |
 | Vault strategy simulation missing | Do not claim vault strategy in MVP |
 | Mainnet migration | Build with deployment config and final checklist |
