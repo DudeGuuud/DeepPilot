@@ -145,7 +145,8 @@ export interface GuardianFinding {
     | "MISSING_ASK_BOUNDS"
     | "SIZE_OVER_LIQUIDITY"
     | "DUSDC_REQUIRED"
-    | "UNSUPPORTED_INTENT";
+    | "UNSUPPORTED_INTENT"
+    | "CONFIG_ERROR";
   title: string;
   explanation: string;
 }

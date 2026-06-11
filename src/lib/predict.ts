@@ -73,6 +73,8 @@ function buildSnapshot(
   vault: VaultSummary,
   oracleState: OracleState
 ): PredictMarketSnapshot {
+  assertPredictConsistency(vault, oracleState);
+
   return {
     source: "deepbook_predict",
     deployment: predictDeployment,
@@ -83,6 +85,20 @@ function buildSnapshot(
     metrics: buildMetrics(intent, status, oracleState, vault),
     fetchedAt: new Date().toISOString()
   };
+}
+
+function assertPredictConsistency(vault: VaultSummary, oracleState: OracleState) {
+  if (vault.predict_id !== predictDeployment.predictId) {
+    throw new Error("Predict vault summary does not match the configured Predict object.");
+  }
+
+  if (oracleState.oracle.predict_id !== predictDeployment.predictId) {
+    throw new Error("Oracle state does not belong to the configured Predict object.");
+  }
+
+  if (oracleState.oracle.underlying_asset !== "BTC") {
+    throw new Error(`Unsupported Predict underlying asset: ${oracleState.oracle.underlying_asset}.`);
+  }
 }
 
 function normalizeStatus(status: PredictStatus): PredictStatus {

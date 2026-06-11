@@ -123,6 +123,7 @@ function findingWeight(type: GuardianFinding["type"]) {
     case "INCOMPLETE_INTENT":
     case "API_UNAVAILABLE":
     case "UNSUPPORTED_INTENT":
+    case "CONFIG_ERROR":
       return 100;
     case "ORACLE_STALE":
     case "INDEXER_LAG":

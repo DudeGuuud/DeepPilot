@@ -1,4 +1,4 @@
-import { auditLogPackageId, previewAccounts } from "./execution-config";
+import { auditLogPackageId, auditLogPackageIsPublished, previewAccounts } from "./execution-config";
 import { predictDeployment, toDusdcBaseUnits, toPredictPrice } from "./predict";
 import { onchainAuditEnabled } from "./predict-config";
 import type { GuardianResult, ParsedIntent, PredictMarketSnapshot, PtbCommandPreview, PtbPlan, SponsorDecision } from "./types";
@@ -124,6 +124,10 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
   }
 
   if (onchainAuditEnabled) {
+    if (!auditLogPackageIsPublished) {
+      throw new Error("DEEP_PILOT_LOG_PACKAGE_ID must be a published 0x package id when on-chain audit logging is enabled.");
+    }
+
     commands.push({
       index: commands.length + 1,
       command: "Record market snapshot hash and Guardian decision",

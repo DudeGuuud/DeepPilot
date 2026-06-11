@@ -1,4 +1,4 @@
-import type { CompileResult, GuardianResult } from "./types";
+import type { CompileResult, GuardianResult, PtbPlan } from "./types";
 import { runGuardian } from "./guardian";
 import { parseIntent } from "./intent";
 import { getPredictMarketSnapshot } from "./predict";
@@ -18,9 +18,19 @@ export async function compileIntent(input: string): Promise<CompileResult> {
     }
   }
 
-  const guardian = marketError ? unavailableGuardian(marketError) : runGuardian(intent, market);
-  const gasPreview = decideGasMode(intent, guardian, market);
-  const ptb = buildPtbPlan(intent, market, guardian, gasPreview);
+  let guardian = marketError ? unavailableGuardian(marketError) : runGuardian(intent, market);
+  let gasPreview = decideGasMode(intent, guardian, market);
+  let ptb: PtbPlan | null = null;
+  let ptbError: Error | null = null;
+
+  try {
+    ptb = buildPtbPlan(intent, market, guardian, gasPreview);
+  } catch (error) {
+    ptbError = error instanceof Error ? error : new Error("PTB compilation failed.");
+    guardian = configGuardian(ptbError);
+    gasPreview = decideGasMode(intent, guardian, market);
+  }
+
   const gas = validateSponsorPlan(gasPreview, ptb);
   // Quote-only still reads Predict state and runs Guardian, but must never advance to signing.
   const quoteOnly = intent.status === "ready" && intent.action === "predict_quote_only";
@@ -46,7 +56,7 @@ export async function compileIntent(input: string): Promise<CompileResult> {
       },
       {
         label: quoteOnly ? "Skipping PTB for quote-only intent" : "Compiling Predict PTB preview",
-        state: quoteOnly || ptb ? "complete" : guardian.blocked ? "blocked" : "pending"
+        state: quoteOnly || ptb ? "complete" : guardian.blocked || ptbError ? "blocked" : "pending"
       },
       {
         label: quoteOnly ? "Quote-only result" : "Awaiting wallet confirmation",
@@ -70,5 +80,22 @@ function unavailableGuardian(error: Error): GuardianResult {
       }
     ],
     summary: "Guardian blocks signing because live Predict state could not be verified."
+  };
+}
+
+function configGuardian(error: Error): GuardianResult {
+  return {
+    score: 100,
+    level: "blocked",
+    blocked: true,
+    decision: "block",
+    findings: [
+      {
+        type: "CONFIG_ERROR",
+        title: "PTB configuration error",
+        explanation: error.message
+      }
+    ],
+    summary: "Guardian blocks signing because PTB configuration is invalid."
   };
 }

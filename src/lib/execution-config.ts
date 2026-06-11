@@ -16,6 +16,7 @@ export const sponsorLimits = {
 };
 
 export const auditLogPackageId = readEnv("DEEP_PILOT_LOG_PACKAGE_ID", DEFAULT_AUDIT_LOG_PACKAGE);
+export const auditLogPackageIsPublished = SUI_ID_PATTERN.test(auditLogPackageId);
 
 // These values are server-only so Vercel can swap demo accounts without shipping them to the browser bundle.
 function readEnv(name: string, fallback: string) {

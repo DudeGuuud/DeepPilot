@@ -323,7 +323,7 @@ DeepPilot is the missing operating layer for DeepBook Predict:
 | Risk | Mitigation |
 | --- | --- |
 | API/indexer lag | `/status` guard, max lag threshold, retry and visible stale state |
-| N+1 Predict requests | Batch independent reads; skip full oracle-list request when an oracle id is already provided |
+| N+1 Predict requests | Batch independent reads; skip full oracle-list request when an oracle id is already provided; still validate oracle/vault predict id consistency |
 | Testnet IDs change | Config file/env vars, show deployment source branch |
 | Demo account drift | Configure preview sender, sponsor, manager and sponsor limits through server-side env vars |
 | DUSDC unavailable | Pre-funded demo wallet, token request early, quote-only fallback |

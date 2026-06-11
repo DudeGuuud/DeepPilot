@@ -36,6 +36,7 @@ assert(transfer.ptb.gasOwner === transfer.ptb.sponsor, "gasless transfer should 
 assert(quoteOnly.intent.status === "ready", "quote-only intent should parse");
 assert(quoteOnly.intent.action === "predict_quote_only", "quote-only intent should stay quote-only");
 assert(quoteOnly.market?.oracle.oracle_id === result.market.oracle.oracle_id, "explicit oracle lookup should preserve oracle id");
+assert(quoteOnly.market?.oracle.predict_id === predictDeployment.predictId, "explicit oracle lookup should stay within configured Predict object");
 assert(!quoteOnly.ptb, "quote-only intent should not build a PTB");
 assert(!quoteOnly.gas.approved, "quote-only intent should not be sponsor approved");
 assert(incompleteRedeem.intent.status === "needs_clarification", "redeem without oracle id should ask for clarification");
