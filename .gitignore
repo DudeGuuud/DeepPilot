@@ -1,0 +1,13 @@
+node_modules
+.next
+out
+build
+bun.lockb
+.tmp
+.cache
+.bun-cache
+.deeppilot
+*.log
+*.tsbuildinfo
+.env*
+.DS_Store

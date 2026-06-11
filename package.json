@@ -1,0 +1,45 @@
+{
+  "name": "deeppilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "sui:devnet-key": "bun run scripts/generate-devnet-key.ts",
+    "sui:mock-sign": "bun run scripts/mock-sign-transaction.ts"
+  },
+  "dependencies": {
+    "@mysten/dapp-kit-core": "1.3.2",
+    "@mysten/dapp-kit-react": "2.0.3",
+    "@mysten/deepbook-v3": "1.4.1",
+    "@mysten/sui": "2.17.0",
+    "@radix-ui/react-slot": "1.2.5",
+    "@radix-ui/react-toast": "1.2.16",
+    "@tailwindcss/postcss": "4.3.0",
+    "@tanstack/react-query": "5.101.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "framer-motion": "12.40.0",
+    "lucide-react": "1.17.0",
+    "next": "16.2.9",
+    "postcss": "8.5.15",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "3.6.0",
+    "tailwindcss": "4.3.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "eslint": "10.4.1",
+    "eslint-config-next": "16.2.9",
+    "typescript": "6.0.3"
+  }
+}
