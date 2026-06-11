@@ -20,12 +20,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { cn } from "@/src/lib/utils";
 import type { MarketListItem } from "@/src/lib/types";
 
+const MARKET_PAGE_SIZE = 4;
+
 export function MarketsPage() {
   const [status, setStatus] = useState<MarketStatusFilter>("active");
   const [expiry, setExpiry] = useState<MarketExpiryFilter>("all");
   const [risk, setRisk] = useState<MarketRiskFilter>("all");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(6);
   const [selectedOracleId, setSelectedOracleId] = useState<string | null>(null);
   const { detail, error, loading, refresh, stale, ttlMs, updatedAt } = useMarketDiscovery({
     status,
@@ -33,7 +34,7 @@ export function MarketsPage() {
     expiry,
     risk,
     page,
-    pageSize,
+    pageSize: MARKET_PAGE_SIZE,
     selectedOracleId
   });
 
@@ -69,7 +70,7 @@ export function MarketsPage() {
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
         <section className="min-w-0 space-y-3">
           <Card>
-            <CardContent className="grid gap-3 pt-5 md:grid-cols-2 xl:grid-cols-5">
+            <CardContent className="grid gap-3 pt-5 md:grid-cols-4">
               <FilterSelect
                 label="Status"
                 value={status}
@@ -112,18 +113,6 @@ export function MarketsPage() {
                 <option value="high">high</option>
                 <option value="blocked">blocked</option>
                 <option value="unknown">unknown</option>
-              </FilterSelect>
-              <FilterSelect
-                label="Page size"
-                value={String(pageSize)}
-                onChange={(value) => {
-                  setPageSize(Number(value));
-                  resetPaging();
-                }}
-              >
-                <option value="6">6</option>
-                <option value="8">8</option>
-                <option value="12">12</option>
               </FilterSelect>
             </CardContent>
           </Card>

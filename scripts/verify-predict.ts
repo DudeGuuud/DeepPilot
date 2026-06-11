@@ -36,7 +36,7 @@ const quoteOnly = await compileIntent(`Quote 10 DUSDC BTC UP near 62500 using or
 const sellPreview = await compileIntent(`Sell or redeem my BTC Predict position using oracle ${market.oracle.oracle_id}`);
 const incompleteRedeem = await compileIntent("Redeem my BTC Predict position");
 const markets = await getPredictMarkets({ status: "active", asset: "BTC", selectedOracleId: market.oracle.oracle_id });
-const secondPageMarkets = await getPredictMarkets({ status: "active", asset: "BTC", page: 2, pageSize: 6 });
+const secondPageMarkets = await getPredictMarkets({ status: "active", asset: "BTC", page: 2, pageSize: 4 });
 const history = await getPredictOracleHistory(market.oracle.oracle_id);
 const emptyProfile = await getProfileSummary({ wallet: null, managerId: null });
 const invalidJson = await parseJsonBody(
@@ -66,7 +66,7 @@ assert(markets.markets.some((market) => market.status === "active"), "markets AP
 assert(markets.markets.length <= markets.pagination.pageSize, "markets API should return only one page");
 assert(markets.markets.every((market) => market.hasState), "visible market page should be state-prefetched");
 assert(markets.pagination.totalItems >= markets.markets.length, "markets pagination should include total item count");
-assert(secondPageMarkets.markets.length <= 6, "second market page should respect requested page size");
+assert(secondPageMarkets.markets.length <= 4, "second market page should respect requested page size");
 assert(secondPageMarkets.pagination.page >= 1, "second market page should return a normalized page number");
 assert(
   markets.markets.some((item) => item.oracleId === market.oracle.oracle_id && item.riskLevel !== "unknown"),
