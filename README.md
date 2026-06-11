@@ -20,6 +20,88 @@ This repository targets DeepBook Predict testnet. It does not pretend to expose 
 - vault liquidity, utilization, and max-payout utilization
 - ask-bounds when available, with an explicit fallback when the endpoint returns `null`
 
+## How It Works
+
+```mermaid
+flowchart TD
+  User["User / demo operator"] --> UI["Next.js UI\ncomponents/deep-pilot-terminal.tsx"]
+  UI --> Wallet["DApp Kit wallet provider\nsrc/lib/dapp-kit.ts"]
+  Wallet --> SuiGrpc["Sui gRPC fullnode\nNEXT_PUBLIC_SUI_*"]
+
+  UI --> CompileApi["POST /api/compile\napp/api/compile/route.ts"]
+  UI --> SponsorApi["POST /api/sponsor\napp/api/sponsor/route.ts"]
+  UI --> HealthApi["GET /api/health\napp/api/health/route.ts"]
+
+  CompileApi --> BodyGuard["parseJsonBody + zod\nsrc/lib/http.ts"]
+  SponsorApi --> BodyGuard
+  BodyGuard --> Compiler["compileIntent\nsrc/lib/compile.ts"]
+
+  Compiler --> Intent["parseIntent\nsrc/lib/intent.ts"]
+  Intent --> IntentGate{"Intent type"}
+  IntentGate -->|"stablecoin_transfer"| NoPredictRead["Skip Predict API reads"]
+  IntentGate -->|"quote / mint / range / redeem"| PredictRead["getPredictMarketSnapshot\nsrc/lib/predict.ts"]
+
+  PredictRead --> OracleMode{"Oracle id supplied?"}
+  OracleMode -->|"no"| BatchA["Promise.all\n/status\n/predicts/:id/oracles\n/predicts/:id/vault/summary"]
+  BatchA --> SelectOracle["Select next active BTC oracle"]
+  SelectOracle --> OracleStateA["GET /oracles/:oracle_id/state"]
+
+  OracleMode -->|"yes"| BatchB["Promise.all\n/status\n/predicts/:id/vault/summary\n/oracles/:oracle_id/state"]
+  BatchB --> Consistency["Validate oracle + vault\nmatch configured Predict object"]
+  OracleStateA --> Consistency
+
+  Consistency --> Snapshot["PredictMarketSnapshot\nstatus + oracle + SVI + vault + metrics"]
+  NoPredictRead --> Guardian["Guardian risk engine\nsrc/lib/guardian.ts"]
+  Snapshot --> Guardian
+
+  Guardian --> GasPreview["decideGasMode\nsrc/lib/sponsor.ts"]
+  GasPreview --> PTB["buildPtbPlan\nsrc/lib/ptb.ts"]
+  PTB --> PTBGate{"PTB result"}
+  PTBGate -->|"quote-only / blocked"| NoPTB["No PTB, no sponsor approval"]
+  PTBGate -->|"valid preview"| SponsorPolicy["validateSponsorPlan\nMove target allowlist + gas cap"]
+
+  SponsorPolicy --> CompileResponse["Compile response\nGuardian + gas checks + PTB preview"]
+  NoPTB --> CompileResponse
+  CompileResponse --> UI
+
+  SponsorApi --> Recompile["Recompile on server\nnever trust browser PTB"]
+  Recompile --> SponsorPolicy
+  SponsorPolicy --> SponsorReceipt["signed_preview receipt\nsubmitted=false"]
+  SponsorReceipt --> UI
+
+  PTB --> AuditGate{"PREDICT_ENABLE_ONCHAIN_LOG"}
+  AuditGate -->|"false"| OffchainAudit["Off-chain audit only\nsaves one Move call"]
+  AuditGate -->|"true"| AuditPackage["Require DEEP_PILOT_LOG_PACKAGE_ID\npublished 0x package id"]
+  AuditPackage --> MoveLog["Optional Move event\nmove/sources/deep_pilot_log.move"]
+
+  Env["Server env\nsrc/lib/predict-config.ts\nsrc/lib/execution-config.ts"] --> PredictRead
+  Env --> GasPreview
+  Env --> PTB
+  Env --> HealthApi
+
+  Smoke["bun run predict:smoke\nscripts/verify-predict.ts"] --> Compiler
+  MoveBuild["bun run move:build\nsui move build --path move"] --> MoveLog
+```
+
+Key boundaries:
+
+- `/api/compile` is the read and planning path. It returns a live Predict snapshot, Guardian result, sponsor-policy decision, and PTB preview.
+- `/api/sponsor` recompiles on the server before producing a preview receipt. It does not trust a PTB returned to the browser.
+- `quote-only` intents stop after market and Guardian review. They never build a mint PTB and never receive sponsor approval.
+- Real submission is intentionally not hidden behind the preview receipt. A submitted transaction still needs wallet-selected coin inputs, a funded Predict manager, and exact on-chain execution wiring.
+
+The frontend is a single cockpit rather than a generic chat app. `components/deep-pilot-terminal.tsx` owns the intent textarea, market cards, Guardian panel, PTB preview, gas policy checks, and preview receipt. It calls `/api/compile` when the user edits or runs an intent, and calls `/api/sponsor` only after a PTB exists and Guardian has not blocked it. Wallet state is browser-only through DApp Kit; the public RPC URLs use `NEXT_PUBLIC_*` because they are safe to ship to the client.
+
+The backend is deliberately split into small modules. `src/lib/intent.ts` parses a constrained Predict intent and refuses unsafe or incomplete inputs. `src/lib/predict.ts` is the only DeepBook Predict public API reader. `src/lib/guardian.ts` turns live market state into `allow`, `reduce`, or `block`. `src/lib/ptb.ts` builds an auditable PTB preview with exact Move targets, while `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and gas budget. `src/lib/compile.ts` is the orchestrator that wires these pieces together.
+
+Request flow is kept tight. A normal "next active oracle" trade needs three parallel Predict reads first, then one selected oracle-state read. If the user already supplies an oracle id, the app skips the full oracle-list read and performs the remaining three reads in parallel. After direct oracle lookup, the app still checks that the oracle and vault belong to the configured Predict object, so the optimization does not weaken protocol safety.
+
+Environment configuration is split by exposure. `NEXT_PUBLIC_*` values are only for wallet/network client config. Predict package ids, Predict object ids, preview accounts, sponsor limits, and audit-log package ids use normal server-side env names because they are read by API routes and server-side scripts. There is no `NEXT_PRIVATE_*` convention in Next.js; the rule is simply that anything without `NEXT_PUBLIC_` is not bundled into the browser unless the app sends it there.
+
+Gas usage is intentionally conservative. By default `PREDICT_ENABLE_ONCHAIN_LOG=false`, so PTB previews do not add the extra `deep_pilot_log` Move call. If on-chain audit is enabled, `DEEP_PILOT_LOG_PACKAGE_ID` must be a published `0x...` package id; otherwise compile returns a Guardian `CONFIG_ERROR` block instead of creating a misleading PTB.
+
+The current product boundary is also explicit: this app produces live-data PTB previews and sponsor-policy preview receipts, not submitted transactions. That keeps the demo honest until DUSDC funding, PredictManager creation/loading, wallet-selected coin inputs, and final on-chain Move call argument wiring are implemented.
+
 ## Commands
 
 ```bash
