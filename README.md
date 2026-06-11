@@ -31,7 +31,6 @@ bun run predict:smoke
 bun run move:build
 bun run dev
 bun run sui:testnet-key
-bun run sui:mock-sign
 ```
 
 ## Environment

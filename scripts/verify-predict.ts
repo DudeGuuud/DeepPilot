@@ -6,6 +6,7 @@ const result = await compileIntent(intent);
 const transfer = await compileIntent(
   "Transfer 1 DUSDC to 0x0000000000000000000000000000000000000000000000000000000000000b0b"
 );
+const quoteOnly = await compileIntent("Quote 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle");
 
 assert(result.intent.status === "ready", "intent should parse");
 assert(result.market?.source === "deepbook_predict", "market snapshot should come from DeepBook Predict");
@@ -29,6 +30,10 @@ assert(Boolean(transfer.ptb), "transfer PTB should be built");
 assert(transfer.ptb?.commands[0]?.target === "0x2::coin::transfer", "transfer PTB should use coin::transfer");
 assert(transfer.gas.approved, "transfer sponsor policy should approve allowlisted coin transfer");
 assert(transfer.ptb.gasOwner === transfer.ptb.sponsor, "gasless transfer should use sponsor as gas owner");
+assert(quoteOnly.intent.status === "ready", "quote-only intent should parse");
+assert(quoteOnly.intent.action === "predict_quote_only", "quote-only intent should stay quote-only");
+assert(!quoteOnly.ptb, "quote-only intent should not build a PTB");
+assert(!quoteOnly.gas.approved, "quote-only intent should not be sponsor approved");
 
 console.log(
   JSON.stringify(

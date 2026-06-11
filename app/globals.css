@@ -100,16 +100,6 @@ button:disabled {
     var(--card);
 }
 
-.book-bar {
-  height: 5px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(250, 250, 250, 0.72), rgba(161, 161, 170, 0.18));
-}
-
-.book-bar.ask {
-  background: linear-gradient(90deg, rgba(161, 161, 170, 0.2), rgba(250, 250, 250, 0.62));
-}
-
 .pulse-dot {
   position: relative;
 }
@@ -154,4 +144,3 @@ button:disabled {
     order: initial;
   }
 }
-

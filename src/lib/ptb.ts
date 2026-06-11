@@ -16,6 +16,10 @@ export function buildPtbPlan(
     return null;
   }
 
+  if (intent.action === "predict_quote_only") {
+    return null;
+  }
+
   const commands = buildCommands(intent, market);
   const requirements = buildRequirements(intent, market);
   const transactionData = {
@@ -46,6 +50,7 @@ export function buildPtbPlan(
     sender: DEMO_SENDER,
     sponsor: DEMO_SPONSOR,
     gasBudget: 12_000_000,
+    // Sponsored Predict and gasless transfer previews use the sponsor as gas owner.
     gasOwner: gas.mode === "user_pays_gas" ? DEMO_SENDER : DEMO_SPONSOR,
     transactionKind: "ProgrammableTransaction",
     commands,

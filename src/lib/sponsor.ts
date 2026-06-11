@@ -52,6 +52,13 @@ export function decideGasMode(
     ]);
   }
 
+  if (intent.action === "predict_quote_only") {
+    return decision("user_pays_gas", false, "Quote-only preview; no sponsor required", [
+      ["quote-only intent", true],
+      ["guardian not blocked", !guardian.blocked]
+    ]);
+  }
+
   const tradeSize = market?.metrics.notionalDusdc ?? Number(intent.amount);
   const sponsorApproved = !guardian.blocked && tradeSize <= sponsorPolicy.maxTradeSizeDusdc;
 
@@ -64,6 +71,7 @@ export function decideGasMode(
 }
 
 export function validateSponsorPlan(gas: SponsorDecision, ptb: PtbPlan | null): SponsorDecision {
+  // The sponsor boundary must validate the compiled PTB, not just the user's intent.
   const checks: Array<[string, boolean]> = [
     ["PTB preview exists", Boolean(ptb)],
     ["programmable transaction kind", ptb?.transactionKind === "ProgrammableTransaction"],

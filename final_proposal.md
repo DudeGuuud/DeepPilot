@@ -171,6 +171,7 @@ Selected sample oracle:
      - Buy vertical range.
      - Redeem settled binary/range position.
      - Quote-only preview.
+   - Quote-only must stop after market and Guardian review; it must not produce a mint PTB or sponsor approval.
    - Parser output must be typed JSON and never generate Move code directly.
 
 3. Guardian Risk Engine

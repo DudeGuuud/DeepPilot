@@ -22,6 +22,8 @@ export async function compileIntent(input: string): Promise<CompileResult> {
   const gasPreview = decideGasMode(intent, guardian, market);
   const ptb = buildPtbPlan(intent, market, guardian, gasPreview);
   const gas = validateSponsorPlan(gasPreview, ptb);
+  // Quote-only still reads Predict state and runs Guardian, but must never advance to signing.
+  const quoteOnly = intent.status === "ready" && intent.action === "predict_quote_only";
 
   return {
     intent,
@@ -43,12 +45,12 @@ export async function compileIntent(input: string): Promise<CompileResult> {
         state: guardian.blocked ? "blocked" : "complete"
       },
       {
-        label: "Compiling Predict PTB preview",
-        state: ptb ? "complete" : guardian.blocked ? "blocked" : "pending"
+        label: quoteOnly ? "Skipping PTB for quote-only intent" : "Compiling Predict PTB preview",
+        state: quoteOnly || ptb ? "complete" : guardian.blocked ? "blocked" : "pending"
       },
       {
-        label: "Awaiting wallet confirmation",
-        state: ptb ? "complete" : "pending"
+        label: quoteOnly ? "Quote-only result" : "Awaiting wallet confirmation",
+        state: quoteOnly || ptb ? "complete" : "pending"
       }
     ]
   };

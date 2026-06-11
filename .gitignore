@@ -2,6 +2,7 @@ node_modules
 .next
 out
 build
+move/build
 bun.lockb
 .tmp
 .cache
