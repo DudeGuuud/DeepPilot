@@ -545,6 +545,7 @@ function TerminalExperience() {
                       exit={{ opacity: 0, height: 0 }}
                       className="flex min-w-0 flex-col gap-3 overflow-hidden"
                     >
+                      <OutcomeQuoteCard compiled={compiled} busy={busy === "pilot"} />
                       <CompilerCard compiled={compiled} busy={busy === "pilot"} streamTimeline={streamTimeline} />
                       <GuardianCard
                         compiled={compiled}
@@ -758,18 +759,34 @@ function AuditToggle({
   compiled: CompileApiResult | null;
   onToggle: () => void;
 }) {
-  const detail = compiled?.guardian.decision ? compiled.guardian.decision.toUpperCase() : busy ? "checking" : "review";
+  const quote = compiled?.quote;
+  const quoteReady = quote?.status === "available";
+  const detail = quoteReady
+    ? "quote ready"
+    : quote?.status === "unavailable"
+      ? "quote unavailable"
+      : compiled?.guardian.decision
+        ? compiled.guardian.decision.toUpperCase()
+        : busy ? "checking" : "review";
   const firstCommand = compiled?.ptb?.commands[0] ?? null;
   const summaryRows = compiled
-    ? [
-        ["Guardian", compiled.guardian.decision.toUpperCase()],
-        ["PTB digest", compiled.ptb?.digestPreview ? shortAddress(compiled.ptb.digestPreview) : "not compiled"],
-        ["Move target", firstCommand?.target ? compactMiddle(firstCommand.target, 18) : "locked"]
-      ]
+    ? quoteReady
+      ? [
+          ["Outcome", `BTC ${quote.direction?.toUpperCase() ?? "--"}`],
+          ["Est. pay", `${formatDusdc(quote.estimatedCostDusdc)} DUSDC`],
+          ["Max payout", `${formatDusdc(quote.maxPayoutDusdc)} DUSDC`],
+          ["Return", formatSignedPercent(quote.returnPct)]
+        ]
+      : [
+          ["Guardian", compiled.guardian.decision.toUpperCase()],
+          ["Quote", quote?.status === "unavailable" ? "unavailable" : "not required"],
+          ["PTB digest", compiled.ptb?.digestPreview ? shortAddress(compiled.ptb.digestPreview) : "not compiled"],
+          ["Move target", firstCommand?.target ? compactMiddle(firstCommand.target, 18) : "locked"]
+        ]
     : [
         ["Guardian", busy ? "checking" : "waiting"],
-        ["PTB digest", "waiting"],
-        ["Move target", "waiting"]
+        ["Quote", busy ? "checking" : "waiting"],
+        ["PTB digest", "waiting"]
       ];
 
   return (
@@ -800,6 +817,88 @@ function AuditToggle({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function OutcomeQuoteCard({
+  compiled,
+  busy
+}: {
+  compiled: CompileApiResult | null;
+  busy: boolean;
+}) {
+  const quote = compiled?.quote;
+
+  return (
+    <Card className="glass-line overflow-hidden">
+      <CardHeader className="p-4 pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm">Outcome Quote</CardTitle>
+            </div>
+            <CardDescription className="text-xs">
+              {quote?.status === "available"
+                ? "Vault-backed DeepBook Predict estimate"
+                : busy ? "Requesting chain quote" : "Quote unavailable"}
+            </CardDescription>
+          </div>
+          <Badge variant="outline" className="h-7 border-border text-xs text-muted-foreground">
+            {quote?.status === "available" ? "live estimate" : quote?.status ?? "waiting"}
+          </Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 p-4 pt-0">
+        {!quote ? (
+          <QuoteSkeleton busy={busy} />
+        ) : quote.status !== "available" ? (
+          <MutedBox>{quote.warning ?? "DeepPilot could not verify mint cost and payout before signing."}</MutedBox>
+        ) : (
+          <>
+            <div className="rounded-md border border-border bg-background/55 p-3">
+              <div className="flex items-end justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Outcome</p>
+                  <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground">
+                    BTC {quote.direction?.toUpperCase()}
+                  </p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    Strike {formatUsd(quote.strike)} · {formatExpiry(quote.expiry)}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">Return if correct</p>
+                  <p className="mt-1 text-xl font-semibold text-foreground">{formatSignedPercent(quote.returnPct)}</p>
+                </div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <MarketMetric label="Est. Pay" value={`${formatDusdc(quote.estimatedCostDusdc)} DUSDC`} />
+              <MarketMetric label="Max Payout" value={`${formatDusdc(quote.maxPayoutDusdc)} DUSDC`} />
+              <MarketMetric label="Ask Price" value={formatUnitPrice(quote.askPrice)} />
+              <MarketMetric label="Bid Price" value={formatUnitPrice(quote.bidPrice)} />
+              <MarketMetric label="Quantity" value={formatDusdc(quote.quantityDusdc)} />
+              <MarketMetric label="Quote Expires" value={formatQuoteExpiry(quote.expiresAt)} />
+            </div>
+            <p className="rounded-md border border-border bg-background/40 p-3 text-xs leading-5 text-muted-foreground">
+              {quote.warning}
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function QuoteSkeleton({ busy }: { busy: boolean }) {
+  return (
+    <div className="rounded-md border border-border bg-background/55 p-3">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <CircleDashed className={cn("h-4 w-4", busy && "animate-spin")} />
+        <span>{busy ? "Quoting DeepBook payout..." : "Waiting for a binary Predict trade."}</span>
+      </div>
+    </div>
   );
 }
 
@@ -1258,11 +1357,22 @@ function tradeAssistantCopy(compiled: CompileApiResult) {
 
   const action = compiled.intent.action.replaceAll("_", " ");
   const digest = compiled.ptb?.digestPreview ?? "No PTB digest";
+  const quote = compiled.quote?.status === "available"
+    ? [
+        `Outcome: BTC ${compiled.quote.direction?.toUpperCase() ?? "--"}`,
+        `Estimated pay: ${formatDusdc(compiled.quote.estimatedCostDusdc)} DUSDC`,
+        `Max payout: ${formatDusdc(compiled.quote.maxPayoutDusdc)} DUSDC`,
+        `Return if correct: ${formatSignedPercent(compiled.quote.returnPct)}`
+      ]
+    : compiled.quote?.status === "unavailable"
+      ? [`Quote: unavailable (${compiled.quote.warning ?? "could not verify payout"})`]
+      : [];
 
   return [
     "Draft Predict trade is ready for review.",
     `Action: ${action}`,
     `Guardian: ${compiled.guardian.decision.toUpperCase()}`,
+    ...quote,
     `PTB digest: ${digest}`,
     "Use Review & Sign only after checking the Guardian result, Move target, objects, and amount."
   ].join("\n");
@@ -1425,6 +1535,41 @@ function compactSourceTitle(source: RagSource) {
 
 function formatUsd(value: number | null) {
   return value === null ? "--" : `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function formatDusdc(value: number | null) {
+  return value === null
+    ? "--"
+    : value.toLocaleString("en-US", {
+        minimumFractionDigits: value > 0 && value < 1 ? 4 : 2,
+        maximumFractionDigits: value > 0 && value < 1 ? 6 : 2
+      });
+}
+
+function formatUnitPrice(value: number | null) {
+  return value === null ? "--" : value.toLocaleString("en-US", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
+}
+
+function formatSignedPercent(value: number | null) {
+  if (value === null) {
+    return "--";
+  }
+
+  const sign = value > 0 ? "+" : "";
+
+  return `${sign}${value.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
+}
+
+function formatQuoteExpiry(value: string) {
+  const time = new Date(value).getTime();
+
+  if (!Number.isFinite(time)) {
+    return "--";
+  }
+
+  const seconds = Math.max(0, Math.round((time - Date.now()) / 1_000));
+
+  return `${seconds}s`;
 }
 
 function formatExpiry(valueMs: number | null) {

@@ -5,6 +5,7 @@ import type {
   GuardianResult,
   ParsedIntent,
   PredictMarketSnapshot,
+  PredictQuotePreview,
   PtbPlan,
   SponsorDecision,
   SponsorPolicy
@@ -37,7 +38,8 @@ const sponsorPlanCheckLabels = new Set([
 export function decideGasMode(
   intent: ParsedIntent,
   guardian: GuardianResult,
-  market: PredictMarketSnapshot | null
+  market: PredictMarketSnapshot | null,
+  quote: PredictQuotePreview | null = null
 ): SponsorDecision {
   if (intent.status !== "ready") {
     return decision("user_pays_gas", false, "Awaiting complete Predict intent", [
@@ -64,7 +66,9 @@ export function decideGasMode(
     ]);
   }
 
-  const tradeSize = market?.metrics.notionalDusdc ?? Number(intent.amount);
+  const tradeSize = quote?.status === "available" && quote.estimatedCostDusdc !== null
+    ? quote.estimatedCostDusdc
+    : market?.metrics.notionalDusdc ?? Number(intent.amount);
   const sponsorApproved = !guardian.blocked && amountWithinSponsorCap(tradeSize);
 
   return decision("sponsored", sponsorApproved, "Sponsored by DeepPilot", [
@@ -107,6 +111,12 @@ function commandAmountWithinSponsorCap(command: PtbPlan["commands"][number]) {
   const amountBaseUnits = command.inputs?.amountBaseUnits;
 
   if (typeof amountBaseUnits !== "number") {
+    const estimatedCostDusdc = command.inputs?.estimatedCostDusdc;
+
+    if (typeof estimatedCostDusdc === "number") {
+      return amountWithinSponsorCap(estimatedCostDusdc);
+    }
+
     const quoteBudgetDusdc = command.inputs?.quoteBudgetDusdc;
 
     return typeof quoteBudgetDusdc !== "number" || amountWithinSponsorCap(quoteBudgetDusdc);

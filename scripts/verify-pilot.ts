@@ -32,7 +32,18 @@ assert.equal(trade.mode, "trade", "explicit Predict order should route to trade 
 const compiled = await compileIntent("Bet 10 DUSDC on BTC DOWN tonight");
 assert.equal(compiled.intent.status, "ready", "trade fallback compiler should produce a typed intent");
 assert(compiled.guardian.decision, "trade compile should include Guardian review");
+const quote = compiled.quote;
+assert(quote?.status === "available", "trade compile should include an available Predict quote");
+assert(quote.quantityRaw, "trade quote should include executable quantity");
+assert(
+  typeof quote.estimatedCostDusdc === "number" && quote.estimatedCostDusdc <= 10,
+  "quote-based sizing should stay within the requested DUSDC budget"
+);
 assert(compiled.ptb, "trade compile should include PTB preview when live state allows it");
+assert(
+  compiled.ptb.commands.some((command) => command.inputs?.quantityRaw === quote.quantityRaw),
+  "PTB preview should use the verified quote quantity"
+);
 
 if (originalDeepSeekKey) {
   process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
@@ -44,6 +55,7 @@ console.log("pilot smoke ok", {
   chatMode: chat.mode,
   chatSources: context.sources.length,
   tradeMode: trade.mode,
+  quote: quote.status,
   guardian: compiled.guardian.decision,
   ptbDigest: compiled.ptb.digestPreview
 });

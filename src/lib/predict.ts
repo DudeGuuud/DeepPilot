@@ -1,3 +1,8 @@
+import { bcs } from "@mysten/sui/bcs";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { Transaction } from "@mysten/sui/transactions";
+
+import { clientGrpcUrls } from "./client-config";
 import { predictDeployment } from "./predict-config";
 import { runGuardian } from "./guardian";
 import { z } from "zod";
@@ -10,6 +15,7 @@ import type {
   PredictOracleHistory,
   PredictMarketSnapshot,
   PredictOracleSummary,
+  PredictQuotePreview,
   PredictSviEvent,
   PredictStatus,
   VaultSummary
@@ -18,6 +24,8 @@ import type {
 const PRICE_SCALE = 1_000_000_000;
 const DUSDC_SCALE = 1_000_000;
 const PREDICT_TIMEOUT_MS = 5_000;
+const QUOTE_EXPIRY_MS = 15_000;
+const QUOTE_PREVIEW_SENDER = "0x0000000000000000000000000000000000000000000000000000000000000a11";
 const DEFAULT_MARKET_PAGE_SIZE = 4;
 const MAX_MARKET_PAGE_SIZE = 12;
 const HISTORY_POINT_CAP = 240;
@@ -245,6 +253,31 @@ export async function getPredictMarketSnapshot(intent: ParsedIntent): Promise<Pr
   return getSnapshotForNextActiveOracle(intent);
 }
 
+export async function getPredictQuotePreview(
+  intent: ParsedIntent,
+  market: PredictMarketSnapshot | null
+): Promise<PredictQuotePreview | null> {
+  if (intent.status !== "ready" || intent.action !== "predict_binary_mint") {
+    return null;
+  }
+
+  if (!market || !intent.direction) {
+    return unavailableQuote(intent, market, "A live binary Predict market is required before quoting payout.");
+  }
+
+  try {
+    const quote = await quoteBinaryMint(intent, market);
+
+    return buildAvailableQuote(intent, market, quote);
+  } catch (error) {
+    return unavailableQuote(
+      intent,
+      market,
+      error instanceof Error ? error.message : "DeepBook Predict quote simulation failed."
+    );
+  }
+}
+
 async function getSnapshotForNextActiveOracle(intent: Extract<ParsedIntent, { status: "ready" }>) {
   const [rawStatus, rawOracles, rawVault] = await Promise.all([
     fetchPredict("/status", predictStatusSchema),
@@ -275,6 +308,253 @@ async function getSnapshotForOracle(intent: Extract<ParsedIntent, { status: "rea
     normalizeVault(rawVault),
     normalizeOracleState(rawOracleState)
   );
+}
+
+async function quoteBinaryMint(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot
+) {
+  const quoteBudgetRaw = intent.amountType === "quote" ? BigInt(toDusdcBaseUnits(Number(intent.amount))) : null;
+  const quantityRaw = intent.quantity
+    ? parseQuantityRaw(intent.quantity)
+    : await quantityFromBudget(intent, market, quoteBudgetRaw);
+
+  if (quantityRaw <= 0n) {
+    throw new Error("Predict quote resolved to zero quantity.");
+  }
+
+  let amounts = await simulateTradeAmounts(intent, market, quantityRaw);
+
+  if (quoteBudgetRaw !== null && amounts.mintCostRaw > quoteBudgetRaw) {
+    const adjustedQuantity = quantityRaw * quoteBudgetRaw / amounts.mintCostRaw;
+
+    if (adjustedQuantity <= 0n) {
+      throw new Error("DUSDC budget is too small for the current Predict ask.");
+    }
+
+    amounts = await simulateTradeAmounts(intent, market, adjustedQuantity);
+  }
+
+  if (quoteBudgetRaw !== null && amounts.mintCostRaw > quoteBudgetRaw) {
+    throw new Error("DeepBook quote exceeds the requested DUSDC budget after sizing.");
+  }
+
+  return amounts;
+}
+
+async function quantityFromBudget(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot,
+  quoteBudgetRaw: bigint | null
+) {
+  if (quoteBudgetRaw === null || quoteBudgetRaw <= 0n) {
+    throw new Error("A positive DUSDC budget is required for quote-based Predict sizing.");
+  }
+
+  const probe = await simulateTradeAmounts(intent, market, quoteBudgetRaw);
+
+  if (probe.mintCostRaw <= 0n) {
+    throw new Error("DeepBook Predict returned a zero-cost quote.");
+  }
+
+  return quoteBudgetRaw * quoteBudgetRaw / probe.mintCostRaw;
+}
+
+async function simulateTradeAmounts(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot,
+  quantityRaw: bigint
+) {
+  try {
+    return await simulateTradeAmountsOnce(intent, market, quantityRaw);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return simulateTradeAmountsOnce(intent, market, quantityRaw);
+  }
+}
+
+async function simulateTradeAmountsOnce(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot,
+  quantityRaw: bigint
+) {
+  const tx = new Transaction();
+  tx.setSender(QUOTE_PREVIEW_SENDER);
+  const oracleId = market.oracle.oracle_id;
+  const strike = market.metrics.selectedStrike ?? intent.strike;
+
+  if (!strike) {
+    throw new Error("Predict strike is required before quoting payout.");
+  }
+
+  const key = tx.moveCall({
+    target: `${predictDeployment.packageId}::market_key::${intent.direction === "down" ? "down" : "up"}`,
+    arguments: [
+      tx.pure.id(oracleId),
+      tx.pure.u64(market.oracle.expiry),
+      tx.pure.u64(BigInt(toPredictPrice(strike)))
+    ]
+  });
+
+  tx.moveCall({
+    target: `${predictDeployment.packageId}::predict::get_trade_amounts`,
+    arguments: [
+      tx.object(predictDeployment.predictId),
+      tx.object(oracleId),
+      key,
+      tx.pure.u64(quantityRaw),
+      tx.object("0x6")
+    ]
+  });
+
+  const result = await createQuoteClient().simulateTransaction({
+    transaction: tx,
+    checksEnabled: false,
+    include: {
+      commandResults: true,
+      effects: true
+    }
+  });
+
+  const status = (result.Transaction ?? result.FailedTransaction).status;
+
+  if (!status.success) {
+    throw new Error(formatExecutionError(status.error));
+  }
+
+  const returnValues = result.commandResults?.[1]?.returnValues;
+  const mintCost = returnValues?.[0]?.bcs;
+  const redeemPayout = returnValues?.[1]?.bcs;
+
+  if (!mintCost || !redeemPayout) {
+    throw new Error("DeepBook quote simulation did not return mint and redeem amounts.");
+  }
+
+  return {
+    quantityRaw,
+    mintCostRaw: parseU64(mintCost),
+    redeemPayoutRaw: parseU64(redeemPayout)
+  };
+}
+
+function buildAvailableQuote(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot,
+  quote: {
+    quantityRaw: bigint;
+    mintCostRaw: bigint;
+    redeemPayoutRaw: bigint;
+  }
+): PredictQuotePreview {
+  const quantityDusdc = rawDusdcToNumber(quote.quantityRaw);
+  const estimatedCostDusdc = rawDusdcToNumber(quote.mintCostRaw);
+  const redeemPayoutDusdc = rawDusdcToNumber(quote.redeemPayoutRaw);
+  const potentialProfitDusdc = quantityDusdc - estimatedCostDusdc;
+  const fetchedAt = new Date();
+
+  return {
+    status: "available",
+    source: "sui_simulate_predict_get_trade_amounts",
+    oracleId: market.oracle.oracle_id,
+    expiry: market.oracle.expiry,
+    direction: intent.direction ?? null,
+    strike: market.metrics.selectedStrike ?? intent.strike ?? null,
+    quoteBudgetDusdc: intent.amountType === "quote" ? Number(intent.amount) : null,
+    quantityRaw: quote.quantityRaw.toString(),
+    quantityDusdc,
+    estimatedCostDusdc,
+    askPrice: quantityDusdc > 0 ? estimatedCostDusdc / quantityDusdc : null,
+    bidPrice: quantityDusdc > 0 ? redeemPayoutDusdc / quantityDusdc : null,
+    maxPayoutDusdc: quantityDusdc,
+    potentialProfitDusdc,
+    returnPct: estimatedCostDusdc > 0 ? potentialProfitDusdc / estimatedCostDusdc * 100 : null,
+    fetchedAt: fetchedAt.toISOString(),
+    expiresAt: new Date(fetchedAt.getTime() + QUOTE_EXPIRY_MS).toISOString(),
+    warning: "DeepBook Predict quote is a current-state estimate. Final execution can change if oracle or vault state changes before signing."
+  };
+}
+
+function unavailableQuote(
+  intent: ParsedIntent,
+  market: PredictMarketSnapshot | null,
+  warning: string
+): PredictQuotePreview {
+  const fetchedAt = new Date();
+  const readyIntent = intent.status === "ready" ? intent : null;
+
+  return {
+    status: readyIntent?.action === "predict_binary_mint" ? "unavailable" : "unsupported",
+    source: "not_available",
+    oracleId: market?.oracle.oracle_id ?? readyIntent?.oracleId ?? null,
+    expiry: market?.oracle.expiry ?? null,
+    direction: readyIntent?.direction ?? null,
+    strike: market?.metrics.selectedStrike ?? readyIntent?.strike ?? null,
+    quoteBudgetDusdc: readyIntent?.amountType === "quote" ? Number(readyIntent.amount) : null,
+    quantityRaw: null,
+    quantityDusdc: null,
+    estimatedCostDusdc: null,
+    askPrice: null,
+    bidPrice: null,
+    maxPayoutDusdc: null,
+    potentialProfitDusdc: null,
+    returnPct: null,
+    fetchedAt: fetchedAt.toISOString(),
+    expiresAt: fetchedAt.toISOString(),
+    warning
+  };
+}
+
+function createQuoteClient() {
+  if (predictDeployment.network === "mainnet") {
+    throw new Error("DeepBook Predict quote preview is configured for testnet/devnet only.");
+  }
+
+  return new SuiGrpcClient({
+    network: predictDeployment.network,
+    baseUrl: clientGrpcUrls[predictDeployment.network]
+  });
+}
+
+function parseQuantityRaw(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed || Number(trimmed) <= 0) {
+    throw new Error("Predict quantity must be positive.");
+  }
+
+  if (/^\d+$/.test(trimmed) && BigInt(trimmed) >= BigInt(DUSDC_SCALE)) {
+    return BigInt(trimmed);
+  }
+
+  return BigInt(toDusdcBaseUnits(Number(trimmed)));
+}
+
+function parseU64(bytes: Uint8Array) {
+  return BigInt(bcs.U64.parse(bytes));
+}
+
+function formatExecutionError(error: unknown) {
+  if (!error) {
+    return "DeepBook quote simulation did not succeed.";
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  if (typeof error === "object" && "message" in error && typeof error.message === "string") {
+    return error.message;
+  }
+
+  return "DeepBook quote simulation did not succeed.";
+}
+
+function rawDusdcToNumber(value: bigint) {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error("Predict quote amount is too large to display safely.");
+  }
+
+  return Number(value) / DUSDC_SCALE;
 }
 
 function buildSnapshot(

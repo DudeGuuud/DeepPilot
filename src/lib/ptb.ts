@@ -8,6 +8,7 @@ import type {
   GuardianResult,
   ParsedIntent,
   PredictMarketSnapshot,
+  PredictQuotePreview,
   ProfileSummary,
   PtbCommandPreview,
   PtbPlan,
@@ -21,7 +22,8 @@ export function buildPtbPlan(
   market: PredictMarketSnapshot | null,
   guardian: GuardianResult,
   gas: SponsorDecision,
-  profile: ProfileSummary | null = null
+  profile: ProfileSummary | null = null,
+  quote: PredictQuotePreview | null = null
 ): PtbPlan | null {
   if (intent.status !== "ready" || guardian.blocked) {
     return null;
@@ -31,8 +33,8 @@ export function buildPtbPlan(
     return null;
   }
 
-  const commands = buildCommands(intent, market);
-  const sizing = buildSizing(intent);
+  const commands = buildCommands(intent, market, quote);
+  const sizing = buildSizing(intent, quote);
   const execution = buildExecutionReadiness(intent, market, profile, sizing);
   const requirements = buildRequirements(intent, market, execution, sizing);
   const keyTarget = intent.action === "predict_range_mint"
@@ -58,6 +60,16 @@ export function buildPtbPlan(
       target: intent.action === "predict_binary_mint" ? `${predictDeployment.packageId}::predict::mint` : null,
       quantityRaw: sizing.quantityRaw
     },
+    quote: quote && quote.status === "available"
+      ? {
+          source: quote.source,
+          estimatedCostDusdc: quote.estimatedCostDusdc,
+          maxPayoutDusdc: quote.maxPayoutDusdc,
+          askPrice: quote.askPrice,
+          returnPct: quote.returnPct,
+          expiresAt: quote.expiresAt
+        }
+      : null,
     intent: {
       action: intent.action,
       direction: intent.direction,
@@ -96,7 +108,11 @@ export function buildPtbPlan(
   };
 }
 
-function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
+function buildCommands(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot | null,
+  quote: PredictQuotePreview | null
+) {
   const commands: PtbCommandPreview[] = [];
   const oracle = market?.oracle;
 
@@ -123,7 +139,7 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
       command: `Redeem settled position for ${shortId(market?.oracle.oracle_id ?? intent.oracleId)}`,
       target: `${predictDeployment.packageId}::predict::redeem_permissionless`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market, null)
+      inputs: predictInputs(intent, market, null, quote)
     });
   } else if (intent.action === "predict_range_mint") {
     commands.push({
@@ -143,7 +159,7 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
       command: `Mint BTC range ${intent.lowerStrike}-${intent.upperStrike}`,
       target: `${predictDeployment.packageId}::predict::mint_range`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market, intent.quantity ?? null)
+      inputs: predictInputs(intent, market, intent.quantity ?? null, quote)
     });
   } else {
     commands.push(binaryKeyCommand(intent, market, 1));
@@ -152,7 +168,7 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
       command: `Mint BTC ${intent.direction ?? "up"} binary at ${market?.metrics.selectedStrike ?? intent.strike ?? "ATM"}`,
       target: `${predictDeployment.packageId}::predict::mint`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market, intent.quantity ?? null)
+      inputs: predictInputs(intent, market, quote?.status === "available" ? quote.quantityRaw : intent.quantity ?? null, quote)
     });
   }
 
@@ -194,7 +210,8 @@ function binaryKeyCommand(intent: Extract<ParsedIntent, { status: "ready" }>, ma
 function predictInputs(
   intent: Extract<ParsedIntent, { status: "ready" }>,
   market: PredictMarketSnapshot | null,
-  quantityRaw: string | null
+  quantityRaw: string | null,
+  quote: PredictQuotePreview | null
 ) {
   return {
     predictObject: predictDeployment.predictId,
@@ -203,6 +220,8 @@ function predictInputs(
     quoteType: predictDeployment.quoteAssetType,
     quantityRaw,
     quoteBudgetDusdc: intent.amountType === "quote" ? Number(intent.amount) : null,
+    estimatedCostDusdc: quote?.status === "available" ? quote.estimatedCostDusdc : null,
+    maxPayoutDusdc: quote?.status === "available" ? quote.maxPayoutDusdc : null,
     clockObject: "0x6"
   };
 }
@@ -261,7 +280,10 @@ function buildRequirements(
   ];
 }
 
-function buildSizing(intent: Extract<ParsedIntent, { status: "ready" }>): TradeSizingPreview {
+function buildSizing(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  quote: PredictQuotePreview | null
+): TradeSizingPreview {
   if (intent.action === "stablecoin_transfer" || intent.action === "predict_redeem") {
     return {
       mode: "not_required",
@@ -270,6 +292,17 @@ function buildSizing(intent: Extract<ParsedIntent, { status: "ready" }>): TradeS
       executable: true,
       label: "No mint sizing required",
       reason: "This action does not need a new Predict mint quantity."
+    };
+  }
+
+  if (intent.action === "predict_binary_mint" && quote?.status === "available") {
+    return {
+      mode: intent.quantity ? "explicit_quantity" : "quote_budget",
+      quoteBudgetDusdc: quote.quoteBudgetDusdc,
+      quantityRaw: quote.quantityRaw,
+      executable: true,
+      label: `${formatDusdc(quote.quantityDusdc)} max payout units`,
+      reason: `DeepBook quote estimates ${formatDusdc(quote.estimatedCostDusdc)} DUSDC cost for ${formatDusdc(quote.maxPayoutDusdc)} DUSDC max payout.`
     };
   }
 
@@ -356,4 +389,8 @@ function shortId(value?: string | null) {
 
 function digestPreview(input: string) {
   return `0x${createHash("sha256").update(input).digest("hex")}`;
+}
+
+function formatDusdc(value: number | null) {
+  return value === null ? "--" : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }

@@ -5,7 +5,7 @@ import { parseJsonBody } from "../src/lib/http";
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment } from "../src/lib/predict";
 import { getProfileSummary } from "../src/lib/profile";
 
-const intent = "Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle";
+const intent = "Buy 10 DUSDC BTC UP on the next active DeepBook Predict oracle";
 const result = await compileIntent(intent);
 
 assert(result.intent.status === "ready", "intent should parse");
@@ -17,12 +17,22 @@ assert(market.deployment.network === "testnet", "default Predict network should 
 assert(market.oracle.status === "active", "selected oracle should be active");
 assert(market.metrics.spot !== null, "spot should be available");
 assert(result.guardian.decision !== "block", "Guardian should not block the smoke intent");
+assert(result.quote?.status === "available", "binary mint should include a DeepBook Predict quote");
+assert(result.quote.quantityRaw, "binary quote should include quantityRaw");
+assert(
+  typeof result.quote.estimatedCostDusdc === "number" && result.quote.estimatedCostDusdc <= 10,
+  "binary quote should fit inside the requested DUSDC budget"
+);
 assert(Boolean(result.ptb), "PTB preview should be built");
 assert(result.gas.approved, "sponsor policy should approve the smoke PTB preview");
 assert(result.gas.checks.every((check) => check.passed), "all sponsor policy checks should pass");
 assert(
   result.ptb?.commands.some((command) => command.target === `${predictDeployment.packageId}::predict::mint`),
   "PTB preview should target predict::mint"
+);
+assert(
+  result.ptb?.commands.some((command) => command.inputs?.quantityRaw === result.quote?.quantityRaw),
+  "PTB preview should use the verified quote quantity"
 );
 assert(
   !result.ptb?.commands.some((command) => command.target.endsWith("::log::record_intent")),
@@ -53,6 +63,7 @@ assert(quoteOnly.intent.status === "ready", "quote-only intent should parse");
 assert(quoteOnly.intent.action === "predict_quote_only", "quote-only intent should stay quote-only");
 assert(quoteOnly.market?.oracle.oracle_id === market.oracle.oracle_id, "explicit oracle lookup should preserve oracle id");
 assert(quoteOnly.market?.oracle.predict_id === predictDeployment.predictId, "explicit oracle lookup should stay within configured Predict object");
+assert(!quoteOnly.quote, "quote-only intent should not produce executable trade quote");
 assert(!quoteOnly.ptb, "quote-only intent should not build a PTB");
 assert(!quoteOnly.gas.approved, "quote-only intent should not be sponsor approved");
 assert(sellPreview.intent.status === "ready", "sell/redeem intent should parse");

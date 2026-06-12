@@ -159,6 +159,27 @@ export interface PredictMarketSnapshot {
   fetchedAt: string;
 }
 
+export interface PredictQuotePreview {
+  status: "available" | "unavailable" | "unsupported";
+  source: "sui_simulate_predict_get_trade_amounts" | "not_available";
+  oracleId: string | null;
+  expiry: number | null;
+  direction: PredictDirection | null;
+  strike: number | null;
+  quoteBudgetDusdc: number | null;
+  quantityRaw: string | null;
+  quantityDusdc: number | null;
+  estimatedCostDusdc: number | null;
+  askPrice: number | null;
+  bidPrice: number | null;
+  maxPayoutDusdc: number | null;
+  potentialProfitDusdc: number | null;
+  returnPct: number | null;
+  fetchedAt: string;
+  expiresAt: string;
+  warning: string | null;
+}
+
 export interface GuardianFinding {
   type:
     | "INCOMPLETE_INTENT"
@@ -172,6 +193,7 @@ export interface GuardianFinding {
     | "SIZE_OVER_LIQUIDITY"
     | "DUSDC_REQUIRED"
     | "UNSUPPORTED_INTENT"
+    | "QUOTE_UNAVAILABLE"
     | "CONFIG_ERROR";
   title: string;
   explanation: string;
@@ -240,6 +262,14 @@ export interface PtbTransactionData {
     target: string | null;
     quantityRaw: string | null;
   };
+  quote: {
+    source: PredictQuotePreview["source"];
+    estimatedCostDusdc: number | null;
+    maxPayoutDusdc: number | null;
+    askPrice: number | null;
+    returnPct: number | null;
+    expiresAt: string;
+  } | null;
   intent: {
     action: PredictIntentAction;
     direction?: PredictDirection;
@@ -303,6 +333,7 @@ export interface CompileResult {
   profile: ProfileSummary | null;
   guardian: GuardianResult;
   gas: SponsorDecision;
+  quote: PredictQuotePreview | null;
   ptb: PtbPlan | null;
   timeline: Array<{
     label: string;
