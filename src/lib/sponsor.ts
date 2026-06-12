@@ -104,10 +104,12 @@ function amountWithinSponsorCap(value: number) {
 }
 
 function commandAmountWithinSponsorCap(command: PtbPlan["commands"][number]) {
-  const amountBaseUnits = command.inputs?.amountBaseUnits ?? command.inputs?.quantityBaseUnits;
+  const amountBaseUnits = command.inputs?.amountBaseUnits;
 
   if (typeof amountBaseUnits !== "number") {
-    return true;
+    const quoteBudgetDusdc = command.inputs?.quoteBudgetDusdc;
+
+    return typeof quoteBudgetDusdc !== "number" || amountWithinSponsorCap(quoteBudgetDusdc);
   }
 
   return Number.isSafeInteger(amountBaseUnits) && amountBaseUnits >= 0 && amountBaseUnits <= sponsorPolicy.maxTradeSizeDusdc * 1_000_000;

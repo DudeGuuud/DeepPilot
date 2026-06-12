@@ -103,6 +103,7 @@ flowchart TD
 Key boundaries:
 
 - `/api/compile` is the read and planning path. It returns a live Predict snapshot, Guardian result, sponsor-policy decision, and PTB preview.
+- `/api/compile/stream` is the fast natural-language path. It streams DeepSeek JSON deltas and compiler stage events before returning the same compiled review payload.
 - `/api/markets` is the discovery path. It returns one page at a time and does not fetch full state for every oracle; it prefetches current-page rows plus the selected oracle only.
 - `/api/oracles/:id/history` returns bounded, normalized chart data so browser components do not query Predict history directly.
 - `/api/profile` returns honest manager linkage state. Missing manager data stays empty instead of fabricating PnL.
@@ -114,7 +115,7 @@ Key boundaries:
 
 The frontend is a three-page product surface rather than a generic chat app. `/markets` is for discovery, `/trade` is the execution workbench, and `/profile` is wallet/receipt/manager state. `components/deep-pilot-terminal.tsx` owns the ticket, intent textarea, market cards, Guardian panel, PTB preview, gas policy checks, and preview receipt. It calls `/api/compile` when the user edits or runs an intent, and calls `/api/sponsor` only after a PTB exists and Guardian has not blocked it. Wallet state is browser-only through DApp Kit; the public RPC URLs use `NEXT_PUBLIC_*` because they are safe to ship to the client.
 
-The backend is deliberately split into small modules. `src/lib/intent.ts` parses a constrained Predict intent and refuses unsafe or incomplete inputs. `src/lib/predict.ts` is the only DeepBook Predict public API reader. `src/lib/guardian.ts` turns live market state into `allow`, `reduce`, or `block`. `src/lib/ptb.ts` builds an auditable PTB preview with exact Move targets, while `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and gas budget. `src/lib/compile.ts` is the orchestrator that wires these pieces together.
+The backend is deliberately split into small modules. `src/lib/intent.ts` calls DeepSeek `deepseek-v4-flash` from the server only, streams JSON-mode output, validates it with zod, and falls back to a local constrained parser if DeepSeek is unavailable. `src/lib/predict.ts` is the only DeepBook Predict public API reader. `src/lib/guardian.ts` turns live market state into `allow`, `reduce`, or `block`. `src/lib/ptb.ts` builds an auditable PTB preview with exact Move targets, while `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and gas budget. `src/lib/compile.ts` is the orchestrator that wires these pieces together.
 
 Request flow is kept tight. A normal "next active oracle" trade needs three parallel Predict reads first, then one selected oracle-state read. If the user already supplies an oracle id, the app skips the full oracle-list read and performs the remaining three reads in parallel. Market discovery uses a 20 second client TTL plus manual refresh, not a high-frequency ticker. After direct oracle lookup, the app still checks that the oracle and vault belong to the configured Predict object, so the optimization does not weaken protocol safety.
 
@@ -163,8 +164,12 @@ Use normal server-side env names for DeepBook Predict deployment IDs and package
 - `DEEP_PILOT_LOG_PACKAGE_ID`
 - `SPONSOR_MAX_GAS_BUDGET`
 - `SPONSOR_MAX_TRADE_SIZE_DUSDC`
+- `DEEPSEEK_API_KEY`
+- `DEEPSEEK_MODEL`
 
 Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` stays server-side unless you manually send it to the client.
+
+`DEEPSEEK_API_KEY` must never be exposed through `NEXT_PUBLIC_*`, browser logs, screenshots, or checked-in files. Use `.env.local` locally and rotate the key before a public demo if it was pasted into chat or shared docs.
 
 `PREDICT_ENABLE_ONCHAIN_LOG=false` is the default gas-optimized mode. Set it to `true` only for demos that need an extra on-chain audit event.
 

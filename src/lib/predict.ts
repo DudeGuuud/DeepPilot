@@ -255,7 +255,7 @@ async function getSnapshotForNextActiveOracle(intent: Extract<ParsedIntent, { st
   const oracles = rawOracles.map(normalizeOracle);
   const vault = normalizeVault(rawVault);
 
-  const oracle = selectOracle(oracles, status.current_time_ms);
+  const oracle = selectOracle(oracles, status.current_time_ms, intent);
   const oracleState = normalizeOracleState(await fetchPredict(`/oracles/${oracle.oracle_id}/state`, oracleStateSchema));
 
   return buildSnapshot(intent, status, vault, oracleState);
@@ -545,7 +545,11 @@ async function fetchPredict<T>(path: string, schema: z.ZodType<T>): Promise<T> {
   return parsed.data;
 }
 
-function selectOracle(oracles: PredictOracleSummary[], nowMs: number) {
+function selectOracle(
+  oracles: PredictOracleSummary[],
+  nowMs: number,
+  intent: Extract<ParsedIntent, { status: "ready" }>
+) {
   const active = oracles
     .filter((oracle) => oracle.underlying_asset === "BTC")
     .filter((oracle) => oracle.status === "active")
@@ -556,7 +560,26 @@ function selectOracle(oracles: PredictOracleSummary[], nowMs: number) {
     throw new Error("No active BTC Predict oracle is available.");
   }
 
+  if (intent.expiryPreference === "specific_time" && intent.requestedExpiryMs) {
+    const requested = normalizeRequestedExpiry(intent.requestedExpiryMs, nowMs);
+
+    return [...active].sort((left, right) => {
+      const leftDistance = Math.abs(left.expiry - requested);
+      const rightDistance = Math.abs(right.expiry - requested);
+
+      return leftDistance === rightDistance ? left.expiry - right.expiry : leftDistance - rightDistance;
+    })[0];
+  }
+
   return active[0];
+}
+
+function normalizeRequestedExpiry(requestedExpiryMs: number, nowMs: number) {
+  if (requestedExpiryMs > nowMs) {
+    return requestedExpiryMs;
+  }
+
+  return requestedExpiryMs + 24 * 60 * 60 * 1_000;
 }
 
 function buildMetrics(
@@ -582,7 +605,7 @@ function buildMetrics(
     oracleAgeMs,
     timeToExpiryMs: Math.max(0, oracleState.oracle.expiry - status.current_time_ms),
     pipelineLagSeconds: status.max_time_lag_seconds,
-    notionalDusdc: Number(intent.amount),
+    notionalDusdc: intent.amountType === "quote" ? Number(intent.amount) : 0,
     availableLiquidityDusdc: normalizeDusdc(vault.available_liquidity),
     vaultUtilization: vault.utilization,
     maxPayoutUtilization: vault.max_payout_utilization,

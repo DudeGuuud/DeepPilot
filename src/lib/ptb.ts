@@ -3,13 +3,25 @@ import { createHash } from "node:crypto";
 import { auditLogPackageId, auditLogPackageIsPublished, previewAccounts } from "./execution-config";
 import { predictDeployment, toDusdcBaseUnits, toPredictPrice } from "./predict";
 import { onchainAuditEnabled } from "./predict-config";
-import type { GuardianResult, ParsedIntent, PredictMarketSnapshot, PtbCommandPreview, PtbPlan, SponsorDecision } from "./types";
+import type {
+  ExecutionReadiness,
+  GuardianResult,
+  ParsedIntent,
+  PredictMarketSnapshot,
+  ProfileSummary,
+  PtbCommandPreview,
+  PtbPlan,
+  PtbTransactionData,
+  SponsorDecision,
+  TradeSizingPreview
+} from "./types";
 
 export function buildPtbPlan(
   intent: ParsedIntent,
   market: PredictMarketSnapshot | null,
   guardian: GuardianResult,
-  gas: SponsorDecision
+  gas: SponsorDecision,
+  profile: ProfileSummary | null = null
 ): PtbPlan | null {
   if (intent.status !== "ready" || guardian.blocked) {
     return null;
@@ -20,21 +32,39 @@ export function buildPtbPlan(
   }
 
   const commands = buildCommands(intent, market);
-  const requirements = buildRequirements(intent, market);
-  const transactionData = {
+  const sizing = buildSizing(intent);
+  const execution = buildExecutionReadiness(intent, market, profile, sizing);
+  const requirements = buildRequirements(intent, market, execution, sizing);
+  const keyTarget = intent.action === "predict_range_mint"
+    ? `${predictDeployment.packageId}::range_key::new`
+    : `${predictDeployment.packageId}::market_key::${(intent.direction ?? "up") === "up" ? "up" : "down"}`;
+  const transactionData: PtbTransactionData = {
     kind: "ProgrammableTransaction",
     network: predictDeployment.network,
     packageId: predictDeployment.packageId,
     predictObject: predictDeployment.predictId,
     quoteAssetType: predictDeployment.quoteAssetType,
     onchainAuditEnabled,
-    manager: previewAccounts.manager,
+    manager: execution.managerId,
     oracleId: market?.oracle.oracle_id ?? intent.oracleId ?? null,
+    key: {
+      target: intent.action === "stablecoin_transfer" ? null : keyTarget,
+      oracleId: market?.oracle.oracle_id ?? intent.oracleId ?? null,
+      expiry: market?.oracle.expiry ?? null,
+      strikeScaled: scaledStrike(market, intent),
+      direction: intent.direction ?? null
+    },
+    mint: {
+      target: intent.action === "predict_binary_mint" ? `${predictDeployment.packageId}::predict::mint` : null,
+      quantityRaw: sizing.quantityRaw
+    },
     intent: {
       action: intent.action,
       direction: intent.direction,
       amount: intent.amount,
-      quantityBaseUnits: quantityBaseUnits(intent),
+      amountType: intent.amountType,
+      quoteBudgetDusdc: sizing.quoteBudgetDusdc,
+      quantityRaw: sizing.quantityRaw,
       strike: market?.metrics.selectedStrike ?? intent.strike ?? null,
       strikeScaled: scaledStrike(market, intent),
       lowerStrike: intent.lowerStrike ?? null,
@@ -54,13 +84,14 @@ export function buildPtbPlan(
     transactionKind: "ProgrammableTransaction",
     commands,
     requirements,
+    sizing,
+    execution,
     transactionData,
     digestPreview: digestPreview(JSON.stringify(transactionData)),
     simulated: {
       status: "not_submitted",
-      reason:
-        "Preview uses live Predict state and exact Predict targets. Real submission requires a funded DUSDC manager object and wallet-selected coin inputs.",
-      explorerReady: false
+      reason: execution.reason,
+      explorerReady: execution.canSign
     }
   };
 }
@@ -92,7 +123,7 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
       command: `Redeem settled position for ${shortId(market?.oracle.oracle_id ?? intent.oracleId)}`,
       target: `${predictDeployment.packageId}::predict::redeem_permissionless`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market)
+      inputs: predictInputs(intent, market, null)
     });
   } else if (intent.action === "predict_range_mint") {
     commands.push({
@@ -109,19 +140,19 @@ function buildCommands(intent: Extract<ParsedIntent, { status: "ready" }>, marke
     });
     commands.push({
       index: 2,
-      command: `Mint BTC range ${intent.lowerStrike}-${intent.upperStrike} with ${intent.amount} DUSDC`,
+      command: `Mint BTC range ${intent.lowerStrike}-${intent.upperStrike}`,
       target: `${predictDeployment.packageId}::predict::mint_range`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market)
+      inputs: predictInputs(intent, market, intent.quantity ?? null)
     });
   } else {
     commands.push(binaryKeyCommand(intent, market, 1));
     commands.push({
       index: 2,
-      command: `Mint BTC ${intent.direction ?? "up"} binary at ${market?.metrics.selectedStrike ?? intent.strike ?? "ATM"} with ${intent.amount} DUSDC`,
+      command: `Mint BTC ${intent.direction ?? "up"} binary at ${market?.metrics.selectedStrike ?? intent.strike ?? "ATM"}`,
       target: `${predictDeployment.packageId}::predict::mint`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market)
+      inputs: predictInputs(intent, market, intent.quantity ?? null)
     });
   }
 
@@ -160,18 +191,28 @@ function binaryKeyCommand(intent: Extract<ParsedIntent, { status: "ready" }>, ma
   } satisfies PtbCommandPreview;
 }
 
-function predictInputs(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
+function predictInputs(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot | null,
+  quantityRaw: string | null
+) {
   return {
     predictObject: predictDeployment.predictId,
     managerObject: previewAccounts.manager,
     oracleObject: market?.oracle.oracle_id ?? intent.oracleId ?? null,
     quoteType: predictDeployment.quoteAssetType,
-    quantityBaseUnits: quantityBaseUnits(intent),
+    quantityRaw,
+    quoteBudgetDusdc: intent.amountType === "quote" ? Number(intent.amount) : null,
     clockObject: "0x6"
   };
 }
 
-function buildRequirements(intent: Extract<ParsedIntent, { status: "ready" }>, market: PredictMarketSnapshot | null) {
+function buildRequirements(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot | null,
+  execution: ExecutionReadiness,
+  sizing: TradeSizingPreview
+) {
   if (intent.action === "stablecoin_transfer") {
     return [
       {
@@ -185,13 +226,20 @@ function buildRequirements(intent: Extract<ParsedIntent, { status: "ready" }>, m
   return [
     {
       label: "PredictManager object",
-      satisfied: false,
-      detail: "Create or load the user's shared PredictManager before submitting mint/redeem."
+      satisfied: Boolean(execution.managerId),
+      detail: execution.managerId ?? "Create or load the user's shared PredictManager before submitting mint/redeem."
     },
     {
       label: "DUSDC manager balance",
-      satisfied: false,
-      detail: "Mint requires DUSDC already deposited into the PredictManager."
+      satisfied: execution.managerBalanceDusdc !== null,
+      detail: execution.managerBalanceDusdc === null
+        ? "Mint requires DUSDC already deposited into the PredictManager."
+        : `${execution.managerBalanceDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC trading balance detected.`
+    },
+    {
+      label: "Predict quantity",
+      satisfied: sizing.executable,
+      detail: sizing.reason
     },
     {
       label: "Oracle object",
@@ -213,14 +261,89 @@ function buildRequirements(intent: Extract<ParsedIntent, { status: "ready" }>, m
   ];
 }
 
+function buildSizing(intent: Extract<ParsedIntent, { status: "ready" }>): TradeSizingPreview {
+  if (intent.action === "stablecoin_transfer" || intent.action === "predict_redeem") {
+    return {
+      mode: "not_required",
+      quoteBudgetDusdc: intent.amountType === "quote" ? Number(intent.amount) : null,
+      quantityRaw: intent.quantity ?? null,
+      executable: true,
+      label: "No mint sizing required",
+      reason: "This action does not need a new Predict mint quantity."
+    };
+  }
+
+  if (intent.quantity) {
+    return {
+      mode: "explicit_quantity",
+      quoteBudgetDusdc: intent.amountType === "quote" ? Number(intent.amount) : null,
+      quantityRaw: intent.quantity,
+      executable: false,
+      label: `${intent.quantity} Predict quantity`,
+      reason: "Explicit quantity is parsed, but signing remains locked until DeepPilot can verify the exact mint cost before wallet signing."
+    };
+  }
+
+  return {
+    mode: "quote_budget",
+    quoteBudgetDusdc: intent.amountType === "quote" ? Number(intent.amount) : null,
+    quantityRaw: null,
+    executable: false,
+    label: `${intent.amount} DUSDC budget`,
+    reason: "Predict mint takes position quantity, not DUSDC budget. DeepPilot will not convert budget to quantity without a verified quote."
+  };
+}
+
+function buildExecutionReadiness(
+  intent: Extract<ParsedIntent, { status: "ready" }>,
+  market: PredictMarketSnapshot | null,
+  profile: ProfileSummary | null,
+  sizing: TradeSizingPreview
+): ExecutionReadiness {
+  const walletAddress = profile?.wallet ?? null;
+  const managerId = profile?.managerId ?? null;
+  const checks = [
+    {
+      label: "Wallet connected",
+      passed: Boolean(walletAddress),
+      detail: walletAddress ?? "Connect wallet before Review & Sign."
+    },
+    {
+      label: "PredictManager linked",
+      passed: Boolean(managerId),
+      detail: managerId ?? "No PredictManager found for this wallet."
+    },
+    {
+      label: "Oracle selected",
+      passed: Boolean(market?.oracle.oracle_id ?? intent.oracleId),
+      detail: market?.oracle.oracle_id ?? intent.oracleId ?? "No Predict oracle selected."
+    },
+    {
+      label: "Executable sizing",
+      passed: sizing.executable,
+      detail: sizing.reason
+    }
+  ];
+  const canSign = checks.every((check) => check.passed);
+
+  return {
+    canSign,
+    mode: canSign ? "wallet_transaction" : "preview_only",
+    reason: canSign
+      ? "Ready for wallet signing."
+      : "Review is available, but wallet signing is locked until every readiness check passes.",
+    walletAddress,
+    managerId,
+    managerBalanceDusdc: profile?.tradingBalanceDusdc ?? null,
+    requiredQuoteDusdc: sizing.quoteBudgetDusdc,
+    checks
+  };
+}
+
 function scaledStrike(market: PredictMarketSnapshot | null, intent: Extract<ParsedIntent, { status: "ready" }>) {
   const strike = market?.metrics.selectedStrike ?? intent.strike;
 
   return strike ? toPredictPrice(strike) : null;
-}
-
-function quantityBaseUnits(intent: Extract<ParsedIntent, { status: "ready" }>) {
-  return toDusdcBaseUnits(Number(intent.amount));
 }
 
 function shortId(value?: string | null) {

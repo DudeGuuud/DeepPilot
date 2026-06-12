@@ -6,7 +6,9 @@ import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http"
 import { createPredictClientPreview } from "@/src/lib/predict";
 
 const bodySchema = z.object({
-  intent: z.string().trim().min(1).max(500)
+  intent: z.string().trim().min(1).max(500),
+  walletAddress: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
+  managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional()
 });
 
 export async function POST(request: Request) {
@@ -36,7 +38,10 @@ export async function POST(request: Request) {
 
   try {
     return NextResponse.json({
-      ...(await compileIntent(body.data.intent)),
+      ...(await compileIntent(body.data.intent, {
+        walletAddress: body.data.walletAddress,
+        managerId: body.data.managerId
+      })),
       predict: createPredictClientPreview()
     });
   } catch {

@@ -10,6 +10,8 @@ export type AmountType = "quote" | "base";
 export type RiskLevel = "low" | "medium" | "high" | "blocked";
 export type GasMode = "sponsored" | "gasless_stablecoin_transfer" | "user_pays_gas";
 export type MarketRiskLevel = RiskLevel | "unknown";
+export type ExpiryPreference = "next_active" | "specific_time";
+export type TradeSizingMode = "quote_budget" | "explicit_quantity" | "not_required";
 
 export type ParsedIntent =
   | {
@@ -25,6 +27,10 @@ export type ParsedIntent =
       strike?: number;
       lowerStrike?: number;
       upperStrike?: number;
+      expiryPreference?: ExpiryPreference;
+      requestedExpiryMs?: number;
+      expiryLabel?: string;
+      quantity?: string;
       oracleId?: string;
       recipient?: string;
       raw: string;
@@ -169,6 +175,69 @@ export interface PtbCommandPreview {
   inputs?: Record<string, string | number | boolean | null>;
 }
 
+export interface TradeSizingPreview {
+  mode: TradeSizingMode;
+  quoteBudgetDusdc: number | null;
+  quantityRaw: string | null;
+  executable: boolean;
+  label: string;
+  reason: string;
+}
+
+export interface ExecutionReadinessCheck {
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface ExecutionReadiness {
+  canSign: boolean;
+  mode: "wallet_transaction" | "preview_only";
+  reason: string;
+  walletAddress: string | null;
+  managerId: string | null;
+  managerBalanceDusdc: number | null;
+  requiredQuoteDusdc: number | null;
+  checks: ExecutionReadinessCheck[];
+}
+
+export interface PtbTransactionData {
+  kind: "ProgrammableTransaction";
+  network: PredictDeployment["network"];
+  packageId: string;
+  predictObject: string;
+  quoteAssetType: string;
+  onchainAuditEnabled: boolean;
+  manager: string | null;
+  oracleId: string | null;
+  key: {
+    target: string | null;
+    oracleId: string | null;
+    expiry: number | null;
+    strikeScaled: number | null;
+    direction: PredictDirection | null;
+  };
+  mint: {
+    target: string | null;
+    quantityRaw: string | null;
+  };
+  intent: {
+    action: PredictIntentAction;
+    direction?: PredictDirection;
+    amount: string;
+    amountType: AmountType;
+    quoteBudgetDusdc: number | null;
+    quantityRaw: string | null;
+    strike: number | null;
+    strikeScaled: number | null;
+    lowerStrike: number | null;
+    lowerStrikeScaled: number | null;
+    upperStrike: number | null;
+  };
+  requirements: PtbPlan["requirements"];
+  commands: PtbCommandPreview[];
+}
+
 export interface PtbPlan {
   sender: string;
   sponsor: string;
@@ -181,7 +250,9 @@ export interface PtbPlan {
     satisfied: boolean;
     detail: string;
   }>;
-  transactionData: unknown;
+  sizing: TradeSizingPreview;
+  execution: ExecutionReadiness;
+  transactionData: PtbTransactionData;
   digestPreview: string;
   simulated: {
     status: "not_submitted";
@@ -210,6 +281,7 @@ export interface SponsorDecision {
 export interface CompileResult {
   intent: ParsedIntent;
   market: PredictMarketSnapshot | null;
+  profile: ProfileSummary | null;
   guardian: GuardianResult;
   gas: SponsorDecision;
   ptb: PtbPlan | null;
@@ -218,6 +290,34 @@ export interface CompileResult {
     state: "complete" | "blocked" | "pending";
   }>;
 }
+
+export type CompileStreamEvent =
+  | {
+      type: "stage";
+      label: string;
+      state: "complete" | "blocked" | "pending";
+      detail?: string;
+    }
+  | {
+      type: "llm_delta";
+      delta: string;
+    }
+  | {
+      type: "llm_output";
+      content: string;
+    }
+  | {
+      type: "fallback";
+      reason: string;
+    }
+  | {
+      type: "compiled";
+      result: CompileResult;
+    }
+  | {
+      type: "error";
+      error: string;
+    };
 
 export interface MarketListItem {
   oracleId: string;
@@ -298,6 +398,43 @@ export interface ProfileActivityItem {
   summary: string;
 }
 
+export interface KeeperSnapshotItem {
+  oracleId: string;
+  status: string;
+  openQuantity: number;
+  action: "monitor_settlement" | "redeemable" | "none";
+  detail: string;
+}
+
+export interface KeeperSnapshot {
+  source: "predict_server_replay";
+  checkedAt: string;
+  monitoringEnabled: boolean;
+  items: KeeperSnapshotItem[];
+}
+
+export interface ProfileIndexPolicy {
+  registry: "deep_pilot_profile_registry";
+  status: "planned";
+  publicValues: string[];
+  consentRequiredValues: string[];
+  privateValues: string[];
+}
+
+export interface ProfileMemoryStatus {
+  sealedReceipts: {
+    provider: "Walrus + Seal";
+    status: "not_configured" | "ready";
+    policy: string;
+  };
+  longTermMemory: {
+    provider: "Walrus Memory / MemWal";
+    status: "not_configured" | "ready";
+    namespace: string | null;
+    stores: string[];
+  };
+}
+
 export interface ProfileSummary {
   wallet: string | null;
   network: PredictDeployment["network"];
@@ -307,9 +444,13 @@ export interface ProfileSummary {
   openExposureDusdc: number | null;
   redeemableValueDusdc: number | null;
   realizedPnlDusdc: number | null;
+  tradingBalanceDusdc: number | null;
   awaitingSettlement: number | null;
   guardianBlockedCount: number;
   activity: ProfileActivityItem[];
+  keeper: KeeperSnapshot;
+  indexPolicy: ProfileIndexPolicy;
+  memory: ProfileMemoryStatus;
   rawManager?: unknown;
   rawPositions?: unknown;
   rawPnl?: unknown;

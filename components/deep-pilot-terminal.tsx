@@ -16,7 +16,7 @@ import {
   X
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -29,9 +29,15 @@ import { PredictMarketChart } from "@/components/predict-market-chart";
 import { TradeTicket } from "@/components/trade-ticket";
 import { storePreviewReceipt } from "@/src/lib/receipts";
 import { cn } from "@/src/lib/utils";
-import type { CompileResult, GuardianFinding, PredictMarketSnapshot, RiskLevel } from "@/src/lib/types";
+import type { CompileResult, CompileStreamEvent, GuardianFinding, PredictMarketSnapshot, RiskLevel } from "@/src/lib/types";
 
-const DEFAULT_INTENT = "Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle";
+const DEFAULT_INTENT = "Bet 10 DUSDC that BTC will be down by 18:00 tonight";
+const EXAMPLE_INTENTS = [
+  "Bet 10 DUSDC on BTC DOWN tonight",
+  "Show active BTC markets",
+  "Redeem my settled positions",
+  "Check PLP vault risk"
+];
 
 type CompileApiResult = CompileResult & {
   predict?: {
@@ -77,46 +83,120 @@ function TerminalExperience() {
   const defaultIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
   const [intent, setIntent] = useState(defaultIntent);
   const [compiled, setCompiled] = useState<CompileApiResult | null>(null);
+  const [streamText, setStreamText] = useState("");
+  const [streamTimeline, setStreamTimeline] = useState<CompileResult["timeline"]>([]);
+  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<SponsorReceipt | null>(null);
   const [busy, setBusy] = useState<"compile" | "sponsor" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
+  const compileAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setIntent(defaultIntent);
     void compile(defaultIntent);
   }, [defaultIntent]);
 
-  const chips = useMemo(
-    () =>
-      intent
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 10),
-    [intent]
-  );
-
   async function compile(nextIntent = intent) {
+    compileAbortRef.current?.abort();
+    const controller = new AbortController();
+    compileAbortRef.current = controller;
     setBusy("compile");
     setError(null);
     setReceipt(null);
+    setStreamText("");
+    setStreamTimeline([]);
+    setFallbackReason(null);
 
     try {
-      const response = await fetch("/api/compile", {
+      const response = await fetch("/api/compile/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ intent: nextIntent })
+        body: JSON.stringify({
+          intent: nextIntent,
+          walletAddress: account?.address
+        }),
+        signal: controller.signal
       });
 
       if (!response.ok) {
         throw new Error("Intent compile failed.");
       }
 
-      setCompiled((await response.json()) as CompileApiResult);
+      await readCompileStream(response);
     } catch (compileError) {
+      if (compileError instanceof DOMException && compileError.name === "AbortError") {
+        return;
+      }
+
       setError(compileError instanceof Error ? compileError.message : "Intent compile failed.");
     } finally {
-      setBusy(null);
+      if (compileAbortRef.current === controller) {
+        compileAbortRef.current = null;
+        setBusy(null);
+      }
+    }
+  }
+
+  async function readCompileStream(response: Response) {
+    if (!response.body) {
+      throw new Error("Compile stream unavailable.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() ?? "";
+
+      for (const rawEvent of events) {
+        const data = rawEvent
+          .split("\n")
+          .find((line) => line.startsWith("data:"))
+          ?.slice("data:".length)
+          .trim();
+
+        if (!data) {
+          continue;
+        }
+
+        handleCompileEvent(JSON.parse(data) as CompileStreamEvent);
+      }
+    }
+  }
+
+  function handleCompileEvent(event: CompileStreamEvent) {
+    if (event.type === "llm_delta") {
+      setStreamText((current) => current + event.delta);
+      return;
+    }
+
+    if (event.type === "fallback") {
+      setFallbackReason(event.reason);
+      return;
+    }
+
+    if (event.type === "stage") {
+      setStreamTimeline((current) => upsertStage(current, event));
+      return;
+    }
+
+    if (event.type === "compiled") {
+      setCompiled(event.result as CompileApiResult);
+      return;
+    }
+
+    if (event.type === "error") {
+      setError(event.error);
     }
   }
 
@@ -166,7 +246,7 @@ function TerminalExperience() {
       const response = await fetch("/api/sponsor", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
+      body: JSON.stringify({
           intent,
           walletAddress: account.address,
           network: sponsorNetwork,
@@ -237,12 +317,12 @@ function TerminalExperience() {
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <CardTitle>Intent</CardTitle>
-                    <CardDescription>Editable compiler input from the trade ticket.</CardDescription>
+                    <CardTitle>Pilot Console</CardTitle>
+                    <CardDescription>What do you want to do on DeepBook Predict?</CardDescription>
                   </div>
                   <Button size="sm" onClick={() => compile()} disabled={busy !== null}>
                     {busy === "compile" ? <RefreshCw className="animate-spin" /> : <Play />}
-                    Run
+                    Process
                   </Button>
                 </div>
               </CardHeader>
@@ -251,19 +331,36 @@ function TerminalExperience() {
                   className="min-h-[132px] resize-none border-border bg-background/70 text-base leading-7"
                   value={intent}
                   onChange={(event) => setIntent(event.target.value)}
-                  placeholder="Buy 10 DUSDC BTC UP near 62500 on the next active Predict oracle"
+                  placeholder="Bet 10 DUSDC that BTC will be down by 18:00 tonight"
                 />
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {chips.map((chip, index) => (
-                    <Badge
-                      key={`${chip}-${index}`}
-                      variant="secondary"
-                      className="border border-border bg-secondary/70 text-muted-foreground"
+                  {EXAMPLE_INTENTS.map((example) => (
+                    <button
+                      key={example}
+                      className="rounded-md border border-border bg-secondary/70 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      onClick={() => {
+                        setIntent(example);
+                        void compile(example);
+                      }}
+                      disabled={busy !== null}
                     >
-                      {chip}
-                    </Badge>
+                      {example}
+                    </button>
                   ))}
                 </div>
+                {busy === "compile" || streamText || fallbackReason ? (
+                  <div className="mt-3 rounded-md border border-border bg-background/70 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">DeepSeek stream</p>
+                      <Badge variant="outline" className="border-border text-[10px] uppercase text-muted-foreground">
+                        {fallbackReason ? "fallback" : busy === "compile" ? "streaming" : "parsed"}
+                      </Badge>
+                    </div>
+                    <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground/80">
+                      {streamText || fallbackReason || "Waiting for structured JSON..."}
+                    </pre>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
 
@@ -276,7 +373,7 @@ function TerminalExperience() {
                 void compile(nextIntent);
               }}
             />
-            <CompilerCard compiled={compiled} busy={busy === "compile"} />
+            <CompilerCard compiled={compiled} busy={busy === "compile"} streamTimeline={streamTimeline} />
             <PtbCard compiled={compiled} />
           </section>
 
@@ -307,7 +404,15 @@ function TerminalExperience() {
   );
 }
 
-function CompilerCard({ compiled, busy }: { compiled: CompileApiResult | null; busy: boolean }) {
+function CompilerCard({
+  compiled,
+  busy,
+  streamTimeline
+}: {
+  compiled: CompileApiResult | null;
+  busy: boolean;
+  streamTimeline: CompileResult["timeline"];
+}) {
   const fallback = [
     "Parsing intent",
     "Reading DeepBook Predict state",
@@ -315,7 +420,7 @@ function CompilerCard({ compiled, busy }: { compiled: CompileApiResult | null; b
     "Compiling Predict PTB preview",
     "Awaiting confirmation"
   ];
-  const timeline = compiled?.timeline ?? fallback.map((label) => ({ label, state: "pending" as const }));
+  const timeline = compiled?.timeline ?? (streamTimeline.length ? streamTimeline : fallback.map((label) => ({ label, state: "pending" as const })));
 
   return (
     <Card>
@@ -339,6 +444,17 @@ function CompilerCard({ compiled, busy }: { compiled: CompileApiResult | null; b
       </CardContent>
     </Card>
   );
+}
+
+function upsertStage(
+  stages: CompileResult["timeline"],
+  event: Extract<CompileStreamEvent, { type: "stage" }>
+) {
+  const next = stages.some((stage) => stage.label === event.label)
+    ? stages.map((stage) => stage.label === event.label ? { label: event.label, state: event.state } : stage)
+    : [...stages, { label: event.label, state: event.state }];
+
+  return next;
 }
 
 function PtbCard({ compiled }: { compiled: CompileApiResult | null }) {
@@ -373,6 +489,13 @@ function PtbCard({ compiled }: { compiled: CompileApiResult | null }) {
             {compiled?.ptb?.digestPreview ?? "not compiled"}
           </span>
         </MutedBox>
+        {compiled?.ptb?.sizing ? (
+          <MutedBox>
+            <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Sizing</span>
+            <span className="mt-1 block text-sm text-foreground/80">{compiled.ptb.sizing.label}</span>
+            <span className="mt-1 block text-xs leading-5 text-muted-foreground">{compiled.ptb.sizing.reason}</span>
+          </MutedBox>
+        ) : null}
         {compiled?.ptb?.requirements.length ? (
           <div className="space-y-2">
             {compiled.ptb.requirements.map((requirement) => (
@@ -551,7 +674,8 @@ function ExecutionCard({
   blocked: boolean;
   onConfirm: () => void;
 }) {
-  const canConfirm = Boolean(compiled?.ptb && !blocked && compiled.gas.approved);
+  const canConfirm = Boolean(compiled?.ptb && compiled.ptb.execution.canSign && !blocked && compiled.gas.approved);
+  const readiness = compiled?.ptb?.execution;
 
   return (
     <Card className="glass-line">
@@ -565,9 +689,23 @@ function ExecutionCard({
           disabled={!canConfirm || busy}
           onClick={onConfirm}
         >
-          {busy ? <RefreshCw className="animate-spin" /> : blocked ? <AlertTriangle /> : <LockKeyhole />}
-          {blocked ? "Blocked by Guardian" : "Confirm guarded execution"}
+          {busy ? <RefreshCw className="animate-spin" /> : !canConfirm ? <AlertTriangle /> : <LockKeyhole />}
+          {blocked ? "Blocked by Guardian" : canConfirm ? "Review & Sign" : "Review locked"}
         </Button>
+
+        {readiness ? (
+          <div className="mt-4 space-y-1">
+            {readiness.checks.map((check) => (
+              <div key={check.label} className="grid grid-cols-[1fr_18px] items-start gap-2 py-1.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm text-muted-foreground">{check.label}</p>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground/80">{check.detail}</p>
+                </div>
+                {check.passed ? <Check className="h-4 w-4 text-foreground" /> : <X className="h-4 w-4 text-destructive" />}
+              </div>
+            ))}
+          </div>
+        ) : null}
 
         <AnimatePresence>
           {receipt?.receipt ? (

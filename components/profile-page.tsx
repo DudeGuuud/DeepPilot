@@ -102,7 +102,8 @@ export function ProfilePage() {
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
         <section className="space-y-3">
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <SummaryCard label="Trading balance" value={formatDusdc(profile?.tradingBalanceDusdc ?? null)} />
             <SummaryCard label="Open exposure" value={formatDusdc(profile?.openExposureDusdc ?? null)} />
             <SummaryCard label="Redeemable" value={formatDusdc(profile?.redeemableValueDusdc ?? null)} />
             <SummaryCard label="Realized PnL" value={formatDusdc(profile?.realizedPnlDusdc ?? null)} />
@@ -126,7 +127,13 @@ export function ProfilePage() {
               </div>
             </CardHeader>
             <CardContent>
-              <TabContent tab={tab} activity={activity} loading={loading} managerLinked={profile?.managerLinked ?? false} />
+              <TabContent
+                tab={tab}
+                activity={activity}
+                loading={loading}
+                managerLinked={profile?.managerLinked ?? false}
+                profile={profile}
+              />
             </CardContent>
           </Card>
         </section>
@@ -146,6 +153,7 @@ export function ProfilePage() {
               <StatusRow label="Wallet connected" active={Boolean(account)} />
               <StatusRow label="PredictManager linked" active={profile?.managerLinked ?? false} />
               <StatusRow label="Preview receipts" active={receipts.length > 0} />
+              <StatusRow label="Walrus / Seal configured" active={profile?.memory.sealedReceipts.status === "ready"} />
               <div className="rounded-md border border-border bg-background/60 p-3 text-sm leading-6 text-muted-foreground">
                 {profile?.message ?? "Loading profile state."}
               </div>
@@ -161,12 +169,14 @@ function TabContent({
   tab,
   activity,
   loading,
-  managerLinked
+  managerLinked,
+  profile
 }: {
   tab: ProfileTab;
   activity: ProfileActivityItem[];
   loading: boolean;
   managerLinked: boolean;
+  profile: ProfileSummary | null;
 }) {
   if (loading) {
     return (
@@ -206,10 +216,61 @@ function TabContent({
   }
 
   if (tab === "risk") {
-    return <EmptyState text="Guardian risk logs start from local preview receipts and future on-chain audit events." />;
+    return profile ? (
+      <div className="grid gap-3 lg:grid-cols-2">
+        <PolicyBox title="Public index" items={profile.indexPolicy.publicValues} />
+        <PolicyBox title="Consent required" items={profile.indexPolicy.consentRequiredValues} />
+        <PolicyBox title="Private memory" items={profile.indexPolicy.privateValues} />
+        <div className="rounded-md border border-border bg-background/60 p-3">
+          <p className="text-sm font-medium text-foreground">Walrus / Seal</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{profile.memory.sealedReceipts.policy}</p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {profile.memory.longTermMemory.provider} · {profile.memory.longTermMemory.namespace ?? "wallet required"}
+          </p>
+        </div>
+      </div>
+    ) : (
+      <EmptyState text="Guardian risk logs start from local preview receipts and future on-chain audit events." />
+    );
   }
 
-  return <EmptyState text="Keeper actions are intentionally empty until real redeem automation is wired." />;
+  if (!profile?.keeper.items.length) {
+    return <EmptyState text="Keeper has no replayed positions for this wallet yet." />;
+  }
+
+  return (
+    <div className="space-y-2">
+      {profile.keeper.items.map((item) => (
+        <div key={`${item.oracleId}-${item.action}`} className="rounded-md border border-border bg-background/60 p-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-foreground">{item.action}</p>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{item.oracleId}</p>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.detail}</p>
+            </div>
+            <Badge variant="outline" className="shrink-0 border-border text-muted-foreground">
+              {item.status}
+            </Badge>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PolicyBox({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div className="rounded-md border border-border bg-background/60 p-3">
+      <p className="text-sm font-medium text-foreground">{title}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {items.map((item) => (
+          <Badge key={item} variant="outline" className="border-border text-muted-foreground">
+            {item}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function SummaryCard({ label, value }: { label: string; value: string }) {
