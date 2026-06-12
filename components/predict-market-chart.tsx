@@ -1,23 +1,33 @@
 "use client";
 
-import type { UTCTimestamp } from "lightweight-charts";
+import type { Time, UTCTimestamp } from "lightweight-charts";
 import { RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { PredictChartPoint, PredictOracleHistory } from "@/src/lib/types";
 
+const CHART_HEIGHT = 206;
+const ORACLE_HISTORY_REFRESH_MS = 3_000;
+
 export function PredictMarketChart({
   oracleId,
-  strike
+  strike,
+  strikeLabel = "strike"
 }: {
   oracleId?: string;
   strike?: number | null;
+  strikeLabel?: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [history, setHistory] = useState<PredictOracleHistory | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [browserTimeZone, setBrowserTimeZone] = useState("UTC");
+
+  useEffect(() => {
+    setBrowserTimeZone(resolveBrowserTimeZone());
+  }, []);
 
   useEffect(() => {
     if (!oracleId) {
@@ -26,36 +36,57 @@ export function PredictMarketChart({
     }
 
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    let hasHistory = false;
+    let inFlight = false;
 
-    fetch(`/api/oracles/${oracleId}/history`)
-      .then((response) => {
+    async function loadHistory(showSpinner: boolean) {
+      if (inFlight) {
+        return;
+      }
+
+      inFlight = true;
+
+      if (showSpinner) {
+        setLoading(true);
+      }
+
+      try {
+        const response = await fetch(`/api/oracles/${oracleId}/history`, {
+          cache: "no-store"
+        });
+
         if (!response.ok) {
           throw new Error("Oracle history unavailable.");
         }
 
-        return response.json() as Promise<PredictOracleHistory>;
-      })
-      .then((payload) => {
+        const payload = await response.json() as PredictOracleHistory;
+
         if (!cancelled) {
+          hasHistory = true;
           setHistory(payload);
+          setError(null);
         }
-      })
-      .catch((chartError) => {
-        if (!cancelled) {
+      } catch (chartError) {
+        if (!cancelled && !hasHistory) {
           setError(chartError instanceof Error ? chartError.message : "Oracle history unavailable.");
           setHistory(null);
         }
-      })
-      .finally(() => {
-        if (!cancelled) {
+      } finally {
+        if (!cancelled && showSpinner) {
           setLoading(false);
         }
-      });
+        inFlight = false;
+      }
+    }
+
+    void loadHistory(true);
+    const intervalId = window.setInterval(() => {
+      void loadHistory(false);
+    }, ORACLE_HISTORY_REFRESH_MS);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
     };
   }, [oracleId]);
 
@@ -68,6 +99,20 @@ export function PredictMarketChart({
 
     let disposed = false;
     let cleanup: (() => void) | null = null;
+    const tickTimeFormatter = new Intl.DateTimeFormat(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: browserTimeZone
+    });
+    const labelTimeFormatter = new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZone: browserTimeZone,
+      timeZoneName: "short"
+    });
 
     void import("lightweight-charts").then(({ createChart, LineSeries, LineStyle }) => {
       if (disposed) {
@@ -76,7 +121,7 @@ export function PredictMarketChart({
 
       const chart = createChart(container, {
         width: Math.max(320, Math.floor(container.clientWidth)),
-        height: 240,
+        height: CHART_HEIGHT,
         layout: {
           background: { color: "transparent" },
           textColor: "#a1a1aa"
@@ -88,10 +133,15 @@ export function PredictMarketChart({
         rightPriceScale: {
           borderColor: "rgba(255,255,255,0.12)"
         },
+        localization: {
+          locale: navigator.language,
+          timeFormatter: (time: Time) => formatChartTime(time, labelTimeFormatter)
+        },
         timeScale: {
           borderColor: "rgba(255,255,255,0.12)",
           timeVisible: true,
-          secondsVisible: false
+          secondsVisible: false,
+          tickMarkFormatter: (time: Time) => formatChartTime(time, tickTimeFormatter)
         }
       });
       const spotData = toLineData(history.points, (point) => point.spot);
@@ -118,7 +168,7 @@ export function PredictMarketChart({
           lineWidth: 1,
           lineStyle: LineStyle.Dotted,
           axisLabelVisible: true,
-          title: "strike"
+          title: strikeLabel
         });
       }
 
@@ -138,26 +188,26 @@ export function PredictMarketChart({
       disposed = true;
       cleanup?.();
     };
-  }, [history, strike]);
+  }, [browserTimeZone, history, strike]);
 
   return (
     <Card className="glass-line">
-      <CardHeader className="pb-2">
+      <CardHeader className="p-4 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <CardTitle>Price History</CardTitle>
-            <CardDescription>{oracleId ? shortAddress(oracleId) : "Select an oracle"}</CardDescription>
+            <CardTitle className="text-sm">Price History</CardTitle>
+            <CardDescription className="text-xs">{oracleId ? shortAddress(oracleId) : "Select an oracle"}</CardDescription>
           </div>
           {loading ? <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" /> : null}
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="p-4 pt-0">
         {!oracleId ? (
           <div className="rounded-md border border-border bg-background/60 p-3 text-sm text-muted-foreground">
             Choose a Predict oracle to load spot and forward history.
           </div>
         ) : loading && !history ? (
-          <div className="flex h-[240px] items-center justify-center rounded-md border border-border bg-background/60 text-sm text-muted-foreground">
+          <div className="flex h-[206px] items-center justify-center rounded-md border border-border bg-background/60 text-sm text-muted-foreground">
             <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
             Loading oracle history.
           </div>
@@ -171,10 +221,11 @@ export function PredictMarketChart({
           </div>
         ) : (
           <>
-            <div ref={containerRef} className="h-[240px] w-full" />
-            <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
+            <div ref={containerRef} className="h-[206px] w-full" />
+            <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
               <span>Spot</span>
               <span className="text-blue-200">Forward</span>
+              <span>{browserTimeZone}</span>
               {history?.capped ? <span>bounded server preview</span> : null}
             </div>
           </>
@@ -203,4 +254,24 @@ function toLineData(points: PredictChartPoint[], selectValue: (point: PredictCha
     time: time as UTCTimestamp,
     value
   }));
+}
+
+function resolveBrowserTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function formatChartTime(time: Time, formatter: Intl.DateTimeFormat) {
+  return formatter.format(chartTimeToDate(time));
+}
+
+function chartTimeToDate(time: Time) {
+  if (typeof time === "number") {
+    return new Date(time * 1_000);
+  }
+
+  if (typeof time === "string") {
+    return new Date(`${time}T00:00:00.000Z`);
+  }
+
+  return new Date(Date.UTC(time.year, time.month - 1, time.day));
 }

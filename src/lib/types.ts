@@ -12,6 +12,7 @@ export type GasMode = "sponsored" | "gasless_stablecoin_transfer" | "user_pays_g
 export type MarketRiskLevel = RiskLevel | "unknown";
 export type ExpiryPreference = "next_active" | "specific_time";
 export type TradeSizingMode = "quote_budget" | "explicit_quantity" | "not_required";
+export type PilotMode = "chat" | "trade";
 
 export type ParsedIntent =
   | {
@@ -41,6 +42,24 @@ export type ParsedIntent =
       reason: string;
       raw: string;
     };
+
+export interface PilotClassification {
+  mode: PilotMode;
+  asset: "BTC" | "ETH" | "SOL" | "TRX" | null;
+  question: string;
+  draftIntent: ParsedIntent | null;
+  missing: string[];
+}
+
+export interface RagSource {
+  id: string;
+  title: string;
+  url?: string;
+  sourceType: "predict" | "news" | "repo" | "docs";
+  publishedAt?: string;
+  snippet: string;
+  partial?: boolean;
+}
 
 export interface PredictDeployment {
   network: "devnet" | "testnet" | "mainnet";
@@ -309,6 +328,35 @@ export type CompileStreamEvent =
   | {
       type: "fallback";
       reason: string;
+    }
+  | {
+      type: "compiled";
+      result: CompileResult;
+    }
+  | {
+      type: "error";
+      error: string;
+    };
+
+export type PilotStreamEvent =
+  | {
+      type: "mode";
+      mode: PilotMode;
+      classification: PilotClassification;
+    }
+  | {
+      type: "answer_delta";
+      delta: string;
+    }
+  | {
+      type: "sources";
+      sources: RagSource[];
+    }
+  | {
+      type: "stage";
+      label: string;
+      state: "complete" | "blocked" | "pending";
+      detail?: string;
     }
   | {
       type: "compiled";

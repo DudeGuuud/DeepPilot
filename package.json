@@ -9,8 +9,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "biome:check": "bunx @biomejs/biome check .",
+    "biome:write": "bunx @biomejs/biome check --write .",
     "typecheck": "tsc --noEmit",
     "predict:smoke": "bun run scripts/verify-predict.ts",
+    "pilot:smoke": "bun run scripts/verify-pilot.ts",
     "move:build": "sui move build --path move --build-env testnet",
     "sui:testnet-key": "bun run scripts/generate-testnet-key.ts"
   },
@@ -30,6 +33,7 @@
     "postcss": "8.5.15",
     "react": "19.2.7",
     "react-dom": "19.2.7",
+    "rss-parser": "^3.13.0",
     "tailwind-merge": "3.6.0",
     "tailwindcss": "4.3.0",
     "zod": "4.4.3"

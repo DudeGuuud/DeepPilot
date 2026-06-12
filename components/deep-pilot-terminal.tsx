@@ -4,19 +4,23 @@ import { useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-k
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
+  Bot,
   Check,
   ChevronDown,
   CircleDashed,
+  ClipboardCheck,
   Fuel,
   LockKeyhole,
-  Play,
   RefreshCw,
+  Send,
   Shield,
+  Sparkles,
+  UserRound,
   Wallet,
   X
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -29,15 +33,31 @@ import { PredictMarketChart } from "@/components/predict-market-chart";
 import { TradeTicket } from "@/components/trade-ticket";
 import { storePreviewReceipt } from "@/src/lib/receipts";
 import { cn } from "@/src/lib/utils";
-import type { CompileResult, CompileStreamEvent, GuardianFinding, PredictMarketSnapshot, RiskLevel } from "@/src/lib/types";
+import type {
+  CompileResult,
+  GuardianFinding,
+  MarketDiscoveryResult,
+  MarketListItem,
+  PilotMode,
+  PilotStreamEvent,
+  PredictMarketSnapshot,
+  RagSource,
+  RiskLevel,
+  VaultSummary
+} from "@/src/lib/types";
 
-const DEFAULT_INTENT = "Bet 10 DUSDC that BTC will be down by 18:00 tonight";
+const DEFAULT_INTENT = "";
+const COMPOSER_HINT = "Ask market context or draft a Predict transaction";
+const SAMPLE_INTENT = "Bet 10 DUSDC that BTC will be down by 18:00 tonight";
 const EXAMPLE_INTENTS = [
-  "Bet 10 DUSDC on BTC DOWN tonight",
-  "Show active BTC markets",
-  "Redeem my settled positions",
+  "Why is BTC moving?",
+  "Summarize BTC news",
+  SAMPLE_INTENT,
   "Check PLP vault risk"
 ];
+const AI_DISCLOSURE =
+  "This answer is AI-generated for information organization and risk explanation only. It is not investment advice; verify original sources and the wallet confirmation screen.";
+const MARKET_PREVIEW_REFRESH_MS = 2_500;
 
 type CompileApiResult = CompileResult & {
   predict?: {
@@ -68,6 +88,15 @@ type SponsorReceipt = {
   reason?: string;
 };
 
+type PilotMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  mode?: PilotMode;
+  sources?: RagSource[];
+  pending?: boolean;
+};
+
 export default function DeepPilotTerminal() {
   return <TerminalExperience />;
 }
@@ -82,65 +111,156 @@ function TerminalExperience() {
   const urlStrike = useMemo(() => strikeFromSearch(searchParams), [searchParams]);
   const defaultIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
   const [intent, setIntent] = useState(defaultIntent);
+  const [messages, setMessages] = useState<PilotMessage[]>([]);
+  const [pilotMode, setPilotMode] = useState<PilotMode | null>(null);
+  const [ragSources, setRagSources] = useState<RagSource[]>([]);
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+  const [marketPreview, setMarketPreview] = useState<MarketDiscoveryResult | null>(null);
   const [compiled, setCompiled] = useState<CompileApiResult | null>(null);
-  const [streamText, setStreamText] = useState("");
   const [streamTimeline, setStreamTimeline] = useState<CompileResult["timeline"]>([]);
-  const [fallbackReason, setFallbackReason] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<SponsorReceipt | null>(null);
-  const [busy, setBusy] = useState<"compile" | "sponsor" | null>(null);
+  const [busy, setBusy] = useState<"pilot" | "sponsor" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
-  const compileAbortRef = useRef<AbortController | null>(null);
+  const [auditExpanded, setAuditExpanded] = useState(false);
+  const pilotAbortRef = useRef<AbortController | null>(null);
+  const runPilotRef = useRef<(nextIntent?: string) => Promise<void>>(async () => {});
+  runPilotRef.current = runPilot;
 
   useEffect(() => {
     setIntent(defaultIntent);
-    void compile(defaultIntent);
-  }, [defaultIntent]);
+    if (urlOracleId) {
+      void runPilotRef.current(defaultIntent);
+    }
+  }, [defaultIntent, urlOracleId]);
 
-  async function compile(nextIntent = intent) {
-    compileAbortRef.current?.abort();
+  useEffect(() => {
+    let cancelled = false;
+    let hasPreview = false;
+    let inFlight = false;
+
+    async function loadMarketPreview() {
+      if (inFlight) {
+        return;
+      }
+
+      inFlight = true;
+
+      try {
+        const response = await fetch("/api/markets?status=active&expiry=next&pageSize=1", {
+          cache: "no-store"
+        });
+
+        if (!response.ok) {
+          throw new Error("Market preview unavailable.");
+        }
+
+        const payload = await response.json() as MarketDiscoveryResult;
+
+        if (!cancelled) {
+          hasPreview = true;
+          setMarketPreview(payload);
+        }
+      } catch {
+        if (!cancelled && !hasPreview) {
+          setMarketPreview(null);
+        }
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    void loadMarketPreview();
+    const intervalId = window.setInterval(() => {
+      void loadMarketPreview();
+    }, MARKET_PREVIEW_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  async function runPilot(nextIntent = intent) {
+    const trimmedIntent = nextIntent.trim();
+
+    if (!trimmedIntent) {
+      return;
+    }
+
+    pilotAbortRef.current?.abort();
     const controller = new AbortController();
-    compileAbortRef.current = controller;
-    setBusy("compile");
+    const assistantId = createMessageId("assistant");
+    pilotAbortRef.current = controller;
+    setBusy("pilot");
     setError(null);
     setReceipt(null);
-    setStreamText("");
+    setCompiled(null);
+    setPilotMode(null);
+    setRagSources([]);
+    setSourcesExpanded(false);
     setStreamTimeline([]);
-    setFallbackReason(null);
+    setAuditExpanded(false);
+    setMessages((current) => {
+      const nextMessages: PilotMessage[] = [
+        ...current,
+        {
+          id: createMessageId("user"),
+          role: "user",
+          content: trimmedIntent
+        },
+        {
+          id: assistantId,
+          role: "assistant",
+          content: "",
+          pending: true
+        }
+      ];
+
+      return nextMessages.slice(-8);
+    });
 
     try {
-      const response = await fetch("/api/compile/stream", {
+      const response = await fetch("/api/pilot/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          intent: nextIntent,
+          message: trimmedIntent,
           walletAddress: account?.address
         }),
         signal: controller.signal
       });
 
       if (!response.ok) {
-        throw new Error("Intent compile failed.");
+        throw new Error("Pilot request failed.");
       }
 
-      await readCompileStream(response);
-    } catch (compileError) {
-      if (compileError instanceof DOMException && compileError.name === "AbortError") {
+      await readPilotStream(response, assistantId);
+    } catch (pilotError) {
+      if (pilotError instanceof DOMException && pilotError.name === "AbortError") {
         return;
       }
 
-      setError(compileError instanceof Error ? compileError.message : "Intent compile failed.");
+      const message = pilotError instanceof Error ? pilotError.message : "Pilot request failed.";
+      setError(message);
+      updateAssistantMessage(assistantId, {
+        content: message,
+        pending: false
+      });
     } finally {
-      if (compileAbortRef.current === controller) {
-        compileAbortRef.current = null;
+      if (pilotAbortRef.current === controller) {
+        pilotAbortRef.current = null;
         setBusy(null);
       }
+      updateAssistantMessage(assistantId, {
+        pending: false
+      });
     }
   }
 
-  async function readCompileStream(response: Response) {
+  async function readPilotStream(response: Response, assistantId: string) {
     if (!response.body) {
-      throw new Error("Compile stream unavailable.");
+      throw new Error("Pilot stream unavailable.");
     }
 
     const reader = response.body.getReader();
@@ -169,19 +289,35 @@ function TerminalExperience() {
           continue;
         }
 
-        handleCompileEvent(JSON.parse(data) as CompileStreamEvent);
+        handlePilotEvent(JSON.parse(data) as PilotStreamEvent, assistantId);
       }
     }
   }
 
-  function handleCompileEvent(event: CompileStreamEvent) {
-    if (event.type === "llm_delta") {
-      setStreamText((current) => current + event.delta);
+  function handlePilotEvent(event: PilotStreamEvent, assistantId: string) {
+    if (event.type === "mode") {
+      setPilotMode(event.mode);
+      updateAssistantMessage(assistantId, {
+        mode: event.mode
+      });
       return;
     }
 
-    if (event.type === "fallback") {
-      setFallbackReason(event.reason);
+    if (event.type === "answer_delta") {
+      setPilotMode("chat");
+      updateAssistantMessage(assistantId, (message) => ({
+        ...message,
+        mode: "chat",
+        content: message.content + event.delta
+      }));
+      return;
+    }
+
+    if (event.type === "sources") {
+      setRagSources(event.sources);
+      updateAssistantMessage(assistantId, {
+        sources: event.sources
+      });
       return;
     }
 
@@ -192,12 +328,50 @@ function TerminalExperience() {
 
     if (event.type === "compiled") {
       setCompiled(event.result as CompileApiResult);
+      setPilotMode("trade");
+      updateAssistantMessage(assistantId, {
+        mode: "trade",
+        pending: false,
+        content: tradeAssistantCopy(event.result as CompileApiResult)
+      });
       return;
     }
 
     if (event.type === "error") {
       setError(event.error);
+      updateAssistantMessage(assistantId, {
+        content: event.error,
+        pending: false
+      });
     }
+  }
+
+  function updateAssistantMessage(
+    id: string,
+    patch:
+      | Partial<PilotMessage>
+      | ((message: PilotMessage) => PilotMessage)
+  ) {
+    setMessages((current) => current.map((message) => {
+      if (message.id !== id) {
+        return message;
+      }
+
+      return typeof patch === "function" ? patch(message) : { ...message, ...patch };
+    }));
+  }
+
+  function submitIntent() {
+    void runPilot(intent);
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+
+    event.preventDefault();
+    submitIntent();
   }
 
   async function sponsor() {
@@ -246,7 +420,7 @@ function TerminalExperience() {
       const response = await fetch("/api/sponsor", {
         method: "POST",
         headers: { "content-type": "application/json" },
-      body: JSON.stringify({
+        body: JSON.stringify({
           intent,
           walletAddress: account.address,
           network: sponsorNetwork,
@@ -292,14 +466,21 @@ function TerminalExperience() {
     compiled?.market?.oracle.oracle_id ??
     (compiled?.intent.status === "ready" ? compiled.intent.oracleId : undefined) ??
     urlOracleId ??
+    marketPreview?.selectedMarket?.oracleId ??
     undefined;
   const selectedStrike =
-    typeof marketStrike === "number" ? marketStrike : typeof intentStrike === "number" ? intentStrike : urlStrike;
+    typeof marketStrike === "number"
+      ? marketStrike
+      : typeof intentStrike === "number"
+        ? intentStrike
+        : urlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
+  const hasLockedStrike = Boolean(compiled?.market || intentStrike || urlStrike);
+  const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
 
   return (
     <AppShell
-      title="Trade BTC Predict with risk proof"
-      description="Use the ticket for quote, buy, and sell previews; the intent compiler adds a transparent Guardian and sponsor-policy audit layer."
+      title="DeepPilot execution cockpit"
+      description="Ask about markets, or turn one sentence into a Guardian-reviewed DeepBook Predict transaction preview."
       meta={
         <>
           <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
@@ -312,95 +493,313 @@ function TerminalExperience() {
       }
     >
         <div className="terminal-grid">
-          <section className="flex min-w-0 flex-col gap-3">
-            <Card className="glass-line">
-              <CardHeader className="pb-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <CardTitle>Pilot Console</CardTitle>
-                    <CardDescription>What do you want to do on DeepBook Predict?</CardDescription>
-                  </div>
-                  <Button size="sm" onClick={() => compile()} disabled={busy !== null}>
-                    {busy === "compile" ? <RefreshCw className="animate-spin" /> : <Play />}
-                    Process
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <Textarea
-                  className="min-h-[132px] resize-none border-border bg-background/70 text-base leading-7"
-                  value={intent}
-                  onChange={(event) => setIntent(event.target.value)}
-                  placeholder="Bet 10 DUSDC that BTC will be down by 18:00 tonight"
-                />
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {EXAMPLE_INTENTS.map((example) => (
-                    <button
-                      key={example}
-                      className="rounded-md border border-border bg-secondary/70 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                      onClick={() => {
-                        setIntent(example);
-                        void compile(example);
-                      }}
-                      disabled={busy !== null}
-                    >
-                      {example}
-                    </button>
-                  ))}
-                </div>
-                {busy === "compile" || streamText || fallbackReason ? (
-                  <div className="mt-3 rounded-md border border-border bg-background/70 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">DeepSeek stream</p>
-                      <Badge variant="outline" className="border-border text-[10px] uppercase text-muted-foreground">
-                        {fallbackReason ? "fallback" : busy === "compile" ? "streaming" : "parsed"}
-                      </Badge>
-                    </div>
-                    <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground/80">
-                      {streamText || fallbackReason || "Waiting for structured JSON..."}
-                    </pre>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
+          <section className="market-column flex min-w-0 flex-col gap-3">
+            <PredictMarketChart oracleId={selectedOracleId} strike={selectedStrike} strikeLabel={selectedStrikeLabel} />
+            <MarketCard compiled={compiled} preview={marketPreview?.selectedMarket ?? null} strikeLocked={hasLockedStrike} />
+            <VaultCard compiled={compiled} previewMarket={marketPreview?.selectedMarket ?? null} previewVault={marketPreview?.vault ?? null} />
+          </section>
 
-            <TradeTicket
-              market={compiled?.market ?? null}
-              initialOracleId={urlOracleId}
-              initialStrike={urlStrike}
-              onGenerate={(nextIntent) => {
-                setIntent(nextIntent);
-                void compile(nextIntent);
+          <section className="pilot-column flex min-w-0 flex-col gap-3">
+            <PilotConsole
+              intent={intent}
+              messages={messages}
+              busy={busy === "pilot"}
+              onChange={setIntent}
+              onSubmit={submitIntent}
+              onKeyDown={onComposerKeyDown}
+              onExample={(example) => {
+                setIntent(example);
+                void runPilot(example);
               }}
             />
-            <CompilerCard compiled={compiled} busy={busy === "compile"} streamTimeline={streamTimeline} />
-            <PtbCard compiled={compiled} />
+
+            {pilotMode === "trade" || urlOracleId ? (
+              <TradeTicket
+                market={compiled?.market ?? null}
+                initialOracleId={urlOracleId}
+                initialStrike={urlStrike}
+                onGenerate={(nextIntent) => {
+                  setIntent(nextIntent);
+                  void runPilot(nextIntent);
+                }}
+              />
+            ) : null}
           </section>
 
-          <section className="market-column flex min-w-0 flex-col gap-3">
-            <PredictMarketChart oracleId={selectedOracleId} strike={selectedStrike} />
-            <MarketCard compiled={compiled} />
-            <VaultCard compiled={compiled} />
-          </section>
-
-          <aside className="flex min-w-0 flex-col gap-3">
-            <GuardianCard
-              compiled={compiled}
-              expandedFinding={expandedFinding}
-              onExpand={setExpandedFinding}
-            />
-            <GasCard compiled={compiled} accountAddress={account?.address} />
-            <ExecutionCard
-              compiled={compiled}
-              receipt={receipt}
-              error={error}
-              busy={busy === "sponsor"}
-              blocked={blocked}
-              onConfirm={sponsor}
-            />
+          <aside className="audit-column flex min-w-0 flex-col gap-3">
+            {pilotMode === "chat" ? (
+              <SourcesCard sources={ragSources} expanded={sourcesExpanded} onToggle={() => setSourcesExpanded((current) => !current)} />
+            ) : pilotMode === "trade" ? (
+              <>
+                <AuditToggle
+                  expanded={auditExpanded}
+                  busy={busy === "pilot"}
+                  compiled={compiled}
+                  onToggle={() => setAuditExpanded((current) => !current)}
+                />
+                <AnimatePresence initial={false}>
+                  {auditExpanded ? (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="flex min-w-0 flex-col gap-3 overflow-hidden"
+                    >
+                      <CompilerCard compiled={compiled} busy={busy === "pilot"} streamTimeline={streamTimeline} />
+                      <GuardianCard
+                        compiled={compiled}
+                        expandedFinding={expandedFinding}
+                        onExpand={setExpandedFinding}
+                      />
+                      <PtbCard compiled={compiled} />
+                      <GasCard compiled={compiled} accountAddress={account?.address} />
+                      <ExecutionCard
+                        compiled={compiled}
+                        receipt={receipt}
+                        error={error}
+                        busy={busy === "sponsor"}
+                        blocked={blocked}
+                        onConfirm={sponsor}
+                      />
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+              </>
+            ) : busy === "pilot" ? (
+              <ProcessingCard />
+            ) : (
+              <IdleAuditCard />
+            )}
           </aside>
         </div>
     </AppShell>
+  );
+}
+
+function PilotConsole({
+  intent,
+  messages,
+  busy,
+  onChange,
+  onSubmit,
+  onKeyDown,
+  onExample
+}: {
+  intent: string;
+  messages: PilotMessage[];
+  busy: boolean;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onExample: (example: string) => void;
+}) {
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const latestMessage = messages.at(-1);
+
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({
+      block: "end",
+      behavior: busy ? "smooth" : "auto"
+    });
+  }, [busy, latestMessage?.content, latestMessage?.pending, messages.length]);
+
+  return (
+    <Card className="glass-line">
+      <CardHeader className="p-4 pb-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm">Type your request here</CardTitle>
+            </div>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="p-4 pt-0">
+        <div className="pilot-chat-frame">
+          {messages.length > 0 ? (
+            <div className="pilot-transcript p-3">
+              <div className="space-y-3">
+                {messages.map((message) => (
+                  <MessageBubble key={message.id} message={message} />
+                ))}
+                <div ref={transcriptEndRef} aria-hidden="true" />
+              </div>
+            </div>
+          ) : (
+            <div className="grid min-h-[72px] place-items-center border-b border-border/60 px-3 py-2">
+              <div className="flex items-center gap-2 text-sm text-muted-foreground/45">
+                <Bot className="h-4 w-4" />
+                <span>{COMPOSER_HINT}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="pilot-composer-panel p-2.5">
+            <div className="flex flex-col gap-2">
+              <Textarea
+                id="pilot-composer"
+                className="min-h-[116px] resize-none border-border/80 bg-background/70 py-2.5 text-sm leading-6 shadow-none placeholder:text-muted-foreground/45 focus-visible:ring-1 focus-visible:ring-ring/70"
+                value={intent}
+                onChange={(event) => onChange(event.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder={COMPOSER_HINT}
+              />
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-xs text-muted-foreground/70">Enter to send · Shift+Enter for a new line</span>
+                <Button className="h-9 w-full shrink-0 sm:w-auto" onClick={onSubmit} disabled={busy || !intent.trim()}>
+                  {busy ? <RefreshCw className="animate-spin" /> : <Send />}
+                  Send
+                </Button>
+              </div>
+            </div>
+            <div className="mt-3 space-y-2">
+              <span className="text-xs text-muted-foreground">Examples</span>
+              {EXAMPLE_INTENTS.map((example) => (
+                <button
+                  key={example}
+                  className="block w-full rounded-md border border-border bg-secondary/70 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:border-zinc-500 hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  onClick={() => onExample(example)}
+                  disabled={busy}
+                >
+                  {example}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function MessageBubble({ message }: { message: PilotMessage }) {
+  const isUser = message.role === "user";
+
+  return (
+    <div className={cn("flex gap-2", isUser ? "justify-end" : "justify-start")}>
+      {!isUser ? (
+        <div className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-card">
+          <Bot className="h-4 w-4 text-muted-foreground" />
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "max-w-[88%] rounded-md border p-3 text-sm leading-6",
+          isUser
+            ? "border-foreground/15 bg-foreground text-background"
+            : "border-border bg-card/80 text-foreground"
+        )}
+      >
+        {message.content ? (
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        ) : (
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <RefreshCw className="h-4 w-4 animate-spin" />
+            <span>Processing request...</span>
+          </div>
+        )}
+        {!isUser && message.mode === "chat" && message.content ? (
+          <p className="mt-3 border-t border-border pt-3 text-xs leading-5 text-muted-foreground">{AI_DISCLOSURE}</p>
+        ) : null}
+      </div>
+      {isUser ? (
+        <div className="mt-1 grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-card">
+          <UserRound className="h-4 w-4 text-muted-foreground" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function IdleAuditCard() {
+  return (
+    <Card className="glass-line">
+      <CardHeader className="pb-2">
+        <SectionHeading title="Pilot Mode" detail="waiting" icon={<Bot className="h-4 w-4" />} />
+      </CardHeader>
+      <CardContent>
+        <MutedBox>
+          Ask a market question to see sources, or submit a trade request to open the Guardian and PTB review.
+        </MutedBox>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ProcessingCard() {
+  return (
+    <Card className="glass-line">
+      <CardHeader className="pb-2">
+        <SectionHeading title="Processing" detail="routing" icon={<RefreshCw className="h-4 w-4 animate-spin" />} />
+      </CardHeader>
+      <CardContent>
+        <div className="rounded-md border border-border bg-background/60 p-3">
+          <div className="flex items-center gap-2 text-sm text-foreground">
+            <span className="h-2 w-2 rounded-full bg-foreground processing-dot" />
+            <span className="h-2 w-2 rounded-full bg-foreground processing-dot" style={{ animationDelay: "120ms" }} />
+            <span className="h-2 w-2 rounded-full bg-foreground processing-dot" style={{ animationDelay: "240ms" }} />
+            <span className="ml-2">Classifying request and preparing the next panel.</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function AuditToggle({
+  expanded,
+  busy,
+  compiled,
+  onToggle
+}: {
+  expanded: boolean;
+  busy: boolean;
+  compiled: CompileApiResult | null;
+  onToggle: () => void;
+}) {
+  const detail = compiled?.guardian.decision ? compiled.guardian.decision.toUpperCase() : busy ? "checking" : "review";
+  const firstCommand = compiled?.ptb?.commands[0] ?? null;
+  const summaryRows = compiled
+    ? [
+        ["Guardian", compiled.guardian.decision.toUpperCase()],
+        ["PTB digest", compiled.ptb?.digestPreview ? shortAddress(compiled.ptb.digestPreview) : "not compiled"],
+        ["Move target", firstCommand?.target ? compactMiddle(firstCommand.target, 18) : "locked"]
+      ]
+    : [
+        ["Guardian", busy ? "checking" : "waiting"],
+        ["PTB digest", "waiting"],
+        ["Move target", "waiting"]
+      ];
+
+  return (
+    <Card className="glass-line">
+      <CardHeader className="p-4 pb-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm">Trade Review</CardTitle>
+            </div>
+            <CardDescription className="text-xs">{detail}</CardDescription>
+          </div>
+          <Button size="sm" variant="outline" onClick={onToggle}>
+            <ChevronDown className={cn("transition-transform", expanded && "rotate-180")} />
+            {expanded ? "Hide details" : "Show details"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2 p-4 pt-0">
+        <div className="rounded-md border border-border bg-background/55">
+          {summaryRows.map(([label, value]) => (
+            <div key={label} className="grid grid-cols-[86px_1fr] gap-3 border-b border-border/70 px-3 py-2 last:border-b-0">
+              <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+              <span className="min-w-0 truncate font-mono text-xs text-foreground/85">{value}</span>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -425,7 +824,7 @@ function CompilerCard({
   return (
     <Card>
       <CardHeader className="pb-2">
-        <SectionHeading title="Compiler" detail="5 stages" />
+        <SectionHeading title="Execution Checklist" detail={`${timeline.length} steps`} />
       </CardHeader>
       <CardContent className="space-y-1">
         {timeline.map((item, index) => (
@@ -448,7 +847,7 @@ function CompilerCard({
 
 function upsertStage(
   stages: CompileResult["timeline"],
-  event: Extract<CompileStreamEvent, { type: "stage" }>
+  event: Extract<PilotStreamEvent, { type: "stage" }>
 ) {
   const next = stages.some((stage) => stage.label === event.label)
     ? stages.map((stage) => stage.label === event.label ? { label: event.label, state: event.state } : stage)
@@ -514,31 +913,124 @@ function PtbCard({ compiled }: { compiled: CompileApiResult | null }) {
   );
 }
 
-function MarketCard({ compiled }: { compiled: CompileApiResult | null }) {
+function SourcesCard({
+  sources,
+  expanded,
+  onToggle
+}: {
+  sources: RagSource[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Card className="glass-line">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <CardTitle>RAG Sources</CardTitle>
+            <CardDescription>{sources.length ? `${sources.length} refs` : "waiting"}</CardDescription>
+          </div>
+          <Button size="sm" variant="outline" onClick={onToggle} disabled={sources.length === 0}>
+            <ChevronDown className={cn("transition-transform", expanded && "rotate-180")} />
+            {expanded ? "Hide" : "Show"}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {sources.length === 0 ? (
+          <MutedBox>Waiting for Predict oracle, news, and local docs context.</MutedBox>
+        ) : !expanded ? (
+          <div className="space-y-1">
+            {sources.slice(0, 6).map((source) => (
+              <div key={source.id} className="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border border-border bg-background/45 px-2 py-1.5">
+                <span className="font-mono text-[10px] text-muted-foreground">{source.id}</span>
+                <span className="min-w-0 truncate text-xs text-foreground/85">{compactSourceTitle(source)}</span>
+                <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{source.sourceType}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          sources.map((source) => (
+            <div key={source.id} className="rounded-md border border-border bg-background/60 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">{source.title}</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{source.snippet}</p>
+                </div>
+                <Badge variant="outline" className="shrink-0 border-border text-[10px] uppercase text-muted-foreground">
+                  {source.partial ? "partial" : source.sourceType}
+                </Badge>
+              </div>
+              {source.url ? (
+                <a
+                  href={source.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-2 block truncate font-mono text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                >
+                  {source.url}
+                </a>
+              ) : null}
+            </div>
+          ))
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function MarketCard({
+  compiled,
+  preview,
+  strikeLocked
+}: {
+  compiled: CompileApiResult | null;
+  preview: MarketListItem | null;
+  strikeLocked: boolean;
+}) {
   const market = compiled?.market;
+  const oracleId = market?.oracle.oracle_id ?? preview?.oracleId ?? null;
+  const expiry = market?.oracle.expiry ?? preview?.expiry ?? null;
+  const strikeLabel = strikeLocked ? "Trade Strike" : "ATM Ref";
+  const metrics = market
+    ? {
+        spot: market.metrics.spot,
+        forward: market.metrics.forward,
+        selectedStrike: market.metrics.selectedStrike,
+        oracleAgeMs: market.metrics.oracleAgeMs
+      }
+    : preview
+      ? {
+          spot: preview.spot,
+          forward: preview.forward,
+          selectedStrike: preview.selectedStrike,
+          oracleAgeMs: preview.oracleAgeMs
+        }
+      : null;
 
   return (
     <Card className="glass-line">
-      <CardHeader>
+      <CardHeader className="p-4 pb-2">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <CardTitle>Oracle</CardTitle>
-            <CardDescription>{market ? shortAddress(market.oracle.oracle_id) : "BTC Predict oracle"}</CardDescription>
+            <CardTitle className="text-sm">Oracle</CardTitle>
+            <CardDescription className="text-xs">{oracleId ? shortAddress(oracleId) : "BTC Predict oracle"}</CardDescription>
           </div>
-          <Badge variant="outline" className="border-border text-muted-foreground">
-            DeepBook Predict
+          <Badge variant="outline" className="h-7 border-border text-xs text-muted-foreground">
+            {strikeLocked ? "Review locked" : "Live preview"}
           </Badge>
         </div>
       </CardHeader>
-      <CardContent>
-        {!market ? (
-          <MutedBox>{compiled?.intent.status === "ready" ? "Predict state unavailable." : "Awaiting Predict state."}</MutedBox>
+      <CardContent className="p-4 pt-0">
+        {!metrics ? (
+          <MutedBox>Loading latest BTC Predict market.</MutedBox>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-4">
-            <MarketMetric label="Spot" value={formatUsd(market.metrics.spot)} />
-            <MarketMetric label="Forward" value={formatUsd(market.metrics.forward)} />
-            <MarketMetric label="Strike" value={formatUsd(market.metrics.selectedStrike)} />
-            <MarketMetric label="Oracle Age" value={formatAge(market.metrics.oracleAgeMs)} />
+          <div className="grid grid-cols-2 gap-2">
+            <MarketMetric label="Spot" value={formatUsd(metrics.spot)} />
+            <MarketMetric label="Forward" value={formatUsd(metrics.forward)} />
+            <MarketMetric label={strikeLabel} value={formatUsd(metrics.selectedStrike)} />
+            <MarketMetric label="Expiry" value={formatExpiry(expiry)} />
+            <MarketMetric label="Oracle Age" value={formatAge(metrics.oracleAgeMs)} />
           </div>
         )}
       </CardContent>
@@ -546,23 +1038,40 @@ function MarketCard({ compiled }: { compiled: CompileApiResult | null }) {
   );
 }
 
-function VaultCard({ compiled }: { compiled: CompileApiResult | null }) {
+function VaultCard({
+  compiled,
+  previewMarket,
+  previewVault
+}: {
+  compiled: CompileApiResult | null;
+  previewMarket: MarketListItem | null;
+  previewVault: VaultSummary | null;
+}) {
   const market = compiled?.market;
+  const vaultUtilization = market?.metrics.vaultUtilization ?? previewMarket?.vaultUtilization ?? previewVault?.utilization ?? null;
+  const maxPayoutUtilization = market?.metrics.maxPayoutUtilization ?? previewMarket?.maxPayoutUtilization ?? previewVault?.max_payout_utilization ?? null;
+  const availableLiquidityDusdc =
+    market?.metrics.availableLiquidityDusdc ??
+    previewMarket?.availableLiquidityDusdc ??
+    (previewVault ? previewVault.available_liquidity / 1_000_000 : null);
+  const notionalDusdc = market?.metrics.notionalDusdc ?? null;
+  const askBoundsAvailable = market?.metrics.askBoundsAvailable ?? previewMarket?.askBoundsAvailable ?? null;
+  const hasVault = vaultUtilization !== null || availableLiquidityDusdc !== null;
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <SectionHeading title="Vault Risk" detail={market ? `${(market.metrics.vaultUtilization * 100).toFixed(2)}% used` : "waiting"} />
+    <Card className="glass-line">
+      <CardHeader className="p-4 pb-2">
+        <SectionHeading title="Vault Risk" detail={vaultUtilization !== null ? `${(vaultUtilization * 100).toFixed(2)}% used` : "waiting"} />
       </CardHeader>
-      <CardContent>
-        {!market ? (
-          <MutedBox>No vault snapshot.</MutedBox>
+      <CardContent className="p-4 pt-0">
+        {!hasVault ? (
+          <MutedBox>Loading latest vault snapshot.</MutedBox>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            <MarketMetric label="Available" value={`${market.metrics.availableLiquidityDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC`} />
-            <MarketMetric label="Notional" value={`${market.metrics.notionalDusdc.toLocaleString()} DUSDC`} />
-            <MarketMetric label="Max Payout Use" value={`${(market.metrics.maxPayoutUtilization * 100).toFixed(2)}%`} />
-            <MarketMetric label="Ask Bounds" value={market.metrics.askBoundsAvailable ? "available" : "fallback"} />
+          <div className="grid grid-cols-2 gap-2">
+            <MarketMetric label="Available" value={availableLiquidityDusdc === null ? "--" : `${formatCompactNumber(availableLiquidityDusdc)} DUSDC`} />
+            <MarketMetric label="Notional" value={notionalDusdc === null ? "market preview" : `${notionalDusdc.toLocaleString()} DUSDC`} />
+            <MarketMetric label="Max Payout Use" value={maxPayoutUtilization === null ? "--" : `${(maxPayoutUtilization * 100).toFixed(2)}%`} />
+            <MarketMetric label="Ask Bounds" value={askBoundsAvailable === null ? "--" : askBoundsAvailable ? "available" : "fallback"} />
           </div>
         )}
       </CardContent>
@@ -738,6 +1247,35 @@ function ExecutionCard({
   );
 }
 
+function tradeAssistantCopy(compiled: CompileApiResult) {
+  if (compiled.intent.status === "needs_clarification") {
+    return `I need one more field before building a transaction review: ${compiled.intent.missing.join(", ")}.\n${compiled.intent.reason}`;
+  }
+
+  if (compiled.guardian.decision === "block") {
+    return `Guardian returned BLOCK.\n${compiled.guardian.summary}\nReview the blocked checks on the right before changing the intent.`;
+  }
+
+  const action = compiled.intent.action.replaceAll("_", " ");
+  const digest = compiled.ptb?.digestPreview ?? "No PTB digest";
+
+  return [
+    "Draft Predict trade is ready for review.",
+    `Action: ${action}`,
+    `Guardian: ${compiled.guardian.decision.toUpperCase()}`,
+    `PTB digest: ${digest}`,
+    "Use Review & Sign only after checking the Guardian result, Move target, objects, and amount."
+  ].join("\n");
+}
+
+function createMessageId(prefix: string) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function defaultIntentFromSearch(searchParams: { get(name: string): string | null }) {
   const oracleId = oracleIdFromSearch(searchParams);
   const strike = strikeFromSearch(searchParams);
@@ -792,9 +1330,9 @@ function SectionHeading({ title, detail, icon }: { title: string; detail: string
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-2">
         {icon ? <span className="text-muted-foreground">{icon}</span> : null}
-        <CardTitle className="truncate">{title}</CardTitle>
+        <CardTitle className="truncate text-sm">{title}</CardTitle>
       </div>
-      <CardDescription className="shrink-0">{detail}</CardDescription>
+      <CardDescription className="shrink-0 text-xs">{detail}</CardDescription>
     </div>
   );
 }
@@ -813,9 +1351,9 @@ function StatusIcon({ state, busy }: { state: "complete" | "blocked" | "pending"
 
 function MarketMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-background/60 p-3">
-      <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{label}</p>
-      <p className="mt-2 truncate text-lg font-semibold tracking-tight text-foreground">{value}</p>
+    <div className="rounded-md border border-border bg-background/60 p-2.5">
+      <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">{label}</p>
+      <p className="mt-1.5 break-words text-sm font-semibold leading-tight tracking-tight text-foreground">{value}</p>
     </div>
   );
 }
@@ -864,8 +1402,68 @@ function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
+function compactMiddle(value: string, maxLength: number) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const edge = Math.max(4, Math.floor((maxLength - 3) / 2));
+
+  return `${value.slice(0, edge)}...${value.slice(-edge)}`;
+}
+
+function compactSourceTitle(source: RagSource) {
+  const cleanTitle = source.title
+    .replace(/^(CoinDesk|Cointelegraph|Decrypt):\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const fallback = source.snippet.replace(/\s+/g, " ").trim();
+  const label = cleanTitle || fallback || source.sourceType;
+
+  return label.length > 42 ? `${label.slice(0, 42)}...` : label;
+}
+
 function formatUsd(value: number | null) {
-  return value === null ? "--" : `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  return value === null ? "--" : `$${value.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function formatExpiry(valueMs: number | null) {
+  if (valueMs === null) {
+    return "--";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short"
+  }).format(new Date(valueMs));
+}
+
+function formatCompactNumber(value: number) {
+  const abs = Math.abs(value);
+  const unit =
+    abs >= 1_000_000_000
+      ? { divisor: 1_000_000_000, suffix: "B" }
+      : abs >= 1_000_000
+        ? { divisor: 1_000_000, suffix: "M" }
+        : abs >= 1_000
+          ? { divisor: 1_000, suffix: "K" }
+          : null;
+
+  if (!unit) {
+    return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
+
+  const scaled = value / unit.divisor;
+  const digits = Math.abs(scaled) >= 100 ? 0 : Math.abs(scaled) >= 10 ? 1 : 2;
+
+  return `${trimTrailingZeros(scaled.toFixed(digits))}${unit.suffix}`;
+}
+
+function trimTrailingZeros(value: string) {
+  return value.replace(/\.0+$|(\.\d*[1-9])0+$/, "$1");
 }
 
 function formatAge(valueMs: PredictMarketSnapshot["metrics"]["oracleAgeMs"]) {

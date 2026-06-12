@@ -560,6 +560,13 @@ function fallbackExpiry(text: string): {
     };
   }
 
+  if (/\b(today|tonight)\b/i.test(text) || /今天|今晚/.test(text)) {
+    return {
+      preference: "next_active",
+      label: "Next active expiry for today/tonight"
+    };
+  }
+
   const time = fallbackClockTime(text);
 
   if (!time) {
