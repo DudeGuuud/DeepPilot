@@ -4,7 +4,7 @@ import { compileIntent } from "../src/lib/compile";
 import { parseJsonBody } from "../src/lib/http";
 import { buildBinaryMintTransaction, buildCreatePredictManagerTransaction } from "../src/lib/predict-execution";
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment } from "../src/lib/predict";
-import { getProfileSummary } from "../src/lib/profile";
+import { getProfileSummary, normalizeProfilePnl, normalizeProfilePositions } from "../src/lib/profile";
 
 const intent = "Buy 10 DUSDC BTC UP on the next active DeepBook Predict oracle";
 const result = await compileIntent(intent);
@@ -70,6 +70,33 @@ const markets = await getPredictMarkets({ status: "active", asset: "BTC", select
 const secondPageMarkets = await getPredictMarkets({ status: "active", asset: "BTC", page: 2, pageSize: 4 });
 const history = await getPredictOracleHistory(market.oracle.oracle_id);
 const emptyProfile = await getProfileSummary({ wallet: null, managerId: null });
+const newWalletProfile = await getProfileSummary({
+  wallet: "0x00000000000000000000000000000000000000000000000000000000deedc0de",
+  managerId: null
+});
+const fixturePositions = normalizeProfilePositions([
+  {
+    oracle_id: market.oracle.oracle_id,
+    underlying_asset: "BTC",
+    expiry: 1781318700000,
+    strike: 63568000000000,
+    is_up: false,
+    open_quantity: 3000000,
+    open_cost_basis: 1210000,
+    mark_value: null,
+    unrealized_pnl: -120000,
+    realized_pnl: 4414672,
+    status: "active"
+  }
+]);
+const fixturePnl = normalizeProfilePnl(
+  {
+    range: "ALL",
+    current_unrealized_pnl: -120000,
+    current_total_pnl: 4294672
+  },
+  { realizedPnlDusdc: 4.414672 }
+);
 const invalidJson = await parseJsonBody(
   new Request("http://deeppilot.local", { method: "POST", body: "not-json" }),
   z.object({ intent: z.string() })
@@ -108,6 +135,19 @@ assert(history.points.length > 0, "oracle history should include price points");
 assert(history.points.length <= 240, "oracle history should be server capped");
 assert(history.points.every((point) => point.spot > 1_000 && point.spot < 1_000_000), "oracle history should normalize price scale");
 assert(!emptyProfile.managerLinked, "profile without manager id should stay in honest not-linked mode");
+assert(!emptyProfile.managerNeedsCreation, "profile without wallet should not prompt manager creation");
+assert(newWalletProfile.managerNeedsCreation, "connected wallet without manager should prompt manager creation");
+assert(newWalletProfile.positions.length === 0, "wallet without manager should not fabricate positions");
+assert(newWalletProfile.pnl === null, "wallet without manager should not fabricate PnL");
+assert(fixturePositions.length === 1, "profile position normalizer should keep server rows");
+assert(fixturePositions[0].market === "BTC", "profile position normalizer should keep market asset");
+assert(fixturePositions[0].direction === "down", "profile position normalizer should map is_up to direction");
+assert(fixturePositions[0].strike === 63568, "profile position normalizer should scale strike");
+assert(fixturePositions[0].openQuantityDusdc === 3, "profile position normalizer should scale open quantity");
+assert(fixturePositions[0].currentValueDusdc === null, "profile position normalizer should not invent missing mark value");
+assert(fixturePnl?.source === "predict_server", "profile PnL should be labeled as server indexed");
+assert(fixturePnl.unrealizedPnlDusdc === -0.12, "profile PnL should scale unrealized PnL");
+assert(fixturePnl.realizedPnlDusdc === 4.414672, "profile PnL should use manager summary realized PnL when endpoint omits it");
 assert(!invalidJson.success, "invalid JSON body should be rejected without throwing");
 
 console.log(

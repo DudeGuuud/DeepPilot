@@ -30,6 +30,7 @@ import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { PredictMarketChart } from "@/components/predict-market-chart";
+import { PredictManagerOnboardingModal } from "@/components/predict-manager-onboarding-modal";
 import { TradeTicket } from "@/components/trade-ticket";
 import {
   assertExecuted,
@@ -40,6 +41,7 @@ import {
 } from "@/src/lib/predict-execution";
 import { storePreviewReceipt } from "@/src/lib/receipts";
 import { cn } from "@/src/lib/utils";
+import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
 import type {
   CompileResult,
   GuardianFinding,
@@ -124,6 +126,8 @@ function TerminalExperience() {
   const [error, setError] = useState<string | null>(null);
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
   const [auditExpanded, setAuditExpanded] = useState(false);
+  const [managerPromptDismissed, setManagerPromptDismissed] = useState(false);
+  const executionRef = useRef(false);
   const pilotAbortRef = useRef<AbortController | null>(null);
   const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null) => Promise<void>>(async () => {});
   runPilotRef.current = runPilot;
@@ -138,6 +142,10 @@ function TerminalExperience() {
   useEffect(() => {
     setManagerId(urlManagerId);
   }, [urlManagerId]);
+
+  useEffect(() => {
+    setManagerPromptDismissed(false);
+  }, [account?.address]);
 
   useEffect(() => {
     let cancelled = false;
@@ -390,6 +398,10 @@ function TerminalExperience() {
   }
 
   async function executePredict() {
+    if (executionRef.current) {
+      return;
+    }
+
     if (!compiled?.ptb || compiled.guardian.blocked) {
       toast({
         variant: "destructive",
@@ -408,6 +420,7 @@ function TerminalExperience() {
       return;
     }
 
+    executionRef.current = true;
     setBusy("execute");
     setError(null);
 
@@ -504,7 +517,7 @@ function TerminalExperience() {
       });
       await runPilot(intent.trim(), built.managerId);
     } catch (executionError) {
-      const message = executionError instanceof Error ? executionError.message : "Wallet execution failed.";
+      const message = explainWalletExecutionError(executionError);
       setError(message);
       toast({
         variant: "destructive",
@@ -512,8 +525,40 @@ function TerminalExperience() {
         description: message
       });
     } finally {
+      executionRef.current = false;
       setBusy(null);
     }
+  }
+
+  async function handleOnboardingManagerCreated({
+    managerId: createdManagerId,
+    digest,
+    network: createdNetwork
+  }: {
+    managerId: string;
+    digest: string;
+    network: "devnet" | "testnet";
+  }) {
+    if (!compiled || !account) {
+      return;
+    }
+
+    setManagerId(createdManagerId);
+    updateManagerInUrl(createdManagerId);
+    setManagerPromptDismissed(true);
+
+    const executionReceipt: ExecutionReceipt = {
+      digest,
+      status: "success",
+      walletAddress: account.address,
+      network: createdNetwork,
+      action: "manager_create",
+      managerId: createdManagerId,
+      note: "Created official DeepBook PredictManager. Re-run review before minting."
+    };
+    setReceipt(executionReceipt);
+    saveExecutionReceipt(executionReceipt, intent, compiled);
+    await runPilot(intent.trim(), createdManagerId);
   }
 
   const guardian = compiled?.guardian;
@@ -534,6 +579,14 @@ function TerminalExperience() {
         : urlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
   const hasLockedStrike = Boolean(compiled?.market || intentStrike || urlStrike);
   const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
+  const reviewNeedsManager = Boolean(
+    account?.address &&
+    pilotMode === "trade" &&
+    compiled?.ptb &&
+    !compiled.ptb.execution.managerId &&
+    !managerPromptDismissed
+  );
+  const onboardingNetwork = compiled?.ptb?.transactionData.network === "devnet" ? "devnet" : "testnet";
 
   return (
     <AppShell
@@ -550,6 +603,16 @@ function TerminalExperience() {
         </>
       }
     >
+        <PredictManagerOnboardingModal
+          open={reviewNeedsManager}
+          packageId={compiled?.ptb?.transactionData.packageId}
+          network={onboardingNetwork}
+          walletAddress={account?.address}
+          context="trade"
+          onDismiss={() => setManagerPromptDismissed(true)}
+          onCreated={handleOnboardingManagerCreated}
+        />
+
         <div className="terminal-grid">
           <section className="market-column flex min-w-0 flex-col gap-3">
             <PredictMarketChart oracleId={selectedOracleId} strike={selectedStrike} strikeLabel={selectedStrikeLabel} />

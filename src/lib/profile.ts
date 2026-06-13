@@ -1,6 +1,13 @@
 import { predictDeployment } from "./predict-config";
-import { normalizeDusdc } from "./predict";
-import type { KeeperSnapshot, ProfileIndexPolicy, ProfileMemoryStatus, ProfileSummary } from "./types";
+import { normalizeDusdc, normalizePrice } from "./predict";
+import type {
+  KeeperSnapshot,
+  ProfileIndexPolicy,
+  ProfileMemoryStatus,
+  ProfilePnlSummary,
+  ProfilePosition,
+  ProfileSummary
+} from "./types";
 
 const objectIdPattern = /^0x[a-fA-F0-9]{1,64}$/;
 
@@ -18,7 +25,8 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
     return emptyProfile(
       normalizedWallet,
       null,
-      "No PredictManager is linked yet. DeepPilot will not invent PnL or positions without a manager object."
+      "No PredictManager is linked yet. DeepPilot will not invent PnL or positions without a manager object.",
+      Boolean(normalizedWallet)
     );
   }
 
@@ -32,24 +40,30 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
     return emptyProfile(
       normalizedWallet,
       normalizedManager,
-      "Predict server did not find this manager. Check the manager id before trusting portfolio data."
+      "Manager created, waiting for Predict indexer. Refresh after the public Predict server indexes the manager."
     );
   }
 
   const managerSummary = normalizeManagerSummary(manager);
-  const keeper = buildKeeperSnapshot(positions);
+  const normalizedPositions = normalizeProfilePositions(positions);
+  const normalizedPnl = normalizeProfilePnl(pnl, managerSummary);
+  const keeper = buildKeeperSnapshot(normalizedPositions);
 
   return {
     wallet: managerSummary.owner ?? normalizedWallet ?? discoveredManager.owner,
     managerId: normalizedManager,
     managerLinked: true,
+    managerNeedsCreation: false,
     network: predictDeployment.network,
+    predictPackageId: predictDeployment.packageId,
     openExposureDusdc: managerSummary.openExposureDusdc,
     redeemableValueDusdc: managerSummary.redeemableValueDusdc,
     realizedPnlDusdc: managerSummary.realizedPnlDusdc,
     tradingBalanceDusdc: managerSummary.tradingBalanceDusdc,
     tradingBalanceRaw: managerSummary.tradingBalanceRaw,
     awaitingSettlement: managerSummary.awaitingSettlement,
+    positions: normalizedPositions,
+    pnl: normalizedPnl,
     guardianBlockedCount: 0,
     activity: [],
     keeper,
@@ -64,18 +78,27 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
   };
 }
 
-function emptyProfile(wallet: string | null, managerId: string | null, message: string): ProfileSummary {
+function emptyProfile(
+  wallet: string | null,
+  managerId: string | null,
+  message: string,
+  managerNeedsCreation = false
+): ProfileSummary {
   return {
     wallet,
     managerId,
     managerLinked: false,
+    managerNeedsCreation,
     network: predictDeployment.network,
+    predictPackageId: predictDeployment.packageId,
     openExposureDusdc: null,
     redeemableValueDusdc: null,
     realizedPnlDusdc: null,
     tradingBalanceDusdc: null,
     tradingBalanceRaw: null,
     awaitingSettlement: null,
+    positions: [],
+    pnl: null,
     guardianBlockedCount: 0,
     activity: [],
     keeper: emptyKeeperSnapshot(),
@@ -161,37 +184,93 @@ function normalizeManagerSummary(value: unknown) {
   };
 }
 
-function buildKeeperSnapshot(value: unknown): KeeperSnapshot {
+export function normalizeProfilePositions(value: unknown): ProfilePosition[] {
+  const rows = Array.isArray(value) ? value : [];
+
+  return rows.map((position, index) => {
+    const oracleId = normalizeObjectId(readStringFromKeys(position, ["oracle_id", "oracleId"]));
+    const direction = readDirection(position);
+    const strike = normalizePriceFromKeys(position, ["strike"]);
+    const lowerStrike = normalizePriceFromKeys(position, ["lower_strike", "lowerStrike", "min_strike", "minStrike"]);
+    const upperStrike = normalizePriceFromKeys(position, ["upper_strike", "upperStrike", "higher_strike", "higherStrike", "max_strike", "maxStrike"]);
+    const openQuantity = readNumberFromKeys(position, ["open_quantity", "openQuantity", "quantity"]);
+    const status = readStringFromKeys(position, ["status"]) ?? "unknown";
+    const kind = inferPositionKind(position, direction, strike, lowerStrike, upperStrike);
+
+    return {
+      id: buildPositionId(position, oracleId, kind, index),
+      kind,
+      market: readStringFromKeys(position, ["underlying_asset", "underlyingAsset", "market", "asset"]),
+      oracleId,
+      status,
+      expiry: readNumberFromKeys(position, ["expiry"]),
+      direction,
+      strike,
+      lowerStrike,
+      upperStrike,
+      openQuantityRaw: readRawIntegerFromKeys(position, ["open_quantity", "openQuantity", "quantity"]),
+      openQuantityDusdc: openQuantity === null ? null : normalizeDusdc(openQuantity),
+      costBasisDusdc: normalizeDusdcFromKeys(position, ["open_cost_basis", "openCostBasis", "cost_basis", "costBasis"]),
+      currentValueDusdc: normalizeDusdcFromKeys(position, ["mark_value", "markValue", "current_value", "currentValue", "server_value", "serverValue"]),
+      unrealizedPnlDusdc: normalizeDusdcFromKeys(position, ["unrealized_pnl", "unrealizedPnl", "floating_pnl", "floatingPnl"]),
+      realizedPnlDusdc: normalizeDusdcFromKeys(position, ["realized_pnl", "realizedPnl"]),
+      action: keeperAction(status, openQuantity ?? 0)
+    };
+  });
+}
+
+export function normalizeProfilePnl(value: unknown, managerSummary?: { realizedPnlDusdc: number | null }): ProfilePnlSummary | null {
+  if (!isRecord(value) && managerSummary?.realizedPnlDusdc === null) {
+    return null;
+  }
+
+  const realized = normalizeDusdcFromKeys(value, ["realized_pnl", "realizedPnl"]) ?? managerSummary?.realizedPnlDusdc ?? null;
+  const unrealized = normalizeDusdcFromKeys(value, [
+    "current_unrealized_pnl",
+    "currentUnrealizedPnl",
+    "unrealized_pnl",
+    "unrealizedPnl"
+  ]);
+  const explicitTotal = normalizeDusdcFromKeys(value, ["current_total_pnl", "currentTotalPnl", "total_pnl", "totalPnl"]);
+  const total = explicitTotal ?? (realized !== null && unrealized !== null ? realized + unrealized : null);
+
+  if (realized === null && unrealized === null && total === null) {
+    return null;
+  }
+
+  return {
+    realizedPnlDusdc: realized,
+    unrealizedPnlDusdc: unrealized,
+    totalPnlDusdc: total,
+    range: readStringFromKeys(value, ["range"]) ?? "ALL",
+    source: "predict_server"
+  };
+}
+
+function buildKeeperSnapshot(positions: ProfilePosition[]): KeeperSnapshot {
   const checkedAt = new Date().toISOString();
-  const positions = Array.isArray(value) ? value : [];
 
   return {
     source: "predict_server_replay",
     checkedAt,
-    monitoringEnabled: positions.length > 0,
-    items: positions
-      .map((position) => {
-        const oracleId = normalizeObjectId(readString(position, "oracle_id"));
-        const status = readString(position, "status") ?? "unknown";
-        const openQuantity = readNumber(position, "open_quantity") ?? 0;
+    monitoringEnabled: positions.some((position) => position.action !== "none"),
+    items: positions.flatMap((position) => {
+      if (!position.oracleId) {
+        return [];
+      }
 
-        if (!oracleId) {
-          return null;
-        }
-
-        return {
-          oracleId,
-          status,
-          openQuantity,
-          action: status === "settled" && openQuantity > 0 ? "redeemable" : openQuantity > 0 ? "monitor_settlement" : "none",
-          detail: status === "settled" && openQuantity > 0
-            ? "Position appears settled and redeemable from Predict server replay."
-            : openQuantity > 0
-              ? "Keeper should monitor this position until settlement."
-              : "No keeper action required."
-        } satisfies KeeperSnapshot["items"][number];
-      })
-      .filter((item): item is KeeperSnapshot["items"][number] => item !== null)
+      return [{
+        oracleId: position.oracleId,
+        status: position.status,
+        openQuantity: position.openQuantityDusdc ?? 0,
+        action: position.action,
+        detail: position.action === "redeemable"
+          ? "Position appears settled and redeemable from Predict server replay."
+          : position.action === "monitor_settlement"
+            ? "Keeper should monitor this position until settlement."
+            : "No keeper action required."
+      }];
+    })
   };
 }
 
@@ -254,6 +333,161 @@ function readRawU64(value: unknown, key: string) {
   }
 
   return null;
+}
+
+function readStringFromKeys(value: unknown, keys: string[]) {
+  for (const key of keys) {
+    const result = readString(value, key);
+
+    if (result !== null) {
+      return result;
+    }
+  }
+
+  return null;
+}
+
+function readNumberFromKeys(value: unknown, keys: string[]) {
+  for (const key of keys) {
+    const result = readNumeric(value, key);
+
+    if (result !== null) {
+      return result;
+    }
+  }
+
+  return null;
+}
+
+function readRawIntegerFromKeys(value: unknown, keys: string[]) {
+  for (const key of keys) {
+    const result = readRawInteger(value, key);
+
+    if (result !== null) {
+      return result;
+    }
+  }
+
+  return null;
+}
+
+function readNumeric(value: unknown, key: string) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const field = value[key];
+
+  if (typeof field === "number" && Number.isFinite(field)) {
+    return field;
+  }
+
+  if (typeof field === "string" && /^-?\d+(\.\d+)?$/.test(field)) {
+    const numeric = Number(field);
+
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  return null;
+}
+
+function readRawInteger(value: unknown, key: string) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const field = value[key];
+
+  if (typeof field === "string" && /^-?\d+$/.test(field)) {
+    return field;
+  }
+
+  if (typeof field === "number" && Number.isSafeInteger(field)) {
+    return String(field);
+  }
+
+  return null;
+}
+
+function normalizeDusdcFromKeys(value: unknown, keys: string[]) {
+  const raw = readNumberFromKeys(value, keys);
+
+  return raw === null ? null : normalizeDusdc(raw);
+}
+
+function normalizePriceFromKeys(value: unknown, keys: string[]) {
+  const raw = readNumberFromKeys(value, keys);
+
+  return raw === null ? null : normalizePrice(raw);
+}
+
+function readDirection(value: unknown) {
+  const direction = readStringFromKeys(value, ["direction"]);
+
+  if (direction?.toLowerCase() === "up" || direction?.toLowerCase() === "down") {
+    return direction.toLowerCase() as ProfilePosition["direction"];
+  }
+
+  if (isRecord(value) && typeof value.is_up === "boolean") {
+    return value.is_up ? "up" : "down";
+  }
+
+  if (isRecord(value) && typeof value.isUp === "boolean") {
+    return value.isUp ? "up" : "down";
+  }
+
+  return null;
+}
+
+function inferPositionKind(
+  value: unknown,
+  direction: ProfilePosition["direction"],
+  strike: number | null,
+  lowerStrike: number | null,
+  upperStrike: number | null
+): ProfilePosition["kind"] {
+  const explicitKind = readStringFromKeys(value, ["kind", "position_type", "positionType", "type"])?.toLowerCase();
+
+  if (explicitKind === "binary" || explicitKind === "range") {
+    return explicitKind;
+  }
+
+  if (lowerStrike !== null || upperStrike !== null) {
+    return "range";
+  }
+
+  if (direction !== null || strike !== null) {
+    return "binary";
+  }
+
+  return "unknown";
+}
+
+function buildPositionId(value: unknown, oracleId: string | null, kind: ProfilePosition["kind"], index: number) {
+  const explicitId = readStringFromKeys(value, ["position_id", "positionId", "id"]);
+
+  if (explicitId) {
+    return explicitId;
+  }
+
+  const expiry = readNumberFromKeys(value, ["expiry"]) ?? "no-expiry";
+  const strike = readRawIntegerFromKeys(value, ["strike", "lower_strike", "lowerStrike", "upper_strike", "upperStrike"]) ?? "no-strike";
+
+  return `${oracleId ?? "unknown"}-${kind}-${expiry}-${strike}-${index}`;
+}
+
+function keeperAction(status: string, openQuantity: number): ProfilePosition["action"] {
+  const normalizedStatus = status.toLowerCase();
+
+  if (openQuantity <= 0) {
+    return "none";
+  }
+
+  if (normalizedStatus === "settled" || normalizedStatus === "redeemable") {
+    return "redeemable";
+  }
+
+  return "monitor_settlement";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

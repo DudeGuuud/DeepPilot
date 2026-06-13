@@ -6,27 +6,40 @@ import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/app-shell";
+import { PredictManagerOnboardingModal } from "@/components/predict-manager-onboarding-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { readPreviewReceipts } from "@/src/lib/receipts";
-import type { ProfileActivityItem, ProfileSummary } from "@/src/lib/types";
+import { readPreviewReceipts, storePreviewReceipt } from "@/src/lib/receipts";
+import type { ProfileActivityItem, ProfilePosition, ProfileSummary } from "@/src/lib/types";
 
-type ProfileTab = "positions" | "activity" | "risk" | "receipts" | "keeper";
+type ProfileTab = "positions" | "pnl" | "activity" | "risk" | "receipts" | "keeper";
 
 export function ProfilePage() {
   const account = useCurrentAccount();
   const network = useCurrentNetwork();
   const searchParams = useSearchParams();
-  const managerId = searchParams.get("managerId");
+  const urlManagerId = searchParams.get("managerId");
+  const [localManagerId, setLocalManagerId] = useState<string | null>(urlManagerId);
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [receipts, setReceipts] = useState<ProfileActivityItem[]>([]);
   const [tab, setTab] = useState<ProfileTab>("positions");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const [managerPromptDismissed, setManagerPromptDismissed] = useState(false);
+  const effectiveManagerId = localManagerId ?? urlManagerId;
 
   useEffect(() => {
     setReceipts(readPreviewReceipts(account?.address));
+  }, [account?.address]);
+
+  useEffect(() => {
+    setLocalManagerId(urlManagerId);
+  }, [urlManagerId]);
+
+  useEffect(() => {
+    setManagerPromptDismissed(false);
   }, [account?.address]);
 
   useEffect(() => {
@@ -36,8 +49,8 @@ export function ProfilePage() {
       params.set("wallet", account.address);
     }
 
-    if (managerId) {
-      params.set("managerId", managerId);
+    if (effectiveManagerId) {
+      params.set("managerId", effectiveManagerId);
     }
 
     let cancelled = false;
@@ -72,14 +85,53 @@ export function ProfilePage() {
     return () => {
       cancelled = true;
     };
-  }, [account?.address, managerId]);
+  }, [account?.address, effectiveManagerId, reloadNonce]);
 
   const activity = useMemo(() => [...receipts, ...(profile?.activity ?? [])], [profile?.activity, receipts]);
+  const showManagerModal = Boolean(account?.address && profile?.managerNeedsCreation && !managerPromptDismissed);
+
+  async function handleManagerCreated({
+    managerId,
+    digest,
+    network: createdNetwork
+  }: {
+    managerId: string;
+    digest: string;
+    network: "devnet" | "testnet";
+  }) {
+    if (!account?.address) {
+      return;
+    }
+
+    const receipt: ProfileActivityItem & {
+      walletAddress: string;
+      network: "devnet" | "testnet";
+      status: string;
+      note: string;
+    } = {
+      id: digest,
+      time: new Date().toISOString(),
+      type: "manager_create",
+      digest,
+      summary: "PredictManager created",
+      walletAddress: account.address,
+      network: createdNetwork,
+      status: "success",
+      note: "Created official DeepBook PredictManager. Predict server may need a short indexing delay."
+    };
+
+    storePreviewReceipt(receipt);
+    setReceipts(readPreviewReceipts(account.address));
+    setManagerPromptDismissed(true);
+    setLocalManagerId(managerId);
+    updateManagerInUrl(managerId);
+    setReloadNonce((current) => current + 1);
+  }
 
   return (
     <AppShell
-      title="Profile and receipts"
-      description="Review wallet state, manager linkage, local execution receipts, and the gaps before full Predict portfolio reporting."
+      title="Profile and portfolio"
+      description="Review PredictManager state, server-indexed positions, PnL, local execution receipts, and keeper status."
       meta={
         <>
           <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
@@ -91,6 +143,16 @@ export function ProfilePage() {
         </>
       }
     >
+      <PredictManagerOnboardingModal
+        open={showManagerModal}
+        packageId={profile?.predictPackageId}
+        network={profile?.network === "devnet" ? "devnet" : "testnet"}
+        walletAddress={account?.address}
+        context="profile"
+        onDismiss={() => setManagerPromptDismissed(true)}
+        onCreated={handleManagerCreated}
+      />
+
       {error ? (
         <Card className="mb-3 border-destructive/35 bg-destructive/10">
           <CardContent className="flex items-center gap-3 pt-5 text-sm text-destructive-foreground">
@@ -105,16 +167,16 @@ export function ProfilePage() {
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             <SummaryCard label="Trading balance" value={formatDusdc(profile?.tradingBalanceDusdc ?? null)} />
             <SummaryCard label="Open exposure" value={formatDusdc(profile?.openExposureDusdc ?? null)} />
+            <SummaryCard label="Unrealized PnL" value={formatSignedDusdc(profile?.pnl?.unrealizedPnlDusdc ?? null)} />
+            <SummaryCard label="Realized PnL" value={formatSignedDusdc(profile?.realizedPnlDusdc ?? null)} />
             <SummaryCard label="Redeemable" value={formatDusdc(profile?.redeemableValueDusdc ?? null)} />
-            <SummaryCard label="Realized PnL" value={formatDusdc(profile?.realizedPnlDusdc ?? null)} />
             <SummaryCard label="Awaiting settlement" value={formatCount(profile?.awaitingSettlement ?? null)} />
-            <SummaryCard label="Guardian blocks" value={String(profile?.guardianBlockedCount ?? 0)} />
           </div>
 
           <Card>
             <CardHeader className="pb-3">
               <div className="flex flex-wrap gap-2">
-                {(["positions", "activity", "risk", "receipts", "keeper"] as const).map((item) => (
+                {(["positions", "pnl", "activity", "risk", "receipts", "keeper"] as const).map((item) => (
                   <Button
                     key={item}
                     size="sm"
@@ -214,7 +276,33 @@ function TabContent({
   }
 
   if (tab === "positions") {
-    return managerLinked ? <EmptyState text="Manager linked, but detailed positions are not loaded in the MVP." /> : <EmptyState text="Manager not linked. No positions or PnL are shown." />;
+    if (!managerLinked) {
+      return <EmptyState text="Create a PredictManager before DeepPilot can show server-indexed positions or PnL." />;
+    }
+
+    if (!profile?.positions.length) {
+      return <EmptyState text="No Predict positions returned by the public server for this manager." />;
+    }
+
+    return <PositionsTable positions={profile.positions} />;
+  }
+
+  if (tab === "pnl") {
+    return profile?.pnl ? (
+      <div className="grid gap-3 md:grid-cols-3">
+        <PnlCard label="Unrealized PnL" value={formatSignedDusdc(profile.pnl.unrealizedPnlDusdc)} />
+        <PnlCard label="Realized PnL" value={formatSignedDusdc(profile.pnl.realizedPnlDusdc)} />
+        <PnlCard label="Total PnL" value={formatSignedDusdc(profile.pnl.totalPnlDusdc)} />
+        <div className="rounded-md border border-border bg-background/60 p-3 md:col-span-3">
+          <p className="text-sm font-medium text-foreground">Server indexed PnL</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            Source: DeepBook Predict public server · Range: {profile.pnl.range}. This is indexed portfolio data, not live quote mark-to-market.
+          </p>
+        </div>
+      </div>
+    ) : (
+      <EmptyState text={managerLinked ? "Predict server did not return PnL fields for this manager yet." : "Create a PredictManager before PnL can be indexed."} />
+    );
   }
 
   if (tab === "risk") {
@@ -275,6 +363,75 @@ function PolicyBox({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+function PositionsTable({ positions }: { positions: ProfilePosition[] }) {
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-background/45">
+      <div className="hidden grid-cols-[1.3fr_0.8fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-3 border-b border-border bg-card/60 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground lg:grid">
+        <span>Market / oracle</span>
+        <span>Side</span>
+        <span>Strike</span>
+        <span>Quantity</span>
+        <span>Server value</span>
+        <span>Unrealized</span>
+        <span>Action</span>
+      </div>
+      <div className="divide-y divide-border/75">
+        {positions.map((position) => (
+          <PositionRow key={position.id} position={position} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PositionRow({ position }: { position: ProfilePosition }) {
+  return (
+    <div className="grid gap-3 px-3 py-3 lg:grid-cols-[1.3fr_0.8fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr] lg:items-center">
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-foreground">{position.market ?? "Predict market"}</p>
+        <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{position.oracleId ?? "--"}</p>
+      </div>
+      <PositionCell label="Side" value={formatDirection(position)} badge />
+      <PositionCell label="Strike" value={formatPositionStrike(position)} />
+      <PositionCell label="Quantity" value={formatDusdc(position.openQuantityDusdc)} />
+      <PositionCell label="Server value" value={formatDusdc(position.currentValueDusdc)} />
+      <PositionCell label="Unrealized" value={formatSignedDusdc(position.unrealizedPnlDusdc)} />
+      <div className="flex flex-wrap items-center gap-2 lg:block">
+        <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground lg:hidden">Action</span>
+        <Badge variant="outline" className="border-border text-muted-foreground">
+          {formatPositionAction(position.action)}
+        </Badge>
+        <p className="mt-1 text-xs text-muted-foreground">{formatExpiry(position.expiry)} · {position.status}</p>
+      </div>
+    </div>
+  );
+}
+
+function PositionCell({ label, value, badge = false }: { label: string; value: string; badge?: boolean }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground lg:hidden">{label}</p>
+      {badge ? (
+        <Badge variant="outline" className="mt-1 border-border text-muted-foreground lg:mt-0">
+          {value}
+        </Badge>
+      ) : (
+        <p className="mt-1 truncate text-sm text-foreground lg:mt-0">{value}</p>
+      )}
+    </div>
+  );
+}
+
+function PnlCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/60 p-3">
+      <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">{label}</p>
+      <p className="mt-2 text-xl font-semibold tracking-tight text-foreground">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">Server indexed PnL</p>
+    </div>
+  );
+}
+
 function SummaryCard({ label, value }: { label: string; value: string }) {
   return (
     <Card>
@@ -303,10 +460,79 @@ function formatDusdc(value: number | null) {
   return value === null ? "--" : `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC`;
 }
 
+function formatSignedDusdc(value: number | null) {
+  if (value === null) {
+    return "--";
+  }
+
+  const sign = value > 0 ? "+" : "";
+
+  return `${sign}${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC`;
+}
+
 function formatCount(value: number | null) {
   return value === null ? "--" : value.toLocaleString();
 }
 
+function formatDirection(position: ProfilePosition) {
+  if (position.kind === "range") {
+    return "RANGE";
+  }
+
+  return position.direction ? position.direction.toUpperCase() : "--";
+}
+
+function formatPositionStrike(position: ProfilePosition) {
+  if (position.kind === "range") {
+    return `${formatUsdNumber(position.lowerStrike)} - ${formatUsdNumber(position.upperStrike)}`;
+  }
+
+  return formatUsdNumber(position.strike);
+}
+
+function formatUsdNumber(value: number | null) {
+  return value === null
+    ? "--"
+    : `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+}
+
+function formatExpiry(expiry: number | null) {
+  if (expiry === null) {
+    return "--";
+  }
+
+  const timestamp = expiry > 10_000_000_000 ? expiry : expiry * 1000;
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
+}
+
+function formatPositionAction(action: ProfilePosition["action"]) {
+  if (action === "redeemable") {
+    return "Redeemable";
+  }
+
+  if (action === "monitor_settlement") {
+    return "Monitor";
+  }
+
+  return "None";
+}
+
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function updateManagerInUrl(managerId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("managerId", managerId);
+  window.history.replaceState(null, "", url.toString());
 }

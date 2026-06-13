@@ -500,6 +500,34 @@ export interface KeeperSnapshot {
   items: KeeperSnapshotItem[];
 }
 
+export interface ProfilePosition {
+  id: string;
+  kind: "binary" | "range" | "unknown";
+  market: string | null;
+  oracleId: string | null;
+  status: string;
+  expiry: number | null;
+  direction: PredictDirection | null;
+  strike: number | null;
+  lowerStrike: number | null;
+  upperStrike: number | null;
+  openQuantityRaw: string | null;
+  openQuantityDusdc: number | null;
+  costBasisDusdc: number | null;
+  currentValueDusdc: number | null;
+  unrealizedPnlDusdc: number | null;
+  realizedPnlDusdc: number | null;
+  action: "monitor_settlement" | "redeemable" | "none";
+}
+
+export interface ProfilePnlSummary {
+  realizedPnlDusdc: number | null;
+  unrealizedPnlDusdc: number | null;
+  totalPnlDusdc: number | null;
+  range: string;
+  source: "predict_server";
+}
+
 export interface ProfileIndexPolicy {
   registry: "deep_pilot_profile_registry";
   status: "planned";
@@ -525,8 +553,10 @@ export interface ProfileMemoryStatus {
 export interface ProfileSummary {
   wallet: string | null;
   network: PredictDeployment["network"];
+  predictPackageId: string;
   managerId: string | null;
   managerLinked: boolean;
+  managerNeedsCreation: boolean;
   message: string;
   openExposureDusdc: number | null;
   redeemableValueDusdc: number | null;
@@ -534,6 +564,8 @@ export interface ProfileSummary {
   tradingBalanceDusdc: number | null;
   tradingBalanceRaw: string | null;
   awaitingSettlement: number | null;
+  positions: ProfilePosition[];
+  pnl: ProfilePnlSummary | null;
   guardianBlockedCount: number;
   activity: ProfileActivityItem[];
   keeper: KeeperSnapshot;
