@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { compileIntent } from "../src/lib/compile";
 import { parseJsonBody } from "../src/lib/http";
+import { buildBinaryMintTransaction, buildCreatePredictManagerTransaction } from "../src/lib/predict-execution";
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment } from "../src/lib/predict";
 import { getProfileSummary } from "../src/lib/profile";
 
@@ -23,17 +24,37 @@ assert(
   typeof result.quote.estimatedCostDusdc === "number" && result.quote.estimatedCostDusdc <= 10,
   "binary quote should fit inside the requested DUSDC budget"
 );
+assert(result.quote.estimatedCostRaw, "binary quote should include raw estimated cost");
 assert(Boolean(result.ptb), "PTB preview should be built");
-assert(result.gas.approved, "sponsor policy should approve the smoke PTB preview");
-assert(result.gas.checks.every((check) => check.passed), "all sponsor policy checks should pass");
+assert(result.gas.mode === "user_pays_gas", "Predict trade should use user-paid wallet gas");
+assert(result.gas.approved, "wallet gas policy should approve the smoke PTB preview");
+assert(result.gas.checks.every((check) => check.passed), "all wallet policy checks should pass");
+assert(result.ptb?.gasOwner === result.ptb?.sender, "Predict trade preview should not use a sponsor gas owner");
 assert(
   result.ptb?.commands.some((command) => command.target === `${predictDeployment.packageId}::predict::mint`),
   "PTB preview should target predict::mint"
 );
 assert(
+  result.ptb?.commands.some((command) => command.target === `${predictDeployment.packageId}::predict_manager::deposit`),
+  "PTB preview should include PredictManager DUSDC top-up"
+);
+assert(
   result.ptb?.commands.some((command) => command.inputs?.quantityRaw === result.quote?.quantityRaw),
   "PTB preview should use the verified quote quantity"
 );
+const fakeManagerId = "0x00000000000000000000000000000000000000000000000000000000feed0001";
+const createManagerTx = buildCreatePredictManagerTransaction({
+  packageId: predictDeployment.packageId,
+  gasBudget: result.ptb?.gasBudget
+});
+const mintTx = buildBinaryMintTransaction({
+  transactionData: result.ptb!.transactionData,
+  managerId: fakeManagerId,
+  managerBalanceRaw: "0",
+  gasBudget: result.ptb?.gasBudget
+});
+assert(createManagerTx, "create manager transaction should be buildable");
+assert(mintTx.topUpRaw === result.quote.estimatedCostRaw, "mint builder should top up the estimated raw DUSDC cost");
 assert(
   !result.ptb?.commands.some((command) => command.target.endsWith("::log::record_intent")),
   "default gas-optimized PTB should not add the audit Move call"
@@ -65,7 +86,7 @@ assert(quoteOnly.market?.oracle.oracle_id === market.oracle.oracle_id, "explicit
 assert(quoteOnly.market?.oracle.predict_id === predictDeployment.predictId, "explicit oracle lookup should stay within configured Predict object");
 assert(!quoteOnly.quote, "quote-only intent should not produce executable trade quote");
 assert(!quoteOnly.ptb, "quote-only intent should not build a PTB");
-assert(!quoteOnly.gas.approved, "quote-only intent should not be sponsor approved");
+assert(!quoteOnly.gas.approved, "quote-only intent should not be wallet execution approved");
 assert(sellPreview.intent.status === "ready", "sell/redeem intent should parse");
 assert(sellPreview.intent.action === "predict_redeem", "sell should map to redeem preview");
 assert(
@@ -97,7 +118,7 @@ console.log(
       spot: market.metrics.spot,
       oracleAgeMs: market.metrics.oracleAgeMs,
       guardian: result.guardian.decision,
-      sponsor: result.gas.approved,
+      gasMode: result.gas.mode,
       digestPreview: result.ptb?.digestPreview
     },
     null,

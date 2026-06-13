@@ -17,6 +17,8 @@ export const sponsorPolicy: SponsorPolicy = {
     "market_key::up",
     "market_key::down",
     "range_key::new",
+    "predict::create_manager",
+    "predict_manager::deposit",
     "predict::mint",
     "predict::mint_range",
     "predict::redeem_permissionless",
@@ -69,12 +71,12 @@ export function decideGasMode(
   const tradeSize = quote?.status === "available" && quote.estimatedCostDusdc !== null
     ? quote.estimatedCostDusdc
     : market?.metrics.notionalDusdc ?? Number(intent.amount);
-  const sponsorApproved = !guardian.blocked && amountWithinSponsorCap(tradeSize);
+  const walletExecutionReady = !guardian.blocked && amountWithinSponsorCap(tradeSize);
 
-  return decision("sponsored", sponsorApproved, "Sponsored by DeepPilot", [
+  return decision("user_pays_gas", walletExecutionReady, "Wallet pays Sui gas", [
     ["Predict package allowlisted", sponsorPolicy.allowedPackages.includes(predictDeployment.packageId)],
     ["Predict Move call allowlisted", true],
-    ["trade size within demo cap", amountWithinSponsorCap(tradeSize)],
+    ["trade size within policy cap", amountWithinSponsorCap(tradeSize)],
     ["guardian not blocked", !guardian.blocked]
   ]);
 }

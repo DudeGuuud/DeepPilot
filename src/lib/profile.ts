@@ -48,6 +48,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
     redeemableValueDusdc: managerSummary.redeemableValueDusdc,
     realizedPnlDusdc: managerSummary.realizedPnlDusdc,
     tradingBalanceDusdc: managerSummary.tradingBalanceDusdc,
+    tradingBalanceRaw: managerSummary.tradingBalanceRaw,
     awaitingSettlement: managerSummary.awaitingSettlement,
     guardianBlockedCount: 0,
     activity: [],
@@ -73,6 +74,7 @@ function emptyProfile(wallet: string | null, managerId: string | null, message: 
     redeemableValueDusdc: null,
     realizedPnlDusdc: null,
     tradingBalanceDusdc: null,
+    tradingBalanceRaw: null,
     awaitingSettlement: null,
     guardianBlockedCount: 0,
     activity: [],
@@ -151,6 +153,7 @@ function normalizeManagerSummary(value: unknown) {
   return {
     owner: normalizeObjectId(readString(value, "owner")),
     tradingBalanceDusdc: tradingBalance === null ? null : normalizeDusdc(tradingBalance),
+    tradingBalanceRaw: readRawU64(value, "trading_balance"),
     openExposureDusdc: openExposure === null ? null : normalizeDusdc(openExposure),
     redeemableValueDusdc: redeemableValue === null ? null : normalizeDusdc(redeemableValue),
     realizedPnlDusdc: realizedPnl === null ? null : normalizeDusdc(realizedPnl),
@@ -233,6 +236,24 @@ function readString(value: unknown, key: string) {
 
 function readNumber(value: unknown, key: string) {
   return isRecord(value) && typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] : null;
+}
+
+function readRawU64(value: unknown, key: string) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const field = value[key];
+
+  if (typeof field === "string" && /^\d+$/.test(field)) {
+    return field;
+  }
+
+  if (typeof field === "number" && Number.isSafeInteger(field) && field >= 0) {
+    return String(field);
+  }
+
+  return null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

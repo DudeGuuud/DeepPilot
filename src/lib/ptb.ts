@@ -17,6 +17,8 @@ import type {
   TradeSizingPreview
 } from "./types";
 
+const DUSDC_SCALE = 1_000_000;
+
 export function buildPtbPlan(
   intent: ParsedIntent,
   market: PredictMarketSnapshot | null,
@@ -33,9 +35,9 @@ export function buildPtbPlan(
     return null;
   }
 
-  const commands = buildCommands(intent, market, quote);
+  const commands = buildCommands(intent, market, profile, quote);
   const sizing = buildSizing(intent, quote);
-  const execution = buildExecutionReadiness(intent, market, profile, sizing);
+  const execution = buildExecutionReadiness(intent, market, profile, sizing, quote);
   const requirements = buildRequirements(intent, market, execution, sizing);
   const keyTarget = intent.action === "predict_range_mint"
     ? `${predictDeployment.packageId}::range_key::new`
@@ -64,7 +66,9 @@ export function buildPtbPlan(
       ? {
           source: quote.source,
           estimatedCostDusdc: quote.estimatedCostDusdc,
+          estimatedCostRaw: quote.estimatedCostRaw,
           maxPayoutDusdc: quote.maxPayoutDusdc,
+          maxPayoutRaw: quote.maxPayoutRaw,
           askPrice: quote.askPrice,
           returnPct: quote.returnPct,
           expiresAt: quote.expiresAt
@@ -91,7 +95,7 @@ export function buildPtbPlan(
     sender: previewAccounts.sender,
     sponsor: previewAccounts.sponsor,
     gasBudget: 12_000_000,
-    // Sponsored Predict and gasless transfer previews use the sponsor as gas owner.
+    // This is still a deterministic preview; the actual wallet transaction pays its own gas.
     gasOwner: gas.mode === "user_pays_gas" ? previewAccounts.sender : previewAccounts.sponsor,
     transactionKind: "ProgrammableTransaction",
     commands,
@@ -111,6 +115,7 @@ export function buildPtbPlan(
 function buildCommands(
   intent: Extract<ParsedIntent, { status: "ready" }>,
   market: PredictMarketSnapshot | null,
+  profile: ProfileSummary | null,
   quote: PredictQuotePreview | null
 ) {
   const commands: PtbCommandPreview[] = [];
@@ -139,7 +144,7 @@ function buildCommands(
       command: `Redeem settled position for ${shortId(market?.oracle.oracle_id ?? intent.oracleId)}`,
       target: `${predictDeployment.packageId}::predict::redeem_permissionless`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market, null, quote)
+      inputs: predictInputs(intent, market, profile?.managerId ?? null, null, quote)
     });
   } else if (intent.action === "predict_range_mint") {
     commands.push({
@@ -159,16 +164,34 @@ function buildCommands(
       command: `Mint BTC range ${intent.lowerStrike}-${intent.upperStrike}`,
       target: `${predictDeployment.packageId}::predict::mint_range`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market, intent.quantity ?? null, quote)
+      inputs: predictInputs(intent, market, profile?.managerId ?? null, intent.quantity ?? null, quote)
     });
   } else {
     commands.push(binaryKeyCommand(intent, market, 1));
+    const topUpRaw = requiredTopUpRaw(profile, quote);
+
+    if (topUpRaw > 0n) {
+      commands.push({
+        index: commands.length + 1,
+        command: "Top up PredictManager with DUSDC",
+        target: `${predictDeployment.packageId}::predict_manager::deposit`,
+        riskGate: "atomic",
+        inputs: {
+          managerObject: profile?.managerId ?? null,
+          quoteType: predictDeployment.quoteAssetType,
+          amountRaw: topUpRaw.toString(),
+          estimatedCostDusdc: quote?.status === "available" ? quote.estimatedCostDusdc : null,
+          managerBalanceDusdc: profile?.tradingBalanceDusdc ?? null
+        }
+      });
+    }
+
     commands.push({
-      index: 2,
+      index: commands.length + 1,
       command: `Mint BTC ${intent.direction ?? "up"} binary at ${market?.metrics.selectedStrike ?? intent.strike ?? "ATM"}`,
       target: `${predictDeployment.packageId}::predict::mint`,
       riskGate: "atomic",
-      inputs: predictInputs(intent, market, quote?.status === "available" ? quote.quantityRaw : intent.quantity ?? null, quote)
+      inputs: predictInputs(intent, market, profile?.managerId ?? null, quote?.status === "available" ? quote.quantityRaw : intent.quantity ?? null, quote)
     });
   }
 
@@ -210,12 +233,13 @@ function binaryKeyCommand(intent: Extract<ParsedIntent, { status: "ready" }>, ma
 function predictInputs(
   intent: Extract<ParsedIntent, { status: "ready" }>,
   market: PredictMarketSnapshot | null,
+  managerId: string | null,
   quantityRaw: string | null,
   quote: PredictQuotePreview | null
 ) {
   return {
     predictObject: predictDeployment.predictId,
-    managerObject: previewAccounts.manager,
+    managerObject: managerId,
     oracleObject: market?.oracle.oracle_id ?? intent.oracleId ?? null,
     quoteType: predictDeployment.quoteAssetType,
     quantityRaw,
@@ -250,10 +274,12 @@ function buildRequirements(
     },
     {
       label: "DUSDC manager balance",
-      satisfied: execution.managerBalanceDusdc !== null,
-      detail: execution.managerBalanceDusdc === null
-        ? "Mint requires DUSDC already deposited into the PredictManager."
-        : `${execution.managerBalanceDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC trading balance detected.`
+      satisfied: true,
+      detail: execution.requiredTopUpRaw && BigInt(execution.requiredTopUpRaw) > 0n
+        ? `Wallet transaction will top up ${formatDusdc(rawDusdcToDisplay(execution.requiredTopUpRaw))} DUSDC before mint.`
+        : execution.managerBalanceDusdc === null
+          ? "Trading balance is not indexed yet; wallet transaction can top up the estimated cost before mint."
+          : `${execution.managerBalanceDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC trading balance detected.`
     },
     {
       label: "Predict quantity",
@@ -331,10 +357,13 @@ function buildExecutionReadiness(
   intent: Extract<ParsedIntent, { status: "ready" }>,
   market: PredictMarketSnapshot | null,
   profile: ProfileSummary | null,
-  sizing: TradeSizingPreview
+  sizing: TradeSizingPreview,
+  quote: PredictQuotePreview | null
 ): ExecutionReadiness {
   const walletAddress = profile?.wallet ?? null;
   const managerId = profile?.managerId ?? null;
+  const requiredQuoteRaw = quote?.status === "available" ? quote.estimatedCostRaw : null;
+  const requiredTopUp = quote?.status === "available" ? requiredTopUpRaw(profile, quote).toString() : null;
   const checks = [
     {
       label: "Wallet connected",
@@ -368,7 +397,10 @@ function buildExecutionReadiness(
     walletAddress,
     managerId,
     managerBalanceDusdc: profile?.tradingBalanceDusdc ?? null,
+    managerBalanceRaw: profile?.tradingBalanceRaw ?? null,
     requiredQuoteDusdc: sizing.quoteBudgetDusdc,
+    requiredQuoteRaw,
+    requiredTopUpRaw: requiredTopUp,
     checks
   };
 }
@@ -393,4 +425,29 @@ function digestPreview(input: string) {
 
 function formatDusdc(value: number | null) {
   return value === null ? "--" : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
+}
+
+function requiredTopUpRaw(profile: ProfileSummary | null, quote: PredictQuotePreview | null) {
+  if (quote?.status !== "available" || !quote.estimatedCostRaw) {
+    return 0n;
+  }
+
+  const required = BigInt(quote.estimatedCostRaw);
+  const balance = parseRawU64(profile?.tradingBalanceRaw);
+
+  return balance >= required ? 0n : required - balance;
+}
+
+function parseRawU64(value?: string | null) {
+  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function rawDusdcToDisplay(value: string) {
+  const raw = BigInt(value);
+
+  if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+
+  return Number(raw) / DUSDC_SCALE;
 }

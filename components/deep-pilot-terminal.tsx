@@ -31,6 +31,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { PredictMarketChart } from "@/components/predict-market-chart";
 import { TradeTicket } from "@/components/trade-ticket";
+import {
+  assertExecuted,
+  buildBinaryMintTransaction,
+  buildCreatePredictManagerTransaction,
+  extractPredictManagerId,
+  getExecutedDigest
+} from "@/src/lib/predict-execution";
 import { storePreviewReceipt } from "@/src/lib/receipts";
 import { cn } from "@/src/lib/utils";
 import type {
@@ -69,23 +76,15 @@ type CompileApiResult = CompileResult & {
   };
 };
 
-type SponsorReceipt = {
-  approved: boolean;
-  receipt?: {
-    digest: string;
-    status: string;
-    walletAddress: string;
-    network: "devnet" | "testnet";
-    nonce: string;
-    expiresAt: string;
-    intentHash: string;
-    sender: string;
-    sponsor: string;
-    gasMode: string;
-    submitted: boolean;
-    note: string;
-  };
-  reason?: string;
+type ExecutionReceipt = {
+  digest: string;
+  status: "success" | "failed";
+  walletAddress: string;
+  network: "devnet" | "testnet";
+  action: "manager_create" | "predict_mint";
+  managerId?: string | null;
+  topUpRaw?: string | null;
+  note: string;
 };
 
 type PilotMessage = {
@@ -109,8 +108,10 @@ function TerminalExperience() {
   const searchParams = useSearchParams();
   const urlOracleId = useMemo(() => oracleIdFromSearch(searchParams), [searchParams]);
   const urlStrike = useMemo(() => strikeFromSearch(searchParams), [searchParams]);
+  const urlManagerId = useMemo(() => managerIdFromSearch(searchParams), [searchParams]);
   const defaultIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
   const [intent, setIntent] = useState(defaultIntent);
+  const [managerId, setManagerId] = useState<string | null>(urlManagerId);
   const [messages, setMessages] = useState<PilotMessage[]>([]);
   const [pilotMode, setPilotMode] = useState<PilotMode | null>(null);
   const [ragSources, setRagSources] = useState<RagSource[]>([]);
@@ -118,21 +119,25 @@ function TerminalExperience() {
   const [marketPreview, setMarketPreview] = useState<MarketDiscoveryResult | null>(null);
   const [compiled, setCompiled] = useState<CompileApiResult | null>(null);
   const [streamTimeline, setStreamTimeline] = useState<CompileResult["timeline"]>([]);
-  const [receipt, setReceipt] = useState<SponsorReceipt | null>(null);
-  const [busy, setBusy] = useState<"pilot" | "sponsor" | null>(null);
+  const [receipt, setReceipt] = useState<ExecutionReceipt | null>(null);
+  const [busy, setBusy] = useState<"pilot" | "execute" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
   const [auditExpanded, setAuditExpanded] = useState(false);
   const pilotAbortRef = useRef<AbortController | null>(null);
-  const runPilotRef = useRef<(nextIntent?: string) => Promise<void>>(async () => {});
+  const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null) => Promise<void>>(async () => {});
   runPilotRef.current = runPilot;
 
   useEffect(() => {
     setIntent(defaultIntent);
     if (urlOracleId) {
-      void runPilotRef.current(defaultIntent);
+      void runPilotRef.current(defaultIntent, urlManagerId);
     }
-  }, [defaultIntent, urlOracleId]);
+  }, [defaultIntent, urlOracleId, urlManagerId]);
+
+  useEffect(() => {
+    setManagerId(urlManagerId);
+  }, [urlManagerId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,7 +186,7 @@ function TerminalExperience() {
     };
   }, []);
 
-  async function runPilot(nextIntent = intent) {
+  async function runPilot(nextIntent = intent, managerOverride = managerId) {
     const trimmedIntent = nextIntent.trim();
 
     if (!trimmedIntent) {
@@ -226,7 +231,8 @@ function TerminalExperience() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           message: trimmedIntent,
-          walletAddress: account?.address
+          walletAddress: account?.address,
+          managerId: managerOverride ?? undefined
         }),
         signal: controller.signal
       });
@@ -327,12 +333,21 @@ function TerminalExperience() {
     }
 
     if (event.type === "compiled") {
-      setCompiled(event.result as CompileApiResult);
+      const result = event.result as CompileApiResult;
+      const compiledManagerId = result.profile?.managerId ?? result.ptb?.execution.managerId ?? null;
+
+      if (compiledManagerId) {
+        setManagerId(compiledManagerId);
+        updateManagerInUrl(compiledManagerId);
+      }
+
+      setCompiled(result);
       setPilotMode("trade");
+      setAuditExpanded(true);
       updateAssistantMessage(assistantId, {
         mode: "trade",
         pending: false,
-        content: tradeAssistantCopy(event.result as CompileApiResult)
+        content: tradeAssistantCopy(result)
       });
       return;
     }
@@ -374,7 +389,7 @@ function TerminalExperience() {
     submitIntent();
   }
 
-  async function sponsor() {
+  async function executePredict() {
     if (!compiled?.ptb || compiled.guardian.blocked) {
       toast({
         variant: "destructive",
@@ -388,69 +403,112 @@ function TerminalExperience() {
       toast({
         variant: "destructive",
         title: "Wallet required",
-        description: "Connect a wallet before authorizing a sponsor preview."
+        description: "Connect a wallet before signing a Predict transaction."
       });
       return;
     }
 
-    setBusy("sponsor");
+    setBusy("execute");
     setError(null);
 
     try {
-      const sponsorNetwork = network === "devnet" ? "devnet" : "testnet";
-      const challengeParams = new URLSearchParams({
-        walletAddress: account.address,
-        network: sponsorNetwork,
-        ptbDigest: compiled.ptb.digestPreview
-      });
-      const challengeResponse = await fetch(`/api/sponsor?${challengeParams.toString()}`);
+      const executionNetwork = compiled.ptb.transactionData.network === "devnet" ? "devnet" : "testnet";
 
-      if (!challengeResponse.ok) {
-        throw new Error("Sponsor authorization challenge failed.");
+      if (network && network !== executionNetwork) {
+        throw new Error(`Switch wallet network to ${executionNetwork} before signing.`);
       }
 
-      const challenge = (await challengeResponse.json()) as {
-        nonce: string;
-        expiresAt: string;
-        message: string;
-      };
-      const signed = await dAppKit.signPersonalMessage({
-        message: new TextEncoder().encode(challenge.message)
-      });
-      const response = await fetch("/api/sponsor", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          intent,
+      if (!compiled.ptb.execution.managerId) {
+        const transaction = buildCreatePredictManagerTransaction({
+          packageId: compiled.ptb.transactionData.packageId,
+          gasBudget: compiled.ptb.gasBudget
+        });
+        const signed = await dAppKit.signAndExecuteTransaction({ transaction });
+        const digest = getExecutedDigest(signed);
+        const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
+          digest,
+          include: {
+            effects: true,
+            events: true,
+            objectTypes: true
+          }
+        });
+        assertExecuted(confirmed);
+        const createdManagerId = extractPredictManagerId(confirmed, compiled.ptb.transactionData.packageId);
+
+        if (!createdManagerId) {
+          throw new Error("PredictManager was created, but DeepPilot could not identify the new object id.");
+        }
+
+        setManagerId(createdManagerId);
+        updateManagerInUrl(createdManagerId);
+
+        const executionReceipt: ExecutionReceipt = {
+          digest,
+          status: "success",
           walletAddress: account.address,
-          network: sponsorNetwork,
-          ptbDigest: compiled.ptb.digestPreview,
-          nonce: challenge.nonce,
-          expiresAt: challenge.expiresAt,
-          signature: signed.signature
-        })
-      });
-      const payload = (await response.json()) as SponsorReceipt;
-      setReceipt(payload);
+          network: executionNetwork,
+          action: "manager_create",
+          managerId: createdManagerId,
+          note: "Created official DeepBook PredictManager. Re-run review before minting."
+        };
+        setReceipt(executionReceipt);
+        saveExecutionReceipt(executionReceipt, intent, compiled);
 
-      if (!response.ok) {
-        throw new Error(payload.reason ?? "Sponsor policy rejected this PTB.");
+        toast({
+          title: "PredictManager created",
+          description: `${shortAddress(createdManagerId)} · review refreshed`
+        });
+        await runPilot(intent.trim(), createdManagerId);
+        return;
       }
+
+      if (compiled.quote?.status !== "available" || new Date(compiled.quote.expiresAt).getTime() <= Date.now()) {
+        throw new Error("Quote is stale or unavailable. Refresh the review before signing.");
+      }
+
+      const built = buildBinaryMintTransaction({
+        transactionData: compiled.ptb.transactionData,
+        managerId: compiled.ptb.execution.managerId,
+        managerBalanceRaw: compiled.profile?.tradingBalanceRaw ?? compiled.ptb.execution.managerBalanceRaw,
+        gasBudget: compiled.ptb.gasBudget
+      });
+      const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
+      const digest = getExecutedDigest(signed);
+      const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
+        digest,
+        include: {
+          effects: true,
+          events: true,
+          objectTypes: true
+        }
+      });
+      assertExecuted(confirmed);
+
+      const executionReceipt: ExecutionReceipt = {
+        digest,
+        status: "success",
+        walletAddress: account.address,
+        network: executionNetwork,
+        action: "predict_mint",
+        managerId: built.managerId,
+        topUpRaw: built.topUpRaw,
+        note: "Executed DUSDC top-up if needed and DeepBook Predict mint in one wallet transaction."
+      };
+      setReceipt(executionReceipt);
+      saveExecutionReceipt(executionReceipt, intent, compiled);
 
       toast({
-        title: "Transaction preview authorized",
-        description: payload.receipt ? `${payload.receipt.digest} · not submitted` : "Sponsored transaction preview is ready."
+        title: "Predict trade executed",
+        description: digest
       });
-
-      if (payload.receipt) {
-        savePreviewReceipt(payload.receipt, intent, compiled);
-      }
-    } catch (sponsorError) {
-      const message = sponsorError instanceof Error ? sponsorError.message : "Sponsor preview failed.";
+      await runPilot(intent.trim(), built.managerId);
+    } catch (executionError) {
+      const message = executionError instanceof Error ? executionError.message : "Wallet execution failed.";
       setError(message);
       toast({
         variant: "destructive",
-        title: "Transaction preview failed",
+        title: "Wallet execution failed",
         description: message
       });
     } finally {
@@ -558,9 +616,9 @@ function TerminalExperience() {
                         compiled={compiled}
                         receipt={receipt}
                         error={error}
-                        busy={busy === "sponsor"}
+                        busy={busy === "execute"}
                         blocked={blocked}
-                        onConfirm={sponsor}
+                        onConfirm={executePredict}
                       />
                     </motion.div>
                   ) : null}
@@ -1276,19 +1334,33 @@ function ExecutionCard({
   onConfirm
 }: {
   compiled: CompileApiResult | null;
-  receipt: SponsorReceipt | null;
+  receipt: ExecutionReceipt | null;
   error: string | null;
   busy: boolean;
   blocked: boolean;
   onConfirm: () => void;
 }) {
-  const canConfirm = Boolean(compiled?.ptb && compiled.ptb.execution.canSign && !blocked && compiled.gas.approved);
   const readiness = compiled?.ptb?.execution;
+  const canCreateManager = Boolean(compiled?.ptb && !readiness?.managerId && readiness?.walletAddress && !blocked);
+  const quoteFresh = Boolean(compiled?.quote?.status === "available" && new Date(compiled.quote.expiresAt).getTime() > Date.now());
+  const canMint = Boolean(compiled?.ptb && readiness?.canSign && !blocked && compiled.gas.approved && quoteFresh);
+  const canConfirm = canCreateManager || canMint;
+  const buttonLabel = blocked
+    ? "Blocked by Guardian"
+    : canCreateManager
+      ? "Create PredictManager"
+      : canMint
+        ? "Review & Sign"
+        : !readiness?.walletAddress
+          ? "Connect wallet"
+          : compiled?.quote?.status === "available" && !quoteFresh
+            ? "Refresh quote"
+            : "Review locked";
 
   return (
     <Card className="glass-line">
       <CardHeader className="pb-3">
-        <SectionHeading title="Execution" detail="preview only" icon={<Wallet className="h-4 w-4" />} />
+        <SectionHeading title="Execution" detail="wallet tx" icon={<Wallet className="h-4 w-4" />} />
       </CardHeader>
       <CardContent>
         <Button
@@ -1298,7 +1370,7 @@ function ExecutionCard({
           onClick={onConfirm}
         >
           {busy ? <RefreshCw className="animate-spin" /> : !canConfirm ? <AlertTriangle /> : <LockKeyhole />}
-          {blocked ? "Blocked by Guardian" : canConfirm ? "Review & Sign" : "Review locked"}
+          {buttonLabel}
         </Button>
 
         {readiness ? (
@@ -1316,7 +1388,7 @@ function ExecutionCard({
         ) : null}
 
         <AnimatePresence>
-          {receipt?.receipt ? (
+          {receipt ? (
             <motion.div
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1325,9 +1397,12 @@ function ExecutionCard({
             >
               <div className="flex items-center gap-2 text-foreground">
                 <Check className="h-4 w-4" />
-                <p className="text-sm font-medium">Signed preview ready</p>
+                <p className="text-sm font-medium">{receipt.action === "manager_create" ? "PredictManager created" : "Executed"}</p>
               </div>
-              <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{receipt.receipt.digest}</p>
+              <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{receipt.digest}</p>
+              {receipt.managerId ? (
+                <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{receipt.managerId}</p>
+              ) : null}
             </motion.div>
           ) : null}
         </AnimatePresence>
@@ -1408,6 +1483,16 @@ function oracleIdFromSearch(searchParams: { get(name: string): string | null }) 
   return oracleId;
 }
 
+function managerIdFromSearch(searchParams: { get(name: string): string | null }) {
+  const managerId = searchParams.get("managerId");
+
+  if (!managerId || !/^0x[a-fA-F0-9]{16,64}$/.test(managerId)) {
+    return null;
+  }
+
+  return managerId;
+}
+
 function strikeFromSearch(searchParams: { get(name: string): string | null }) {
   const strike = searchParams.get("strike");
   const numericStrike = strike ? Number(strike) : NaN;
@@ -1415,19 +1500,31 @@ function strikeFromSearch(searchParams: { get(name: string): string | null }) {
   return Number.isFinite(numericStrike) ? numericStrike : null;
 }
 
-function savePreviewReceipt(
-  receipt: NonNullable<SponsorReceipt["receipt"]>,
+function updateManagerInUrl(managerId: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("managerId", managerId);
+  window.history.replaceState(null, "", url.toString());
+}
+
+function saveExecutionReceipt(
+  receipt: ExecutionReceipt,
   intent: string,
   compiled: CompileApiResult
 ) {
   storePreviewReceipt({
     id: receipt.digest,
     time: new Date().toISOString(),
-    type: "sponsor_preview",
+    type: receipt.action,
     oracleId: compiled.market?.oracle.oracle_id,
     digest: receipt.digest,
     guardianDecision: compiled.guardian.decision,
-    summary: `Preview authorized for: ${intent}`,
+    summary: receipt.action === "manager_create"
+      ? "PredictManager created"
+      : `Predict mint executed for: ${intent}`,
     walletAddress: receipt.walletAddress,
     network: receipt.network,
     status: receipt.status,

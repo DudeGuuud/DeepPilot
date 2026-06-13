@@ -35,6 +35,7 @@ assert(compiled.guardian.decision, "trade compile should include Guardian review
 const quote = compiled.quote;
 assert(quote?.status === "available", "trade compile should include an available Predict quote");
 assert(quote.quantityRaw, "trade quote should include executable quantity");
+assert(quote.estimatedCostRaw, "trade quote should include raw DUSDC cost for wallet execution");
 assert(
   typeof quote.estimatedCostDusdc === "number" && quote.estimatedCostDusdc <= 10,
   "quote-based sizing should stay within the requested DUSDC budget"

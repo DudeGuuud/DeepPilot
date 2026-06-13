@@ -1,7 +1,7 @@
 import type { CompileResult, CompileStreamEvent, GuardianResult, PredictQuotePreview, ProfileSummary, PtbPlan } from "./types";
 import { runGuardian } from "./guardian";
 import { parseIntent } from "./intent";
-import { getPredictMarketSnapshot, getPredictQuotePreview } from "./predict";
+import { getPredictMarketSnapshot, getPredictQuotePreview, toDusdcBaseUnits } from "./predict";
 import { getProfileSummary } from "./profile";
 import { buildPtbPlan } from "./ptb";
 import { decideGasMode, validateSponsorPlan } from "./sponsor";
@@ -132,12 +132,15 @@ export async function compileIntent(input: string, options: CompileOptions = {})
       direction: intent.status === "ready" ? intent.direction ?? null : null,
       strike: market?.metrics.selectedStrike ?? null,
       quoteBudgetDusdc: intent.status === "ready" && intent.amountType === "quote" ? Number(intent.amount) : null,
+      quoteBudgetRaw: intent.status === "ready" && intent.amountType === "quote" ? toDusdcBaseUnits(Number(intent.amount)).toString() : null,
       quantityRaw: null,
       quantityDusdc: null,
       estimatedCostDusdc: null,
+      estimatedCostRaw: null,
       askPrice: null,
       bidPrice: null,
       maxPayoutDusdc: null,
+      maxPayoutRaw: null,
       potentialProfitDusdc: null,
       returnPct: null,
       fetchedAt: new Date().toISOString(),

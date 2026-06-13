@@ -79,7 +79,7 @@ export function ProfilePage() {
   return (
     <AppShell
       title="Profile and receipts"
-      description="Review wallet state, manager linkage, local preview receipts, and the gaps before real Predict portfolio reporting."
+      description="Review wallet state, manager linkage, local execution receipts, and the gaps before full Predict portfolio reporting."
       meta={
         <>
           <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
@@ -131,7 +131,7 @@ export function ProfilePage() {
                 tab={tab}
                 activity={activity}
                 loading={loading}
-                managerLinked={profile?.managerLinked ?? false}
+                managerLinked={Boolean(profile?.managerId)}
                 profile={profile}
               />
             </CardContent>
@@ -151,8 +151,8 @@ export function ProfilePage() {
             </CardHeader>
             <CardContent className="space-y-3">
               <StatusRow label="Wallet connected" active={Boolean(account)} />
-              <StatusRow label="PredictManager linked" active={profile?.managerLinked ?? false} />
-              <StatusRow label="Preview receipts" active={receipts.length > 0} />
+              <StatusRow label="PredictManager linked" active={Boolean(profile?.managerId)} />
+              <StatusRow label="Local receipts" active={receipts.length > 0} />
               <StatusRow label="Walrus / Seal configured" active={profile?.memory.sealedReceipts.status === "ready"} />
               <div className="rounded-md border border-border bg-background/60 p-3 text-sm leading-6 text-muted-foreground">
                 {profile?.message ?? "Loading profile state."}
@@ -188,7 +188,9 @@ function TabContent({
   }
 
   if (tab === "activity" || tab === "receipts") {
-    const items = tab === "receipts" ? activity.filter((item) => item.type === "sponsor_preview") : activity;
+    const items = tab === "receipts"
+      ? activity.filter((item) => item.type === "sponsor_preview" || item.type === "manager_create" || item.type === "predict_mint")
+      : activity;
 
     return items.length ? (
       <div className="space-y-2">
@@ -207,7 +209,7 @@ function TabContent({
         ))}
       </div>
     ) : (
-      <EmptyState text="No local preview receipts yet." />
+      <EmptyState text="No local execution receipts yet." />
     );
   }
 

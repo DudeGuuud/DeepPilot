@@ -167,12 +167,15 @@ export interface PredictQuotePreview {
   direction: PredictDirection | null;
   strike: number | null;
   quoteBudgetDusdc: number | null;
+  quoteBudgetRaw: string | null;
   quantityRaw: string | null;
   quantityDusdc: number | null;
   estimatedCostDusdc: number | null;
+  estimatedCostRaw: string | null;
   askPrice: number | null;
   bidPrice: number | null;
   maxPayoutDusdc: number | null;
+  maxPayoutRaw: string | null;
   potentialProfitDusdc: number | null;
   returnPct: number | null;
   fetchedAt: string;
@@ -238,7 +241,10 @@ export interface ExecutionReadiness {
   walletAddress: string | null;
   managerId: string | null;
   managerBalanceDusdc: number | null;
+  managerBalanceRaw: string | null;
   requiredQuoteDusdc: number | null;
+  requiredQuoteRaw: string | null;
+  requiredTopUpRaw: string | null;
   checks: ExecutionReadinessCheck[];
 }
 
@@ -265,7 +271,9 @@ export interface PtbTransactionData {
   quote: {
     source: PredictQuotePreview["source"];
     estimatedCostDusdc: number | null;
+    estimatedCostRaw: string | null;
     maxPayoutDusdc: number | null;
+    maxPayoutRaw: string | null;
     askPrice: number | null;
     returnPct: number | null;
     expiresAt: string;
@@ -470,7 +478,7 @@ export interface PredictOracleHistory {
 export interface ProfileActivityItem {
   id: string;
   time: string;
-  type: "compile" | "sponsor_preview" | "mint" | "redeem" | "keeper";
+  type: "compile" | "sponsor_preview" | "manager_create" | "predict_mint" | "mint" | "redeem" | "keeper";
   oracleId?: string;
   digest?: string;
   guardianDecision?: GuardianResult["decision"];
@@ -524,6 +532,7 @@ export interface ProfileSummary {
   redeemableValueDusdc: number | null;
   realizedPnlDusdc: number | null;
   tradingBalanceDusdc: number | null;
+  tradingBalanceRaw: string | null;
   awaitingSettlement: number | null;
   guardianBlockedCount: number;
   activity: ProfileActivityItem[];
