@@ -1,5 +1,5 @@
 import { predictDeployment } from "./predict-config";
-import { normalizeDusdc, normalizePrice } from "./predict";
+import { getPredictBinaryTradeAmounts, normalizeDusdc, normalizePrice } from "./predict";
 import type {
   KeeperSnapshot,
   ProfileIndexPolicy,
@@ -45,7 +45,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
   }
 
   const managerSummary = normalizeManagerSummary(manager);
-  const normalizedPositions = normalizeProfilePositions(positions);
+  const normalizedPositions = await enrichProfilePositionsWithLiveQuotes(normalizeProfilePositions(positions));
   const normalizedPnl = normalizeProfilePnl(pnl, managerSummary);
   const keeper = buildKeeperSnapshot(normalizedPositions);
 
@@ -194,8 +194,14 @@ export function normalizeProfilePositions(value: unknown): ProfilePosition[] {
     const lowerStrike = normalizePriceFromKeys(position, ["lower_strike", "lowerStrike", "min_strike", "minStrike"]);
     const upperStrike = normalizePriceFromKeys(position, ["upper_strike", "upperStrike", "higher_strike", "higherStrike", "max_strike", "maxStrike"]);
     const openQuantity = readNumberFromKeys(position, ["open_quantity", "openQuantity", "quantity"]);
+    const openQuantityRaw = readRawIntegerFromKeys(position, ["open_quantity", "openQuantity", "quantity"]);
     const status = readStringFromKeys(position, ["status"]) ?? "unknown";
     const kind = inferPositionKind(position, direction, strike, lowerStrike, upperStrike);
+    const currentValueDusdc = normalizeDusdcFromKeys(position, ["mark_value", "markValue", "current_value", "currentValue", "server_value", "serverValue"]);
+    const unrealizedPnlDusdc = normalizeDusdcFromKeys(position, ["unrealized_pnl", "unrealizedPnl", "floating_pnl", "floatingPnl"]);
+    const action = keeperAction(status, openQuantity ?? 0);
+    const canRedeem = action === "redeemable";
+    const quoteStatus = defaultQuoteStatus(canRedeem, currentValueDusdc, unrealizedPnlDusdc);
 
     return {
       id: buildPositionId(position, oracleId, kind, index),
@@ -208,15 +214,48 @@ export function normalizeProfilePositions(value: unknown): ProfilePosition[] {
       strike,
       lowerStrike,
       upperStrike,
-      openQuantityRaw: readRawIntegerFromKeys(position, ["open_quantity", "openQuantity", "quantity"]),
+      openQuantityRaw,
       openQuantityDusdc: openQuantity === null ? null : normalizeDusdc(openQuantity),
       costBasisDusdc: normalizeDusdcFromKeys(position, ["open_cost_basis", "openCostBasis", "cost_basis", "costBasis"]),
-      currentValueDusdc: normalizeDusdcFromKeys(position, ["mark_value", "markValue", "current_value", "currentValue", "server_value", "serverValue"]),
-      unrealizedPnlDusdc: normalizeDusdcFromKeys(position, ["unrealized_pnl", "unrealizedPnl", "floating_pnl", "floatingPnl"]),
+      currentValueDusdc,
+      unrealizedPnlDusdc,
       realizedPnlDusdc: normalizeDusdcFromKeys(position, ["realized_pnl", "realizedPnl"]),
-      action: keeperAction(status, openQuantity ?? 0)
+      liveExitValueDusdc: null,
+      livePnlDusdc: null,
+      quoteStatus,
+      canRedeem,
+      action
     };
   });
+}
+
+export async function enrichProfilePositionsWithLiveQuotes(positions: ProfilePosition[]): Promise<ProfilePosition[]> {
+  return Promise.all(
+    positions.map(async (position) => {
+      if (!isLiveQuoteableBinaryPosition(position)) {
+        return position;
+      }
+
+      try {
+        const quote = await getPredictBinaryTradeAmounts({
+          oracleId: position.oracleId,
+          expiry: position.expiry,
+          strike: position.strike,
+          direction: position.direction,
+          quantityRaw: position.openQuantityRaw
+        });
+
+        return {
+          ...position,
+          liveExitValueDusdc: quote.redeemPayoutDusdc,
+          livePnlDusdc: position.costBasisDusdc === null ? null : quote.redeemPayoutDusdc - position.costBasisDusdc,
+          quoteStatus: "live"
+        };
+      } catch {
+        return position;
+      }
+    })
+  );
 }
 
 export function normalizeProfilePnl(value: unknown, managerSummary?: { realizedPnlDusdc: number | null }): ProfilePnlSummary | null {
@@ -474,6 +513,38 @@ function buildPositionId(value: unknown, oracleId: string | null, kind: ProfileP
   const strike = readRawIntegerFromKeys(value, ["strike", "lower_strike", "lowerStrike", "upper_strike", "upperStrike"]) ?? "no-strike";
 
   return `${oracleId ?? "unknown"}-${kind}-${expiry}-${strike}-${index}`;
+}
+
+function defaultQuoteStatus(
+  canRedeem: boolean,
+  currentValueDusdc: number | null,
+  unrealizedPnlDusdc: number | null
+): ProfilePosition["quoteStatus"] {
+  if (canRedeem) {
+    return "settled";
+  }
+
+  if (currentValueDusdc !== null || unrealizedPnlDusdc !== null) {
+    return "indexed";
+  }
+
+  return "unavailable";
+}
+
+function isLiveQuoteableBinaryPosition(position: ProfilePosition): position is ProfilePosition & {
+  oracleId: string;
+  expiry: number;
+  strike: number;
+  direction: NonNullable<ProfilePosition["direction"]>;
+  openQuantityRaw: string;
+} {
+  return position.kind === "binary" &&
+    position.action === "monitor_settlement" &&
+    Boolean(position.oracleId) &&
+    typeof position.expiry === "number" &&
+    typeof position.strike === "number" &&
+    Boolean(position.direction) &&
+    Boolean(position.openQuantityRaw && /^\d+$/.test(position.openQuantityRaw));
 }
 
 function keeperAction(status: string, openQuantity: number): ProfilePosition["action"] {

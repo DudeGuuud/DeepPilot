@@ -16,6 +16,7 @@ import type {
   PredictMarketSnapshot,
   PredictOracleSummary,
   PredictQuotePreview,
+  PredictDirection,
   PredictSviEvent,
   PredictStatus,
   VaultSummary
@@ -30,6 +31,25 @@ const DEFAULT_MARKET_PAGE_SIZE = 4;
 const MAX_MARKET_PAGE_SIZE = 12;
 const HISTORY_POINT_CAP = 240;
 const SVI_EVENT_CAP = 120;
+
+export type PredictBinaryTradeAmountsInput = {
+  oracleId: string;
+  expiry: number;
+  strike: number;
+  direction: PredictDirection;
+  quantityRaw: string | bigint;
+};
+
+export type PredictBinaryTradeAmounts = {
+  quantityRaw: string;
+  mintCostRaw: string;
+  redeemPayoutRaw: string;
+  mintCostDusdc: number;
+  redeemPayoutDusdc: number;
+  askPrice: number | null;
+  bidPrice: number | null;
+  fetchedAt: string;
+};
 
 const oracleSummarySchema: z.ZodType<PredictOracleSummary> = z.object({
   predict_id: z.string(),
@@ -278,6 +298,31 @@ export async function getPredictQuotePreview(
   }
 }
 
+export async function getPredictBinaryTradeAmounts(input: PredictBinaryTradeAmountsInput): Promise<PredictBinaryTradeAmounts> {
+  const quantityRaw = normalizeQuantityRaw(input.quantityRaw);
+  const quote = await simulateBinaryTradeAmounts({
+    oracleId: input.oracleId,
+    expiry: input.expiry,
+    strike: input.strike,
+    direction: input.direction,
+    quantityRaw
+  });
+  const quantityDusdc = rawDusdcToNumber(quote.quantityRaw);
+  const mintCostDusdc = rawDusdcToNumber(quote.mintCostRaw);
+  const redeemPayoutDusdc = rawDusdcToNumber(quote.redeemPayoutRaw);
+
+  return {
+    quantityRaw: quote.quantityRaw.toString(),
+    mintCostRaw: quote.mintCostRaw.toString(),
+    redeemPayoutRaw: quote.redeemPayoutRaw.toString(),
+    mintCostDusdc,
+    redeemPayoutDusdc,
+    askPrice: quantityDusdc > 0 ? mintCostDusdc / quantityDusdc : null,
+    bidPrice: quantityDusdc > 0 ? redeemPayoutDusdc / quantityDusdc : null,
+    fetchedAt: new Date().toISOString()
+  };
+}
+
 async function getSnapshotForNextActiveOracle(intent: Extract<ParsedIntent, { status: "ready" }>) {
   const [rawStatus, rawOracles, rawVault] = await Promise.all([
     fetchPredict("/status", predictStatusSchema),
@@ -365,21 +410,6 @@ async function simulateTradeAmounts(
   market: PredictMarketSnapshot,
   quantityRaw: bigint
 ) {
-  try {
-    return await simulateTradeAmountsOnce(intent, market, quantityRaw);
-  } catch {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    return simulateTradeAmountsOnce(intent, market, quantityRaw);
-  }
-}
-
-async function simulateTradeAmountsOnce(
-  intent: Extract<ParsedIntent, { status: "ready" }>,
-  market: PredictMarketSnapshot,
-  quantityRaw: bigint
-) {
-  const tx = new Transaction();
-  tx.setSender(QUOTE_PREVIEW_SENDER);
   const oracleId = market.oracle.oracle_id;
   const strike = market.metrics.selectedStrike ?? intent.strike;
 
@@ -387,12 +417,46 @@ async function simulateTradeAmountsOnce(
     throw new Error("Predict strike is required before quoting payout.");
   }
 
+  return simulateBinaryTradeAmounts({
+    oracleId,
+    expiry: market.oracle.expiry,
+    strike,
+    direction: intent.direction === "down" ? "down" : "up",
+    quantityRaw
+  });
+}
+
+async function simulateBinaryTradeAmounts(input: {
+  oracleId: string;
+  expiry: number;
+  strike: number;
+  direction: PredictDirection;
+  quantityRaw: bigint;
+}) {
+  try {
+    return await simulateBinaryTradeAmountsOnce(input);
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return simulateBinaryTradeAmountsOnce(input);
+  }
+}
+
+async function simulateBinaryTradeAmountsOnce(input: {
+  oracleId: string;
+  expiry: number;
+  strike: number;
+  direction: PredictDirection;
+  quantityRaw: bigint;
+}) {
+  const tx = new Transaction();
+  tx.setSender(QUOTE_PREVIEW_SENDER);
+
   const key = tx.moveCall({
-    target: `${predictDeployment.packageId}::market_key::${intent.direction === "down" ? "down" : "up"}`,
+    target: `${predictDeployment.packageId}::market_key::${input.direction === "down" ? "down" : "up"}`,
     arguments: [
-      tx.pure.id(oracleId),
-      tx.pure.u64(market.oracle.expiry),
-      tx.pure.u64(BigInt(toPredictPrice(strike)))
+      tx.pure.id(input.oracleId),
+      tx.pure.u64(input.expiry),
+      tx.pure.u64(BigInt(toPredictPrice(input.strike)))
     ]
   });
 
@@ -400,9 +464,9 @@ async function simulateTradeAmountsOnce(
     target: `${predictDeployment.packageId}::predict::get_trade_amounts`,
     arguments: [
       tx.object(predictDeployment.predictId),
-      tx.object(oracleId),
+      tx.object(input.oracleId),
       key,
-      tx.pure.u64(quantityRaw),
+      tx.pure.u64(input.quantityRaw),
       tx.object("0x6")
     ]
   });
@@ -431,7 +495,7 @@ async function simulateTradeAmountsOnce(
   }
 
   return {
-    quantityRaw,
+    quantityRaw: input.quantityRaw,
     mintCostRaw: parseU64(mintCost),
     redeemPayoutRaw: parseU64(redeemPayout)
   };
@@ -533,6 +597,24 @@ function parseQuantityRaw(value: string) {
   }
 
   return BigInt(toDusdcBaseUnits(Number(trimmed)));
+}
+
+function normalizeQuantityRaw(value: string | bigint) {
+  if (typeof value === "bigint") {
+    if (value <= 0n) {
+      throw new Error("Predict quantity must be positive.");
+    }
+
+    return value;
+  }
+
+  const trimmed = value.trim();
+
+  if (!/^\d+$/.test(trimmed) || BigInt(trimmed) <= 0n) {
+    throw new Error("Predict quantity must be a positive raw integer.");
+  }
+
+  return BigInt(trimmed);
 }
 
 function parseU64(bytes: Uint8Array) {

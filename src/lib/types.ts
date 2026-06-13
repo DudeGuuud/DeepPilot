@@ -517,6 +517,10 @@ export interface ProfilePosition {
   currentValueDusdc: number | null;
   unrealizedPnlDusdc: number | null;
   realizedPnlDusdc: number | null;
+  liveExitValueDusdc: number | null;
+  livePnlDusdc: number | null;
+  quoteStatus: "live" | "indexed" | "unavailable" | "settled";
+  canRedeem: boolean;
   action: "monitor_settlement" | "redeemable" | "none";
 }
 

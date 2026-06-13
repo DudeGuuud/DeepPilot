@@ -366,14 +366,11 @@ function PolicyBox({ title, items }: { title: string; items: string[] }) {
 function PositionsTable({ positions }: { positions: ProfilePosition[] }) {
   return (
     <div className="overflow-hidden rounded-md border border-border bg-background/45">
-      <div className="hidden grid-cols-[1.3fr_0.8fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr] gap-3 border-b border-border bg-card/60 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground lg:grid">
-        <span>Market / oracle</span>
-        <span>Side</span>
-        <span>Strike</span>
-        <span>Quantity</span>
-        <span>Server value</span>
-        <span>Unrealized</span>
-        <span>Action</span>
+      <div className="hidden grid-cols-[1.5fr_0.9fr_0.9fr_0.9fr] gap-3 border-b border-border bg-card/60 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground lg:grid">
+        <span>Holding</span>
+        <span>Exit value</span>
+        <span>PnL</span>
+        <span>Status</span>
       </div>
       <div className="divide-y divide-border/75">
         {positions.map((position) => (
@@ -385,39 +382,58 @@ function PositionsTable({ positions }: { positions: ProfilePosition[] }) {
 }
 
 function PositionRow({ position }: { position: ProfilePosition }) {
+  const exitValue = positionExitValue(position);
+  const pnlValue = positionPnlValue(position);
+
   return (
-    <div className="grid gap-3 px-3 py-3 lg:grid-cols-[1.3fr_0.8fr_1fr_0.9fr_0.9fr_0.9fr_0.9fr] lg:items-center">
+    <div className="grid gap-4 px-3 py-3 lg:grid-cols-[1.5fr_0.9fr_0.9fr_0.9fr] lg:items-center">
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-foreground">{position.market ?? "Predict market"}</p>
-        <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{position.oracleId ?? "--"}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-medium text-foreground">{formatHoldingTitle(position)}</p>
+          <Badge variant="outline" className="border-border text-muted-foreground">
+            {formatDusdc(position.openQuantityDusdc)}
+          </Badge>
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">Expires {formatExpiry(position.expiry)}</p>
+        <details className="mt-2 text-xs text-muted-foreground">
+          <summary className="cursor-pointer text-muted-foreground/80 hover:text-foreground">Details</summary>
+          <div className="mt-2 space-y-1 rounded-md border border-border bg-background/55 p-2">
+            <p>Strike: {formatPositionStrike(position)}</p>
+            <p className="break-all">Oracle: {position.oracleId ?? "--"}</p>
+            <p>Estimate: {formatQuoteStatus(position.quoteStatus)}</p>
+          </div>
+        </details>
       </div>
-      <PositionCell label="Side" value={formatDirection(position)} badge />
-      <PositionCell label="Strike" value={formatPositionStrike(position)} />
-      <PositionCell label="Quantity" value={formatDusdc(position.openQuantityDusdc)} />
-      <PositionCell label="Server value" value={formatDusdc(position.currentValueDusdc)} />
-      <PositionCell label="Unrealized" value={formatSignedDusdc(position.unrealizedPnlDusdc)} />
+
+      <PortfolioMetric
+        label="Exit value"
+        value={formatDusdc(exitValue)}
+        detail={formatQuoteStatus(position.quoteStatus)}
+      />
+      <PortfolioMetric
+        label="PnL"
+        value={formatSignedDusdc(pnlValue)}
+        detail={position.livePnlDusdc !== null ? "Live estimate" : position.unrealizedPnlDusdc !== null ? "Indexed estimate" : "--"}
+      />
       <div className="flex flex-wrap items-center gap-2 lg:block">
-        <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground lg:hidden">Action</span>
+        <span className="text-xs uppercase tracking-[0.14em] text-muted-foreground lg:hidden">Status</span>
         <Badge variant="outline" className="border-border text-muted-foreground">
-          {formatPositionAction(position.action)}
+          {formatPortfolioStatus(position)}
         </Badge>
-        <p className="mt-1 text-xs text-muted-foreground">{formatExpiry(position.expiry)} · {position.status}</p>
+        <Button className="mt-0 h-8 lg:mt-2" size="sm" variant="outline" disabled>
+          {formatPositionAction(position)}
+        </Button>
       </div>
     </div>
   );
 }
 
-function PositionCell({ label, value, badge = false }: { label: string; value: string; badge?: boolean }) {
+function PortfolioMetric({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
     <div className="min-w-0">
       <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground lg:hidden">{label}</p>
-      {badge ? (
-        <Badge variant="outline" className="mt-1 border-border text-muted-foreground lg:mt-0">
-          {value}
-        </Badge>
-      ) : (
-        <p className="mt-1 truncate text-sm text-foreground lg:mt-0">{value}</p>
-      )}
+      <p className="mt-1 truncate text-sm font-medium text-foreground lg:mt-0">{value}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{detail}</p>
     </div>
   );
 }
@@ -474,6 +490,13 @@ function formatCount(value: number | null) {
   return value === null ? "--" : value.toLocaleString();
 }
 
+function formatHoldingTitle(position: ProfilePosition) {
+  const market = position.market ?? "Predict";
+  const side = formatDirection(position);
+
+  return side === "--" ? market : `${market} ${side}`;
+}
+
 function formatDirection(position: ProfilePosition) {
   if (position.kind === "range") {
     return "RANGE";
@@ -511,16 +534,52 @@ function formatExpiry(expiry: number | null) {
   }).format(new Date(timestamp));
 }
 
-function formatPositionAction(action: ProfilePosition["action"]) {
-  if (action === "redeemable") {
+function positionExitValue(position: ProfilePosition) {
+  return position.liveExitValueDusdc ?? position.currentValueDusdc;
+}
+
+function positionPnlValue(position: ProfilePosition) {
+  return position.livePnlDusdc ?? position.unrealizedPnlDusdc;
+}
+
+function formatPortfolioStatus(position: ProfilePosition) {
+  if (position.canRedeem) {
     return "Redeemable";
   }
 
-  if (action === "monitor_settlement") {
+  if (position.action === "monitor_settlement") {
+    return position.status.toLowerCase().includes("pending") ? "Waiting settlement" : "Open";
+  }
+
+  return "Closed";
+}
+
+function formatQuoteStatus(status: ProfilePosition["quoteStatus"]) {
+  if (status === "live") {
+    return "Live estimate";
+  }
+
+  if (status === "indexed") {
+    return "Indexed estimate";
+  }
+
+  if (status === "settled") {
+    return "Settled";
+  }
+
+  return "Unavailable";
+}
+
+function formatPositionAction(position: ProfilePosition) {
+  if (position.canRedeem) {
+    return "Redeem";
+  }
+
+  if (position.action === "monitor_settlement") {
     return "Monitor";
   }
 
-  return "None";
+  return "Closed";
 }
 
 function shortAddress(address: string) {

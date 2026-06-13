@@ -3,8 +3,8 @@ import { z } from "zod";
 import { compileIntent } from "../src/lib/compile";
 import { parseJsonBody } from "../src/lib/http";
 import { buildBinaryMintTransaction, buildCreatePredictManagerTransaction } from "../src/lib/predict-execution";
-import { getPredictMarkets, getPredictOracleHistory, predictDeployment } from "../src/lib/predict";
-import { getProfileSummary, normalizeProfilePnl, normalizeProfilePositions } from "../src/lib/profile";
+import { getPredictMarkets, getPredictOracleHistory, predictDeployment, toPredictPrice } from "../src/lib/predict";
+import { enrichProfilePositionsWithLiveQuotes, getProfileSummary, normalizeProfilePnl, normalizeProfilePositions } from "../src/lib/profile";
 
 const intent = "Buy 10 DUSDC BTC UP on the next active DeepBook Predict oracle";
 const result = await compileIntent(intent);
@@ -74,12 +74,14 @@ const newWalletProfile = await getProfileSummary({
   wallet: "0x00000000000000000000000000000000000000000000000000000000deedc0de",
   managerId: null
 });
+const fixtureStrike = market.metrics.selectedStrike ?? market.metrics.spot;
+assert(typeof fixtureStrike === "number" && fixtureStrike > 0, "profile live quote fixture needs a valid strike");
 const fixturePositions = normalizeProfilePositions([
   {
     oracle_id: market.oracle.oracle_id,
     underlying_asset: "BTC",
-    expiry: 1781318700000,
-    strike: 63568000000000,
+    expiry: market.oracle.expiry,
+    strike: toPredictPrice(fixtureStrike),
     is_up: false,
     open_quantity: 3000000,
     open_cost_basis: 1210000,
@@ -87,6 +89,44 @@ const fixturePositions = normalizeProfilePositions([
     unrealized_pnl: -120000,
     realized_pnl: 4414672,
     status: "active"
+  }
+]);
+const liveFixturePositions = await enrichProfilePositionsWithLiveQuotes(fixturePositions);
+const indexedFallbackPositions = normalizeProfilePositions([
+  {
+    oracle_id: market.oracle.oracle_id,
+    underlying_asset: "BTC",
+    expiry: market.oracle.expiry,
+    strike: toPredictPrice(fixtureStrike),
+    is_up: true,
+    open_quantity: 3000000,
+    open_cost_basis: 1210000,
+    mark_value: 2500000,
+    unrealized_pnl: 1290000,
+    status: "active"
+  }
+]);
+const noCostBasisPositions = await enrichProfilePositionsWithLiveQuotes(normalizeProfilePositions([
+  {
+    oracle_id: market.oracle.oracle_id,
+    underlying_asset: "BTC",
+    expiry: market.oracle.expiry,
+    strike: toPredictPrice(fixtureStrike),
+    is_up: true,
+    open_quantity: 1000000,
+    status: "active"
+  }
+]));
+const settledPositions = normalizeProfilePositions([
+  {
+    oracle_id: market.oracle.oracle_id,
+    underlying_asset: "BTC",
+    expiry: market.oracle.expiry,
+    strike: toPredictPrice(fixtureStrike),
+    is_up: true,
+    open_quantity: 1000000,
+    mark_value: 1000000,
+    status: "settled"
   }
 ]);
 const fixturePnl = normalizeProfilePnl(
@@ -142,9 +182,18 @@ assert(newWalletProfile.pnl === null, "wallet without manager should not fabrica
 assert(fixturePositions.length === 1, "profile position normalizer should keep server rows");
 assert(fixturePositions[0].market === "BTC", "profile position normalizer should keep market asset");
 assert(fixturePositions[0].direction === "down", "profile position normalizer should map is_up to direction");
-assert(fixturePositions[0].strike === 63568, "profile position normalizer should scale strike");
+assert(fixturePositions[0].strike === fixtureStrike, "profile position normalizer should scale strike");
 assert(fixturePositions[0].openQuantityDusdc === 3, "profile position normalizer should scale open quantity");
 assert(fixturePositions[0].currentValueDusdc === null, "profile position normalizer should not invent missing mark value");
+assert(liveFixturePositions[0].quoteStatus === "live", "open binary position should receive a live exit quote");
+assert(liveFixturePositions[0].liveExitValueDusdc !== null, "live exit quote should include redeem payout");
+assert(liveFixturePositions[0].livePnlDusdc !== null, "live PnL should be calculated when cost basis exists");
+assert(indexedFallbackPositions[0].quoteStatus === "indexed", "indexed server values should be the fallback quote status");
+assert(indexedFallbackPositions[0].liveExitValueDusdc === null, "indexed fallback should not fabricate live exit value");
+assert(noCostBasisPositions[0].quoteStatus === "live", "live quote should still work without cost basis");
+assert(noCostBasisPositions[0].livePnlDusdc === null, "missing cost basis should keep live PnL unavailable");
+assert(settledPositions[0].canRedeem, "settled open position should be marked redeemable");
+assert(settledPositions[0].quoteStatus === "settled", "settled redeemable position should use settled quote status");
 assert(fixturePnl?.source === "predict_server", "profile PnL should be labeled as server indexed");
 assert(fixturePnl.unrealizedPnlDusdc === -0.12, "profile PnL should scale unrealized PnL");
 assert(fixturePnl.realizedPnlDusdc === 4.414672, "profile PnL should use manager summary realized PnL when endpoint omits it");
