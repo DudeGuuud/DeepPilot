@@ -40,10 +40,12 @@ export function MarketsPage() {
 
   const markets = detail?.markets ?? [];
   const pagination = detail?.pagination;
-  const selected = useMemo(
-    () => markets.find((market) => market.oracleId === selectedOracleId) ?? detail?.selectedMarket ?? markets[0] ?? null,
-    [detail?.selectedMarket, markets, selectedOracleId]
-  );
+  const selected = useMemo(() => {
+    const manuallySelected = markets.find((market) => market.oracleId === selectedOracleId);
+    const candidates = [detail?.selectedMarket, ...markets].filter((market): market is MarketListItem => Boolean(market));
+
+    return manuallySelected ?? selectActionableMarket(candidates) ?? detail?.selectedMarket ?? markets[0] ?? null;
+  }, [detail?.selectedMarket, markets, selectedOracleId]);
 
   return (
     <AppShell
@@ -67,8 +69,8 @@ export function MarketsPage() {
         </>
       }
     >
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
-        <section className="min-w-0 space-y-3">
+      <div className="markets-grid grid gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
+        <section className="markets-list-column min-w-0 space-y-3">
           <Card>
             <CardContent className="grid gap-3 pt-5 md:grid-cols-4">
               <FilterSelect
@@ -166,7 +168,7 @@ export function MarketsPage() {
           ) : null}
         </section>
 
-        <aside className="space-y-3">
+        <aside className="markets-detail-column space-y-3">
           <SelectedMarketPanel market={selected} loading={loading} />
         </aside>
       </div>
@@ -244,6 +246,16 @@ function MarketCard({
 
       <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">{market.guardianSummary}</p>
     </button>
+  );
+}
+
+function selectActionableMarket(markets: MarketListItem[]) {
+  const now = Date.now();
+
+  return (
+    markets.find((market) => market.status === "active" && market.expiry > now && market.riskLevel !== "blocked") ??
+    markets.find((market) => market.status === "active" && market.expiry > now) ??
+    null
   );
 }
 

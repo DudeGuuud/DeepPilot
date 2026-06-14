@@ -72,6 +72,7 @@ const DUSDC_BASE_UNITS = 1_000_000n;
 
 type RunPilotOptions = {
   openTradeModal?: boolean;
+  clearComposer?: boolean;
 };
 
 type TradeModalStatus =
@@ -163,7 +164,7 @@ function TerminalExperience() {
   useEffect(() => {
     setIntent(defaultIntent);
     if (urlOracleId) {
-      void runPilotRef.current(defaultIntent, urlManagerId);
+      void runPilotRef.current(defaultIntent, urlManagerId, { clearComposer: false });
     }
   }, [defaultIntent, urlOracleId, urlManagerId]);
 
@@ -184,7 +185,7 @@ function TerminalExperience() {
     let inFlight = false;
 
     async function loadMarketPreview() {
-      if (inFlight) {
+      if (inFlight || !pageIsVisible()) {
         return;
       }
 
@@ -218,10 +219,15 @@ function TerminalExperience() {
     const intervalId = window.setInterval(() => {
       void loadMarketPreview();
     }, MARKET_PREVIEW_REFRESH_MS);
+    const onVisibilityChange = () => {
+      void loadMarketPreview();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -251,6 +257,9 @@ function TerminalExperience() {
     setTradeDetailsExpanded(false);
     setTradeModalStatus(options.openTradeModal ? "compiling" : "idle");
     setTradeModalOpen(Boolean(options.openTradeModal));
+    if (options.clearComposer !== false) {
+      setIntent("");
+    }
     setMessages((current) => {
       const nextMessages: PilotMessage[] = [
         ...current,
@@ -557,7 +566,7 @@ function TerminalExperience() {
       title: "PredictManager created",
       description: `${shortAddress(createdManagerId)} · review refreshed`
     });
-    await runPilot(intent.trim(), createdManagerId, { openTradeModal: true });
+    await runPilot(intent.trim(), createdManagerId, { openTradeModal: true, clearComposer: false });
   }
 
   async function refreshExecutableReview(current: CompileApiResult) {
@@ -760,6 +769,7 @@ function TerminalExperience() {
         : urlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
   const hasLockedStrike = Boolean(compiled?.market || intentStrike || urlStrike);
   const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
+  const showPilotActions = Boolean(pilotMode || compiled || busy === "pilot" || receipt || error || ragSources.length > 0);
 
   return (
     <AppShell
@@ -822,18 +832,20 @@ function TerminalExperience() {
           </section>
 
           <aside className="audit-column flex min-w-0 flex-col gap-3">
-            <PilotActionsCard
-              pilotMode={pilotMode}
-              tradeStatus={tradeModalStatus}
-              busy={busy === "pilot"}
-              compiled={compiled}
-              receipt={receipt}
-              error={error}
-              sources={ragSources}
-              sourcesExpanded={sourcesExpanded}
-              onToggleSources={() => setSourcesExpanded((current) => !current)}
-              onOpenReview={() => setTradeModalOpen(true)}
-            />
+            {showPilotActions ? (
+              <PilotActionsCard
+                pilotMode={pilotMode}
+                tradeStatus={tradeModalStatus}
+                busy={busy === "pilot"}
+                compiled={compiled}
+                receipt={receipt}
+                error={error}
+                sources={ragSources}
+                sourcesExpanded={sourcesExpanded}
+                onToggleSources={() => setSourcesExpanded((current) => !current)}
+                onOpenReview={() => setTradeModalOpen(true)}
+              />
+            ) : null}
             <TradeTicket
               market={compiled?.market ?? null}
               initialOracleId={urlOracleId ?? marketPreview?.selectedMarket?.oracleId}
@@ -888,57 +900,49 @@ function PilotConsole({
           </div>
         </div>
       </CardHeader>
-      <CardContent className="p-4 pt-0">
-        <div className="pilot-chat-frame">
-          {messages.length > 0 ? (
-            <div className="pilot-transcript p-3">
-              <div className="space-y-3">
-                {messages.map((message) => (
-                  <MessageBubble key={message.id} message={message} />
-                ))}
-                <div ref={transcriptEndRef} aria-hidden="true" />
-              </div>
-            </div>
-          ) : (
-            <div className="grid min-h-[72px] place-items-center border-b border-border/60 px-3 py-2">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground/45">
-                <Bot className="h-4 w-4" />
-                <span>{COMPOSER_HINT}</span>
-              </div>
-            </div>
-          )}
-
-          <div className="pilot-composer-panel p-2.5">
-            <div className="flex flex-col gap-2">
-              <Textarea
-                id="pilot-composer"
-                className="min-h-[116px] resize-none border-border/80 bg-background/70 py-2.5 text-sm leading-6 shadow-none placeholder:text-muted-foreground/45 focus-visible:ring-1 focus-visible:ring-ring/70"
-                value={intent}
-                onChange={(event) => onChange(event.target.value)}
-                onKeyDown={onKeyDown}
-                placeholder={COMPOSER_HINT}
-              />
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-xs text-muted-foreground/70">Enter to send · Shift+Enter for a new line</span>
-                <Button className="h-9 w-full shrink-0 sm:w-auto" onClick={onSubmit} disabled={busy || !intent.trim()}>
-                  {busy ? <RefreshCw className="animate-spin" /> : <Send />}
-                  Send
-                </Button>
-              </div>
-            </div>
-            <div className="mt-3 space-y-2">
-              <span className="text-xs text-muted-foreground">Examples</span>
-              {EXAMPLE_INTENTS.map((example) => (
-                <button
-                  key={example}
-                  className="block w-full rounded-md border border-border bg-secondary/70 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:border-zinc-500 hover:bg-accent hover:text-foreground disabled:opacity-50"
-                  onClick={() => onExample(example)}
-                  disabled={busy}
-                >
-                  {example}
-                </button>
+      <CardContent className="space-y-3 p-4 pt-0">
+        {messages.length > 0 ? (
+          <div className="pilot-transcript rounded-md border border-border bg-background/45 p-3">
+            <div className="space-y-3">
+              {messages.map((message) => (
+                <MessageBubble key={message.id} message={message} />
               ))}
+              <div ref={transcriptEndRef} aria-hidden="true" />
             </div>
+          </div>
+        ) : null}
+
+        <div className="space-y-2">
+          <Textarea
+            id="pilot-composer"
+            className="min-h-[104px] resize-none border-border/80 bg-background/70 py-2.5 text-sm leading-6 shadow-none placeholder:text-muted-foreground/45 focus-visible:ring-1 focus-visible:ring-ring/70"
+            value={intent}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={COMPOSER_HINT}
+          />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-xs text-muted-foreground/70">Enter to send · Shift+Enter for a new line</span>
+            <Button className="h-9 w-full shrink-0 sm:w-auto" onClick={onSubmit} disabled={busy || !intent.trim()}>
+              {busy ? <RefreshCw className="animate-spin" /> : <Send />}
+              Send
+            </Button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <span className="text-xs text-muted-foreground">Examples</span>
+          <div className="flex gap-2 overflow-x-auto pb-1 sm:grid sm:grid-cols-2 sm:overflow-visible sm:pb-0">
+            {EXAMPLE_INTENTS.map((example) => (
+              <button
+                key={example}
+                className="min-w-[178px] shrink-0 rounded-md border border-border bg-secondary/70 px-3 py-2 text-left text-xs font-medium text-muted-foreground transition-colors hover:border-zinc-500 hover:bg-accent hover:text-foreground disabled:opacity-50 sm:min-w-0 sm:shrink"
+                onClick={() => onExample(example)}
+                disabled={busy}
+              >
+                {example}
+              </button>
+            ))}
           </div>
         </div>
       </CardContent>
@@ -1089,10 +1093,15 @@ function TradeReviewModal({
 
   const action = executionAction(compiled, blocked);
   const canConfirm = action.canConfirm && !busy && status !== "executed";
+  const quoteOnly = isQuoteOnlyResult(compiled);
+  const fundingRequired = isFundingRequiredResult(compiled);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/82 px-3 py-5 backdrop-blur-md">
       <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="trade-review-modal-title"
         initial={{ opacity: 0, scale: 0.98, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.98, y: 10 }}
@@ -1105,12 +1114,14 @@ function TradeReviewModal({
                 {status === "signing" ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />}
               </div>
               <div className="min-w-0">
-                <h2 className="truncate text-base font-semibold text-foreground">{tradeModalTitle(status)}</h2>
+                <h2 id="trade-review-modal-title" className="truncate text-base font-semibold text-foreground">
+                  {tradeModalTitle(status, compiled)}
+                </h2>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">{tradeModalSubtitle(status, compiled)}</p>
               </div>
             </div>
           </div>
-          <Button size="icon" variant="ghost" onClick={onClose} disabled={busy}>
+          <Button size="icon" variant="ghost" aria-label="Close trade review" onClick={onClose} disabled={busy}>
             <X />
           </Button>
         </div>
@@ -1147,7 +1158,7 @@ function TradeReviewModal({
                 </Button>
                 <Button
                   className="h-10"
-                  variant={canConfirm ? "default" : "destructive"}
+                  variant={canConfirm ? "default" : blocked ? "destructive" : "outline"}
                   disabled={!canConfirm}
                   onClick={() => {
                     if (action.href) {
@@ -1171,7 +1182,7 @@ function TradeReviewModal({
                     exit={{ opacity: 0, height: 0 }}
                     className="space-y-3 overflow-hidden"
                   >
-                    <OutcomeQuoteCard compiled={compiled} busy={status === "compiling"} />
+                    {!quoteOnly ? <OutcomeQuoteCard compiled={compiled} busy={status === "compiling"} /> : null}
                     <SafetyChecksCard
                       compiled={compiled}
                       busy={status === "compiling"}
@@ -1179,16 +1190,20 @@ function TradeReviewModal({
                       expandedFinding={expandedFinding}
                       onExpand={onExpandFinding}
                     />
-                    <TransactionCard compiled={compiled} accountAddress={accountAddress} />
-                    <ExecutionCard
-                      compiled={compiled}
-                      receipt={receipt}
-                      error={error}
-                      busy={busy}
-                      blocked={blocked}
-                      onConfirm={onConfirm}
-                      showButton={false}
-                    />
+                    {!quoteOnly && !fundingRequired ? (
+                      <>
+                        <TransactionCard compiled={compiled} accountAddress={accountAddress} />
+                        <ExecutionCard
+                          compiled={compiled}
+                          receipt={receipt}
+                          error={error}
+                          busy={busy}
+                          blocked={blocked}
+                          onConfirm={onConfirm}
+                          showButton={false}
+                        />
+                      </>
+                    ) : null}
                   </motion.div>
                 ) : null}
               </AnimatePresence>
@@ -1302,12 +1317,15 @@ function TradeModalSteps({
   busy: boolean;
 }) {
   const timeline = compiled?.timeline ?? streamTimeline;
+  const quoteOnly = compiled?.intent.status === "ready" && compiled.intent.action === "predict_quote_only";
+  const fundingStatus = compiled?.ptb?.execution.fundingStatus;
+  const fundingBlocked = status === "funding_required" || fundingStatus === "insufficient";
   const stageState = (label: string): "complete" | "blocked" | "pending" => {
     const match = timeline.find((item) => item.label.toLowerCase().includes(label.toLowerCase()));
 
     return match?.state ?? (compiled ? "complete" : "pending");
   };
-  const steps: Array<{ label: string; state: "complete" | "blocked" | "pending"; detail: string }> = [
+  const baseSteps: Array<{ label: string; state: "complete" | "blocked" | "pending"; detail: string }> = [
     {
       label: "Parsing intent",
       state: stageState("Parsing intent"),
@@ -1321,31 +1339,52 @@ function TradeModalSteps({
     {
       label: "Quoting payout",
       state: compiled?.quote?.status === "available" ? "complete" : compiled?.quote?.status === "unavailable" ? "blocked" : stageState("Quoting"),
-      detail: compiled?.quote?.status === "available" ? `${formatDusdc(compiled.quote.estimatedCostDusdc)} DUSDC est. pay` : "DeepBook Predict quote"
+      detail: compiled?.quote?.status === "available"
+        ? `${formatDusdc(compiled.quote.estimatedCostDusdc)} DUSDC est. pay`
+        : quoteOnly ? "No mint quote required" : "DeepBook Predict quote"
     },
     {
       label: "Guardian checks",
       state: compiled?.guardian.blocked ? "blocked" : compiled ? "complete" : "pending",
       detail: compiled?.guardian.decision ? compiled.guardian.decision.toUpperCase() : "Risk policy"
-    },
-    {
-      label: "Checking Trading Balance",
-      state: stageState("Checking Trading Balance"),
-      detail: compiled?.ptb?.execution.fundingStatus === "insufficient"
-        ? `Shortfall ${formatRawDusdc(compiled.ptb.execution.fundingShortfallRaw)} DUSDC`
-        : compiled?.ptb?.execution.fundingStatus ?? "Manager payment readiness"
-    },
-    {
-      label: "SUI gas preflight",
-      state: status === "preflight_failed" ? "blocked" : preflight || status === "signing" || status === "executed" ? "complete" : "pending",
-      detail: preflight ? `SUI ${formatRawSui(preflight.suiBalanceRaw)} · payment ${formatRawDusdc(preflight.estimatedPaymentRaw)} DUSDC` : "SUI gas and pre-funded payment"
-    },
-    {
-      label: status === "executed" ? "Executed" : "Ready to sign",
-      state: status === "executed" ? "complete" : status === "failed" || status === "funding_required" ? "blocked" : status === "signing" ? "pending" : compiled?.ptb?.execution.canSign && !compiled.guardian.blocked ? "complete" : "pending",
-      detail: status === "signing" ? "Wallet confirmation open" : "User-triggered wallet signature"
     }
   ];
+  const executableSteps: Array<{ label: string; state: "complete" | "blocked" | "pending"; detail: string }> = quoteOnly
+    ? [
+        {
+          label: "Quote complete",
+          state: compiled ? "complete" : "pending",
+          detail: "No wallet action required"
+        }
+      ]
+    : fundingBlocked
+      ? [
+          {
+            label: "Checking Trading Balance",
+            state: "blocked",
+            detail: `Shortfall ${formatRawDusdc(compiled?.ptb?.execution.fundingShortfallRaw)} DUSDC`
+          }
+        ]
+      : [
+        {
+          label: "Checking Trading Balance",
+          state: stageState("Checking Trading Balance"),
+          detail: compiled?.ptb?.execution.fundingStatus === "insufficient"
+            ? `Shortfall ${formatRawDusdc(compiled.ptb.execution.fundingShortfallRaw)} DUSDC`
+            : compiled?.ptb?.execution.fundingStatus ?? "Manager payment readiness"
+        },
+        {
+          label: "SUI gas preflight",
+          state: status === "preflight_failed" ? "blocked" : preflight || status === "signing" || status === "executed" ? "complete" : "pending",
+          detail: preflight ? `SUI ${formatRawSui(preflight.suiBalanceRaw)} · payment ${formatRawDusdc(preflight.estimatedPaymentRaw)} DUSDC` : "SUI gas and pre-funded payment"
+        },
+        {
+          label: status === "executed" ? "Executed" : "Ready to sign",
+          state: status === "executed" ? "complete" : status === "failed" ? "blocked" : status === "signing" ? "pending" : compiled?.ptb?.execution.canSign && !compiled.guardian.blocked ? "complete" : "pending",
+          detail: status === "signing" ? "Wallet confirmation open" : "User-triggered wallet signature"
+        }
+      ];
+  const steps = [...baseSteps, ...executableSteps];
 
   return (
     <div className="rounded-md border border-border bg-background/55 p-3">
@@ -1491,6 +1530,8 @@ function SafetyChecksCard({
   onExpand: (value: string | null) => void;
 }) {
   const guardian = compiled?.guardian;
+  const quoteOnly = isQuoteOnlyResult(compiled);
+  const fundingRequired = isFundingRequiredResult(compiled);
   const level = guardian?.level ?? "medium";
   const fallback = [
     "Parsing intent",
@@ -1499,7 +1540,16 @@ function SafetyChecksCard({
     "Compiling Predict PTB preview",
     "Awaiting confirmation"
   ];
-  const timeline = compiled?.timeline ?? (streamTimeline.length ? streamTimeline : fallback.map((label) => ({ label, state: "pending" as const })));
+  const sourceTimeline = compiled?.timeline ?? (streamTimeline.length ? streamTimeline : fallback.map((label) => ({ label, state: "pending" as const })));
+  const timeline = quoteOnly
+    ? sourceTimeline.filter((item) => {
+        const label = item.label.toLowerCase();
+
+        return !label.includes("trading balance") && !label.includes("quoting predict payout");
+      })
+    : fundingRequired
+      ? sourceTimeline.filter((item) => !item.label.toLowerCase().includes("building ptb preview"))
+    : sourceTimeline;
 
   return (
     <Card className="glass-line">
@@ -1512,16 +1562,24 @@ function SafetyChecksCard({
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="rounded-md border border-border bg-background/60 p-3">
-          <div className="grid grid-cols-[64px_1fr] items-center gap-3">
-            <div className="grid aspect-square place-items-center rounded-full border border-border bg-background">
-              <div className="text-center">
-                <p className={cn("text-xl font-semibold tracking-tight", riskColor(level))}>{guardian?.score ?? "--"}</p>
-                <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground">{level}</p>
+          <div className="grid gap-3 sm:grid-cols-[128px_1fr] sm:items-center">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-1">
+              <div className="rounded-md border border-border bg-background/75 p-2.5 text-center">
+                <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground">Score</p>
+                <p className={cn("mt-1 text-xl font-semibold tracking-tight", riskColor(level))}>{guardian?.score ?? "--"}</p>
+              </div>
+              <div className="rounded-md border border-border bg-background/75 p-2.5 text-center">
+                <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground">Risk</p>
+                <p className={cn("mt-1 text-sm font-semibold uppercase tracking-[0.12em]", riskColor(level))}>{level}</p>
               </div>
             </div>
             <div className="min-w-0">
               <p className="text-sm font-medium text-foreground">
-                {guardian?.blocked ? "Signing locked" : "Pre-sign checks pass"}
+                {guardian?.blocked
+                  ? "Signing locked"
+                  : fundingRequired
+                    ? "Policy passes; funding required"
+                    : quoteOnly ? "Policy checks pass" : "Pre-sign checks pass"}
               </p>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 {guardian?.summary ?? "Guardian is checking market, quote, and policy state."}
@@ -1639,19 +1697,6 @@ function TransactionCard({
           ) : null}
         </div>
 
-        {compiled?.ptb?.requirements.length ? (
-          <div className="space-y-1">
-            {compiled.ptb.requirements.map((requirement) => (
-              <div key={requirement.label} className="grid grid-cols-[1fr_18px] items-start gap-2 py-1.5">
-                <div className="min-w-0">
-                  <p className="truncate text-sm text-muted-foreground">{requirement.label}</p>
-                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground/80">{requirement.detail}</p>
-                </div>
-                {requirement.satisfied ? <Check className="h-4 w-4 text-foreground" /> : <X className="h-4 w-4 text-destructive" />}
-              </div>
-            ))}
-          </div>
-        ) : null}
       </CardContent>
     </Card>
   );
@@ -1786,7 +1831,7 @@ function ExecutionCard({
         {showButton ? (
           <Button
             className="h-11 w-full"
-            variant={action.canConfirm ? "default" : "destructive"}
+            variant={action.canConfirm ? "default" : blocked ? "destructive" : "outline"}
             disabled={!action.canConfirm || busy}
             onClick={() => {
               if (action.href) {
@@ -1852,6 +1897,7 @@ function ExecutionCard({
 
 function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
   const readiness = compiled?.ptb?.execution;
+  const quoteOnly = isQuoteOnlyResult(compiled);
   const canCreateManager = Boolean(compiled?.ptb && !readiness?.managerId && readiness?.walletAddress && !blocked);
   const quoteFresh = Boolean(compiled?.quote?.status === "available" && new Date(compiled.quote.expiresAt).getTime() > Date.now());
   const fundingRequired = readiness?.fundingStatus === "insufficient" || (readiness?.fundingStatus === "unknown" && Boolean(readiness.managerId));
@@ -1860,12 +1906,16 @@ function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
   const canConfirm = canCreateManager || canMint || Boolean(fundingHref);
   const label = blocked
     ? "Blocked by Guardian"
+    : quoteOnly
+      ? "Quote only"
     : fundingHref
       ? "Open Profile Funding"
       : canCreateManager
       ? "Create PredictManager"
       : canMint
         ? "Review & Sign"
+        : compiled && !compiled.ptb
+          ? "No wallet action"
         : !readiness?.walletAddress
           ? "Connect wallet"
           : compiled?.quote?.status === "available" && !quoteFresh
@@ -1873,6 +1923,14 @@ function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
             : "Review locked";
 
   return { canConfirm, label, href: fundingHref };
+}
+
+function isQuoteOnlyResult(compiled: CompileApiResult | null) {
+  return compiled?.intent.status === "ready" && compiled.intent.action === "predict_quote_only";
+}
+
+function isFundingRequiredResult(compiled: CompileApiResult | null) {
+  return compiled?.ptb?.execution.fundingStatus === "insufficient";
 }
 
 function profileFundingHref(compiled: CompileApiResult | null) {
@@ -1940,7 +1998,11 @@ function fundingSummary(compiled: CompileApiResult) {
   return "unknown";
 }
 
-function tradeModalTitle(status: TradeModalStatus) {
+function tradeModalTitle(status: TradeModalStatus, compiled?: CompileApiResult | null) {
+  if (isQuoteOnlyResult(compiled ?? null)) {
+    return "Predict quote preview";
+  }
+
   switch (status) {
     case "compiling":
       return "Preparing Predict review";
@@ -1966,6 +2028,10 @@ function tradeModalTitle(status: TradeModalStatus) {
 }
 
 function tradeModalSubtitle(status: TradeModalStatus, compiled: CompileApiResult | null) {
+  if (compiled?.intent.status === "ready" && compiled.intent.action === "predict_quote_only") {
+    return "Quote-only preview · no wallet action required";
+  }
+
   if (compiled?.quote?.status === "available") {
     return `BTC ${compiled.quote.direction?.toUpperCase() ?? "--"} · ${formatDusdc(compiled.quote.estimatedCostDusdc)} DUSDC estimated pay · ${formatExpiry(compiled.quote.expiry)}`;
   }
@@ -2003,7 +2069,7 @@ function tradeStatusDescription(status: TradeModalStatus) {
     case "compiling":
       return "DeepPilot is parsing the request, resolving the active oracle, quoting payout, and running Guardian.";
     case "quote_ready":
-      return "Review the quote and safety checks before opening the wallet.";
+      return "Review the quote, safety checks, and next action before continuing.";
     case "funding_required":
       return "Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this position.";
     case "review_changed":
@@ -2054,6 +2120,14 @@ function tradeAssistantCopy(compiled: CompileApiResult) {
       `Estimated payment: ${formatRawDusdc(execution.estimatedPaymentRaw)} DUSDC`,
       `Trading Balance: ${formatRawDusdc(execution.managerBalanceRaw)} DUSDC`,
       `Shortfall: ${formatRawDusdc(execution.fundingShortfallRaw)} DUSDC`
+    ].join("\n");
+  }
+
+  if (compiled.intent.action === "predict_quote_only") {
+    return [
+      "Predict quote preview is ready.",
+      `Guardian: ${compiled.guardian.decision.toUpperCase()}`,
+      "No wallet signature is required for quote-only mode."
     ].join("\n");
   }
 
@@ -2403,7 +2477,7 @@ function formatQuoteExpiry(value: string) {
 
   const seconds = Math.max(0, Math.round((time - Date.now()) / 1_000));
 
-  return `${seconds}s`;
+  return seconds <= 0 ? "expired" : `${seconds}s`;
 }
 
 function formatExpiry(valueMs: number | null) {
@@ -2443,6 +2517,10 @@ function formatCompactNumber(value: number) {
 
 function trimTrailingZeros(value: string) {
   return value.replace(/\.0+$|(\.\d*[1-9])0+$/, "$1");
+}
+
+function pageIsVisible() {
+  return typeof document === "undefined" || document.visibilityState === "visible";
 }
 
 function formatAge(valueMs: PredictMarketSnapshot["metrics"]["oracleAgeMs"]) {

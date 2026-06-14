@@ -25,18 +25,24 @@ export function TradeTicket({
   const [direction, setDirection] = useState<PredictDirection>("up");
   const [mode, setMode] = useState<TicketMode>("quote");
   const [amount, setAmount] = useState("10");
-  const [strike, setStrike] = useState("62500");
+  const [strike, setStrike] = useState(initialStrike ? String(initialStrike) : "");
+  const [strikeEdited, setStrikeEdited] = useState(false);
 
   useEffect(() => {
-    if (market?.metrics.selectedStrike) {
-      setStrike(String(market.metrics.selectedStrike));
-    } else if (typeof initialStrike === "number") {
-      setStrike(String(initialStrike));
+    if (strikeEdited) {
+      return;
     }
-  }, [initialStrike, market?.metrics.selectedStrike]);
+
+    const nextStrike = market?.metrics.selectedStrike ?? initialStrike;
+
+    if (typeof nextStrike === "number" && Number.isFinite(nextStrike)) {
+      setStrike(String(nextStrike));
+    }
+  }, [initialStrike, market?.metrics.selectedStrike, strikeEdited]);
 
   const oracleId = market?.oracle.oracle_id ?? initialOracleId ?? undefined;
   const canRedeem = Boolean(oracleId);
+  const canPrepare = Boolean(oracleId && amount.trim());
 
   return (
     <Card className="glass-line">
@@ -104,14 +110,18 @@ export function TradeTicket({
               className="h-10 w-full rounded-md border border-input bg-background/70 px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
               inputMode="decimal"
               value={strike}
-              onChange={(event) => setStrike(event.target.value)}
+              onChange={(event) => {
+                setStrikeEdited(true);
+                setStrike(event.target.value);
+              }}
+              placeholder="auto"
             />
           </label>
         </div>
 
-        <Button className="h-10 w-full" onClick={() => onGenerate(buildIntent(mode, direction, amount, strike, oracleId))}>
+        <Button className="h-10 w-full" disabled={!canPrepare} onClick={() => onGenerate(buildIntent(mode, direction, amount, strike, oracleId))}>
           <Play />
-          Prepare review
+          {oracleId ? "Prepare review" : "Waiting for oracle"}
         </Button>
       </CardContent>
     </Card>

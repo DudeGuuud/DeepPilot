@@ -94,29 +94,10 @@ button:disabled {
   gap: 10px;
 }
 
-.pilot-chat-frame {
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.012)),
-    rgba(9, 9, 11, 0.58);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.035),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.025);
-}
-
 .pilot-transcript {
-  max-height: 360px;
+  max-height: 420px;
   scroll-behavior: smooth;
   overflow-y: auto;
-}
-
-.pilot-composer-panel {
-  border-top: 1px solid rgba(255, 255, 255, 0.055);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.018), rgba(255, 255, 255, 0.006)),
-    rgba(17, 17, 19, 0.58);
 }
 
 .glass-line {
@@ -177,16 +158,28 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .market-column {
+  .pilot-column {
     order: 1;
   }
 
-  .pilot-column {
+  .audit-column {
     order: 2;
   }
 
-  .audit-column {
+  .market-column {
     order: 3;
+  }
+}
+
+@media (max-width: 1023px) {
+  .markets-detail-column,
+  .profile-funding-column {
+    order: 1;
+  }
+
+  .markets-list-column,
+  .profile-main-column {
+    order: 2;
   }
 }
 
@@ -195,19 +188,19 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
-  .market-column {
+  .pilot-column {
     order: 1;
   }
 
-  .pilot-column {
+  .audit-column {
     order: 2;
   }
 
-  .audit-column {
+  .market-column {
     order: 3;
   }
 
   .pilot-transcript {
-    max-height: none;
+    max-height: 360px;
   }
 }

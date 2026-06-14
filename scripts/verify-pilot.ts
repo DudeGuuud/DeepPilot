@@ -5,6 +5,7 @@ import { classifyPilotInput } from "../src/lib/pilot";
 import { buildRagContext, streamRagAnswer } from "../src/lib/rag";
 
 const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+const TRADE_SMOKE_INTENT = "Bet 10 DUSDC on BTC DOWN at the fastest settlement";
 
 process.env.DEEPSEEK_API_KEY = "";
 
@@ -26,7 +27,7 @@ await streamRagAnswer({
 });
 assert(answer.length > 0, "chat mode should stream an answer or fallback answer");
 
-const trade = await classifyPilotInput("Bet 10 DUSDC on BTC DOWN tonight");
+const trade = await classifyPilotInput(TRADE_SMOKE_INTENT);
 assert.equal(trade.mode, "trade", "explicit Predict order should route to trade mode");
 
 const followUpTrade = await classifyPilotInput("那就买跌 10u 最快结算", {
@@ -52,7 +53,7 @@ assert.equal(followUpTrade.mode, "trade", "explicit Chinese follow-up trade shou
 assert.equal(followUpTrade.asset, "BTC", "follow-up trade should inherit BTC context");
 assert(!followUpTrade.missing.includes("expiry"), "fastest settlement should satisfy expiry");
 
-const compiled = await compileIntent("Bet 10 DUSDC on BTC DOWN tonight");
+const compiled = await compileIntent(TRADE_SMOKE_INTENT);
 assert.equal(compiled.intent.status, "ready", "trade fallback compiler should produce a typed intent");
 assert(compiled.guardian.decision, "trade compile should include Guardian review");
 assert(compiled.reviewFreshness?.active, "trade compile should include active review freshness");

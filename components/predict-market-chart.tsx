@@ -40,7 +40,7 @@ export function PredictMarketChart({
     let inFlight = false;
 
     async function loadHistory(showSpinner: boolean) {
-      if (inFlight) {
+      if (inFlight || !pageIsVisible()) {
         return;
       }
 
@@ -83,10 +83,15 @@ export function PredictMarketChart({
     const intervalId = window.setInterval(() => {
       void loadHistory(false);
     }, ORACLE_HISTORY_REFRESH_MS);
+    const onVisibilityChange = () => {
+      void loadHistory(!hasHistory);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [oracleId]);
 
@@ -258,6 +263,10 @@ function toLineData(points: PredictChartPoint[], selectValue: (point: PredictCha
 
 function resolveBrowserTimeZone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function pageIsVisible() {
+  return typeof document === "undefined" || document.visibilityState === "visible";
 }
 
 function formatChartTime(time: Time, formatter: Intl.DateTimeFormat) {

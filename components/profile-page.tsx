@@ -350,8 +350,8 @@ export function ProfilePage() {
         </Card>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <section className="space-y-3">
+      <div className="profile-grid grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <section className="profile-main-column space-y-3">
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
             <SummaryCard label="Trading balance" value={formatDusdc(profile?.tradingBalanceDusdc ?? null)} />
             <SummaryCard label="Open exposure" value={formatDusdc(profile?.openExposureDusdc ?? null)} />
@@ -388,7 +388,7 @@ export function ProfilePage() {
           </Card>
         </section>
 
-        <aside className="space-y-3">
+        <aside className="profile-funding-column space-y-3">
           <TradingBalanceFundingCard
             profile={profile}
             accountAddress={account?.address}

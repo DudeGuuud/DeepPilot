@@ -11,6 +11,8 @@ import {
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment, toPredictPrice } from "../src/lib/predict";
 import { enrichProfilePositionsWithLiveQuotes, getProfileSummary, normalizeProfilePnl, normalizeProfilePositions } from "../src/lib/profile";
 
+process.env.DEEPSEEK_API_KEY = "";
+
 const intent = "Buy 10 DUSDC BTC UP on the next active DeepBook Predict oracle";
 const result = await compileIntent(intent);
 
