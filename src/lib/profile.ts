@@ -56,6 +56,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
     managerNeedsCreation: false,
     network: predictDeployment.network,
     predictPackageId: predictDeployment.packageId,
+    predictObjectId: predictDeployment.predictId,
     quoteAssetType: predictDeployment.quoteAssetType,
     openExposureDusdc: managerSummary.openExposureDusdc,
     redeemableValueDusdc: managerSummary.redeemableValueDusdc,
@@ -92,6 +93,7 @@ function emptyProfile(
     managerNeedsCreation,
     network: predictDeployment.network,
     predictPackageId: predictDeployment.packageId,
+    predictObjectId: predictDeployment.predictId,
     quoteAssetType: predictDeployment.quoteAssetType,
     openExposureDusdc: null,
     redeemableValueDusdc: null,
@@ -215,8 +217,16 @@ export function normalizeProfilePositions(value: unknown): ProfilePosition[] {
     const indexedUnrealizedPnlDusdc = normalizeDusdcFromKeys(position, ["unrealized_pnl", "unrealizedPnl", "floating_pnl", "floatingPnl"]);
     const action = keeperAction(status, openQuantity ?? 0);
     const canRedeem = action === "redeemable";
-    const costBasisDusdc = normalizeDusdcFromKeys(position, ["open_cost_basis", "openCostBasis", "cost_basis", "costBasis"]);
-    const currentValueDusdc = canRedeem ? redeemableValueDusdc ?? indexedCurrentValueDusdc : indexedCurrentValueDusdc;
+    const totalCostDusdc = normalizeDusdcFromKeys(position, ["total_cost", "totalCost"]);
+    const totalPayoutDusdc = normalizeDusdcFromKeys(position, ["total_payout", "totalPayout"]);
+    const openCostBasisDusdc = normalizeDusdcFromKeys(position, ["open_cost_basis", "openCostBasis", "cost_basis", "costBasis"]);
+    const closedOrRedeemed = (openQuantity ?? 0) <= 0;
+    const costBasisDusdc = closedOrRedeemed && totalCostDusdc !== null
+      ? totalCostDusdc
+      : openCostBasisDusdc ?? totalCostDusdc;
+    const currentValueDusdc = canRedeem
+      ? redeemableValueDusdc ?? indexedCurrentValueDusdc
+      : closedOrRedeemed ? totalPayoutDusdc ?? indexedCurrentValueDusdc : indexedCurrentValueDusdc;
     const unrealizedPnlDusdc = canRedeem && redeemableValueDusdc !== null && costBasisDusdc !== null
       ? redeemableValueDusdc - costBasisDusdc
       : indexedUnrealizedPnlDusdc;

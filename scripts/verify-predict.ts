@@ -6,6 +6,7 @@ import {
   buildBinaryMintTransaction,
   buildCreatePredictManagerTransaction,
   buildDepositToManagerTransaction,
+  buildRedeemPermissionlessTransaction,
   buildWithdrawFromManagerTransaction
 } from "../src/lib/predict-execution";
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment, toPredictPrice } from "../src/lib/predict";
@@ -51,6 +52,8 @@ assert(
   "PTB preview should use the verified quote quantity"
 );
 const fakeManagerId = "0x00000000000000000000000000000000000000000000000000000000feed0001";
+const fixtureStrike = market.metrics.selectedStrike ?? market.metrics.spot;
+assert(typeof fixtureStrike === "number" && fixtureStrike > 0, "profile live quote fixture needs a valid strike");
 const createManagerTx = buildCreatePredictManagerTransaction({
   packageId: predictDeployment.packageId
 });
@@ -71,10 +74,22 @@ const withdrawTx = buildWithdrawFromManagerTransaction({
   amountRaw: "1000000",
   recipient: fakeManagerId
 });
+const redeemPermissionlessTx = buildRedeemPermissionlessTransaction({
+  packageId: predictDeployment.packageId,
+  predictObject: predictDeployment.predictId,
+  managerId: fakeManagerId,
+  oracleId: market.oracle.oracle_id,
+  quoteAssetType: predictDeployment.quoteAssetType,
+  expiry: market.oracle.expiry,
+  strikeScaled: toPredictPrice(fixtureStrike),
+  direction: "up",
+  quantityRaw: "1000000"
+});
 assert(createManagerTx, "create manager transaction should be buildable");
 assert(mintTx.estimatedCostRaw === result.quote.estimatedCostRaw, "mint builder should keep the estimated raw DUSDC cost");
 assert(depositTx, "deposit transaction should be buildable");
 assert(withdrawTx, "withdraw transaction should be buildable");
+assert(redeemPermissionlessTx, "settle-to-balance transaction should be buildable");
 assert(result.ptb?.execution.fundingStatus !== "sufficient", "unfunded smoke profile should not be signable");
 assert(
   !result.ptb?.commands.some((command) => command.target.endsWith("::log::record_intent")),
@@ -95,8 +110,6 @@ const newWalletProfile = await getProfileSummary({
   wallet: "0x00000000000000000000000000000000000000000000000000000000deedc0de",
   managerId: null
 });
-const fixtureStrike = market.metrics.selectedStrike ?? market.metrics.spot;
-assert(typeof fixtureStrike === "number" && fixtureStrike > 0, "profile live quote fixture needs a valid strike");
 const fixturePositions = normalizeProfilePositions([
   {
     oracle_id: market.oracle.oracle_id,
@@ -150,6 +163,24 @@ const settledPositions = normalizeProfilePositions([
     redeemable_value: 1000000,
     mark_value: 1000000,
     status: "settled"
+  }
+]);
+const redeemedPositions = normalizeProfilePositions([
+  {
+    oracle_id: market.oracle.oracle_id,
+    underlying_asset: "BTC",
+    expiry: market.oracle.expiry,
+    strike: toPredictPrice(fixtureStrike),
+    is_up: false,
+    minted_quantity: 1900734,
+    redeemed_quantity: 1900734,
+    open_quantity: 0,
+    total_cost: 1108284,
+    total_payout: 1900734,
+    realized_pnl: 792450,
+    open_cost_basis: 0,
+    unrealized_pnl: 0,
+    status: "redeemed"
   }
 ]);
 const fixturePnl = normalizeProfilePnl(
@@ -224,6 +255,10 @@ assert(settledPositions[0].canRedeem, "settled open position should be marked re
 assert(settledPositions[0].quoteStatus === "settled", "settled redeemable position should use settled quote status");
 assert(settledPositions[0].currentValueDusdc === 1, "settled redeemable position should expose redeemable exit value");
 assert(settledPositions[0].unrealizedPnlDusdc === 0.4, "settled redeemable PnL should use redeemable value minus cost basis when available");
+assert(!redeemedPositions[0].canRedeem, "redeemed position should not show a settle action");
+assert(redeemedPositions[0].costBasisDusdc === 1.108284, "redeemed position should keep total stake");
+assert(redeemedPositions[0].currentValueDusdc === 1.900734, "redeemed position should keep final payout");
+assert(redeemedPositions[0].realizedPnlDusdc === 0.79245, "redeemed position should expose realized PnL");
 assert(fixturePnl?.source === "predict_server", "profile PnL should be labeled as server indexed");
 assert(fixturePnl.unrealizedPnlDusdc === -0.12, "profile PnL should scale unrealized PnL");
 assert(fixturePnl.realizedPnlDusdc === 4.414672, "profile PnL should use manager summary realized PnL when endpoint omits it");

@@ -603,6 +603,7 @@ export interface ProfileSummary {
   wallet: string | null;
   network: PredictDeployment["network"];
   predictPackageId: string;
+  predictObjectId: string;
   quoteAssetType: string;
   managerId: string | null;
   managerLinked: boolean;

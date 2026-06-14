@@ -30,6 +30,18 @@ export type BuildManagerWithdrawInput = BuildManagerFundingInput & {
   recipient: string;
 };
 
+export type BuildRedeemPermissionlessInput = {
+  packageId: string;
+  predictObject: string;
+  managerId: string;
+  oracleId: string;
+  quoteAssetType: string;
+  expiry: number;
+  strikeScaled: number;
+  direction: "up" | "down";
+  quantityRaw: string;
+};
+
 type ExecutedTransactionLike = {
   digest: string;
   status?: {
@@ -173,6 +185,51 @@ export function buildWithdrawFromManagerTransaction({
   });
 
   tx.transferObjects([coin], tx.pure.address(recipient));
+
+  return tx;
+}
+
+export function buildRedeemPermissionlessTransaction({
+  packageId,
+  predictObject,
+  managerId,
+  oracleId,
+  quoteAssetType,
+  expiry,
+  strikeScaled,
+  direction,
+  quantityRaw
+}: BuildRedeemPermissionlessInput) {
+  assertObjectId(packageId, "Predict package id");
+  assertObjectId(predictObject, "Predict object");
+  assertObjectId(managerId, "PredictManager object");
+  assertObjectId(oracleId, "Predict oracle object");
+  assertU64(expiry, "Predict expiry");
+  assertU64(strikeScaled, "Predict strike");
+  assertU64String(quantityRaw, "Predict quantity");
+
+  const tx = new Transaction();
+  const key = tx.moveCall({
+    target: `${packageId}::market_key::${direction === "up" ? "up" : "down"}`,
+    arguments: [
+      tx.pure.id(oracleId),
+      tx.pure.u64(expiry),
+      tx.pure.u64(BigInt(strikeScaled))
+    ]
+  });
+
+  tx.moveCall({
+    target: `${packageId}::predict::redeem_permissionless`,
+    typeArguments: [quoteAssetType],
+    arguments: [
+      tx.object(predictObject),
+      tx.object(managerId),
+      tx.object(oracleId),
+      key,
+      tx.pure.u64(BigInt(quantityRaw)),
+      tx.object("0x6")
+    ]
+  });
 
   return tx;
 }
