@@ -125,6 +125,12 @@ button:disabled {
     var(--card);
 }
 
+.trade-review-modal {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+    rgba(12, 12, 14, 0.98);
+}
+
 .pulse-dot {
   position: relative;
 }

@@ -6,21 +6,28 @@ const SUI_OBJECT_ID = /^0x[a-fA-F0-9]{1,64}$/;
 
 export type BuildCreateManagerInput = {
   packageId: string;
-  gasBudget?: number;
 };
 
 export type BuildBinaryMintInput = {
   transactionData: PtbTransactionData;
   managerId?: string | null;
-  managerBalanceRaw?: string | null;
-  gasBudget?: number;
 };
 
 export type BuiltPredictMintTransaction = {
   transaction: Transaction;
   managerId: string;
   estimatedCostRaw: string;
-  topUpRaw: string;
+};
+
+export type BuildManagerFundingInput = {
+  packageId: string;
+  managerId: string;
+  quoteAssetType: string;
+  amountRaw: string;
+};
+
+export type BuildManagerWithdrawInput = BuildManagerFundingInput & {
+  recipient: string;
 };
 
 type ExecutedTransactionLike = {
@@ -34,14 +41,10 @@ type ExecutedTransactionLike = {
   objectTypes?: unknown;
 };
 
-export function buildCreatePredictManagerTransaction({ packageId, gasBudget }: BuildCreateManagerInput) {
+export function buildCreatePredictManagerTransaction({ packageId }: BuildCreateManagerInput) {
   assertObjectId(packageId, "Predict package id");
 
   const tx = new Transaction();
-
-  if (gasBudget) {
-    tx.setGasBudget(gasBudget);
-  }
 
   tx.moveCall({
     target: `${packageId}::predict::create_manager`
@@ -52,9 +55,7 @@ export function buildCreatePredictManagerTransaction({ packageId, gasBudget }: B
 
 export function buildBinaryMintTransaction({
   transactionData,
-  managerId,
-  managerBalanceRaw,
-  gasBudget
+  managerId
 }: BuildBinaryMintInput): BuiltPredictMintTransaction {
   if (transactionData.intent.action !== "predict_binary_mint") {
     throw new Error("Only binary Predict mint is executable in this version.");
@@ -93,10 +94,6 @@ export function buildBinaryMintTransaction({
 
   const tx = new Transaction();
 
-  if (gasBudget) {
-    tx.setGasBudget(gasBudget);
-  }
-
   const key = tx.moveCall({
     target: keyTarget,
     arguments: [
@@ -105,24 +102,6 @@ export function buildBinaryMintTransaction({
       tx.pure.u64(BigInt(strikeScaled))
     ]
   });
-  const topUpRaw = calculateTopUpRaw(estimatedCostRaw, managerBalanceRaw);
-
-  if (topUpRaw > 0n) {
-    const coin = tx.coin({
-      type: transactionData.quoteAssetType,
-      balance: topUpRaw
-    });
-
-    tx.moveCall({
-      target: `${transactionData.packageId}::predict_manager::deposit`,
-      typeArguments: [transactionData.quoteAssetType],
-      arguments: [
-        tx.object(resolvedManager),
-        coin
-      ]
-    });
-  }
-
   tx.moveCall({
     target: mintTarget,
     typeArguments: [transactionData.quoteAssetType],
@@ -139,9 +118,63 @@ export function buildBinaryMintTransaction({
   return {
     transaction: tx,
     managerId: resolvedManager,
-    estimatedCostRaw,
-    topUpRaw: topUpRaw.toString()
+    estimatedCostRaw
   };
+}
+
+export function buildDepositToManagerTransaction({
+  packageId,
+  managerId,
+  quoteAssetType,
+  amountRaw
+}: BuildManagerFundingInput) {
+  assertObjectId(packageId, "Predict package id");
+  assertObjectId(managerId, "PredictManager object");
+  assertU64String(amountRaw, "Deposit amount");
+
+  const tx = new Transaction();
+  const coin = tx.coin({
+    type: quoteAssetType,
+    balance: BigInt(amountRaw)
+  });
+
+  tx.moveCall({
+    target: `${packageId}::predict_manager::deposit`,
+    typeArguments: [quoteAssetType],
+    arguments: [
+      tx.object(managerId),
+      coin
+    ]
+  });
+
+  return tx;
+}
+
+export function buildWithdrawFromManagerTransaction({
+  packageId,
+  managerId,
+  quoteAssetType,
+  amountRaw,
+  recipient
+}: BuildManagerWithdrawInput) {
+  assertObjectId(packageId, "Predict package id");
+  assertObjectId(managerId, "PredictManager object");
+  assertObjectId(recipient, "Recipient address");
+  assertU64String(amountRaw, "Withdraw amount");
+
+  const tx = new Transaction();
+  const coin = tx.moveCall({
+    target: `${packageId}::predict_manager::withdraw`,
+    typeArguments: [quoteAssetType],
+    arguments: [
+      tx.object(managerId),
+      tx.pure.u64(BigInt(amountRaw))
+    ]
+  });
+
+  tx.transferObjects([coin], tx.pure.address(recipient));
+
+  return tx;
 }
 
 export function getExecutedDigest(result: unknown) {
@@ -186,13 +219,6 @@ export function extractPredictManagerId(result: unknown, packageId: string) {
   }
 
   return null;
-}
-
-export function calculateTopUpRaw(estimatedCostRaw: string, managerBalanceRaw?: string | null) {
-  const required = BigInt(estimatedCostRaw);
-  const balance = managerBalanceRaw && /^\d+$/.test(managerBalanceRaw) ? BigInt(managerBalanceRaw) : 0n;
-
-  return balance >= required ? 0n : required - balance;
 }
 
 function unwrapTransaction(result: unknown): ExecutedTransactionLike {

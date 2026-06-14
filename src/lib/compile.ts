@@ -204,11 +204,17 @@ export async function compileIntent(input: string, options: CompileOptions = {})
     label: "Building PTB preview",
     state: "pending"
   });
-  try {
-    ptb = buildPtbPlan(intent, market, guardian, gasPreview, profile, quote);
-    options.onEvent?.({
-      type: "stage",
-      label: "Building PTB preview",
+    try {
+      ptb = buildPtbPlan(intent, market, guardian, gasPreview, profile, quote);
+      options.onEvent?.({
+        type: "stage",
+        label: "Checking Trading Balance",
+        state: fundingStageState(ptb),
+        detail: fundingStageDetail(ptb)
+      });
+      options.onEvent?.({
+        type: "stage",
+        label: "Building PTB preview",
       state: ptb ? "complete" : "blocked",
       detail: ptb?.digestPreview ?? "No PTB for this intent"
     });
@@ -272,11 +278,39 @@ export async function compileIntent(input: string, options: CompileOptions = {})
             : "pending"
       },
       {
+        label: "Checking Trading Balance",
+        state: fundingStageState(ptb)
+      },
+      {
         label: quoteOnly ? "Skipping PTB for quote-only intent" : "Building PTB preview",
         state: quoteOnly || ptb ? "complete" : guardian.blocked || ptbError ? "blocked" : "pending"
       }
     ]
   };
+}
+
+function fundingStageState(ptb: PtbPlan | null): "complete" | "blocked" | "pending" {
+  const status = ptb?.execution.fundingStatus;
+
+  if (!status) {
+    return "pending";
+  }
+
+  return status === "sufficient" || status === "not_required" ? "complete" : "blocked";
+}
+
+function fundingStageDetail(ptb: PtbPlan | null) {
+  const execution = ptb?.execution;
+
+  if (!execution) {
+    return "Trading Balance unavailable.";
+  }
+
+  if (execution.fundingStatus === "insufficient") {
+    return `Funding shortfall: ${execution.fundingShortfallRaw ?? "unknown"} raw DUSDC.`;
+  }
+
+  return execution.fundingStatus;
 }
 
 function buildReviewFreshness(

@@ -39,19 +39,19 @@ export function TradeTicket({
   const canRedeem = Boolean(oracleId);
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
+    <Card className="glass-line">
+      <CardHeader className="p-4 pb-2">
         <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle>Trade Ticket</CardTitle>
-            <CardDescription>Quote, buy, or close a Predict position.</CardDescription>
+          <div className="min-w-0">
+            <CardTitle className="text-sm">Trade Ticket</CardTitle>
+            <CardDescription className="text-xs">Quote, buy, or close a Predict position.</CardDescription>
           </div>
-          <Badge variant="outline" className="border-border text-muted-foreground">
+          <Badge variant="outline" className="shrink-0 border-border text-xs text-muted-foreground">
             {oracleId ? shortAddress(oracleId) : "next oracle"}
           </Badge>
         </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-3 p-4 pt-0">
         <div className="grid grid-cols-2 gap-2">
           <Button
             type="button"
@@ -78,7 +78,7 @@ export function TradeTicket({
               type="button"
               disabled={ticketMode === "sell" && !canRedeem}
               className={cn(
-                "h-9 rounded-md border border-border bg-background text-xs font-medium uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45",
+                "h-9 rounded-md border border-border bg-background/70 text-xs font-medium uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45",
                 mode === ticketMode && "bg-accent text-foreground"
               )}
               onClick={() => setMode(ticketMode)}
@@ -92,7 +92,7 @@ export function TradeTicket({
           <label className="space-y-1">
             <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Amount</span>
             <input
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-10 w-full rounded-md border border-input bg-background/70 px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
               inputMode="decimal"
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
@@ -101,7 +101,7 @@ export function TradeTicket({
           <label className="space-y-1">
             <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Strike</span>
             <input
-              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-10 w-full rounded-md border border-input bg-background/70 px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
               inputMode="decimal"
               value={strike}
               onChange={(event) => setStrike(event.target.value)}
@@ -111,7 +111,7 @@ export function TradeTicket({
 
         <Button className="h-10 w-full" onClick={() => onGenerate(buildIntent(mode, direction, amount, strike, oracleId))}>
           <Play />
-          Generate intent
+          Prepare review
         </Button>
       </CardContent>
     </Card>

@@ -69,10 +69,7 @@ export function PredictManagerOnboardingModal({
     setError(null);
 
     try {
-      const transaction = buildCreatePredictManagerTransaction({
-        packageId,
-        gasBudget: 12_000_000
-      });
+      const transaction = buildCreatePredictManagerTransaction({ packageId });
       const signed = await dAppKit.signAndExecuteTransaction({ transaction });
       const digest = getExecutedDigest(signed);
       const confirmed = await dAppKit.getClient(network).waitForTransaction({

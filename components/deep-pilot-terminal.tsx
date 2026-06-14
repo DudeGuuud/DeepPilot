@@ -29,7 +29,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { PredictMarketChart } from "@/components/predict-market-chart";
-import { PredictManagerOnboardingModal } from "@/components/predict-manager-onboarding-modal";
 import { TradeTicket } from "@/components/trade-ticket";
 import {
   assertExecuted,
@@ -67,6 +66,33 @@ const EXAMPLE_INTENTS = [
 const AI_DISCLOSURE =
   "This answer is AI-generated for information organization and risk explanation only. It is not investment advice; verify original sources and the wallet confirmation screen.";
 const MARKET_PREVIEW_REFRESH_MS = 2_500;
+const MIN_SUI_GAS_BALANCE_MIST = 20_000_000n;
+const MIST_PER_SUI = 1_000_000_000n;
+const DUSDC_BASE_UNITS = 1_000_000n;
+
+type RunPilotOptions = {
+  openTradeModal?: boolean;
+};
+
+type TradeModalStatus =
+  | "idle"
+  | "compiling"
+  | "quote_ready"
+  | "funding_required"
+  | "review_changed"
+  | "preflight_failed"
+  | "ready_to_sign"
+  | "signing"
+  | "executed"
+  | "failed";
+
+type PreflightSnapshot = {
+  suiBalanceRaw: string;
+  requiredSuiRaw: string;
+  estimatedPaymentRaw: string | null;
+  managerBalanceRaw: string | null;
+  fundingShortfallRaw: string | null;
+};
 
 type CompileApiResult = CompileResult & {
   predict?: {
@@ -85,7 +111,6 @@ type ExecutionReceipt = {
   network: "devnet" | "testnet";
   action: "manager_create" | "predict_mint";
   managerId?: string | null;
-  topUpRaw?: string | null;
   note: string;
 };
 
@@ -125,11 +150,14 @@ function TerminalExperience() {
   const [busy, setBusy] = useState<"pilot" | "execute" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expandedFinding, setExpandedFinding] = useState<string | null>(null);
-  const [auditExpanded, setAuditExpanded] = useState(false);
-  const [managerPromptDismissed, setManagerPromptDismissed] = useState(false);
+  const [tradeModalOpen, setTradeModalOpen] = useState(false);
+  const [tradeModalStatus, setTradeModalStatus] = useState<TradeModalStatus>("idle");
+  const [tradeDetailsExpanded, setTradeDetailsExpanded] = useState(false);
+  const [preflightSnapshot, setPreflightSnapshot] = useState<PreflightSnapshot | null>(null);
+  const [confirmedReviewFingerprint, setConfirmedReviewFingerprint] = useState<string | null>(null);
   const executionRef = useRef(false);
   const pilotAbortRef = useRef<AbortController | null>(null);
-  const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null) => Promise<void>>(async () => {});
+  const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null, options?: RunPilotOptions) => Promise<void>>(async () => {});
   runPilotRef.current = runPilot;
 
   useEffect(() => {
@@ -144,7 +172,10 @@ function TerminalExperience() {
   }, [urlManagerId]);
 
   useEffect(() => {
-    setManagerPromptDismissed(false);
+    setConfirmedReviewFingerprint(null);
+    setTradeModalStatus("idle");
+    setTradeModalOpen(false);
+    setPreflightSnapshot(null);
   }, [account?.address]);
 
   useEffect(() => {
@@ -194,7 +225,7 @@ function TerminalExperience() {
     };
   }, []);
 
-  async function runPilot(nextIntent = intent, managerOverride = managerId) {
+  async function runPilot(nextIntent = intent, managerOverride = managerId, options: RunPilotOptions = {}) {
     const trimmedIntent = nextIntent.trim();
 
     if (!trimmedIntent) {
@@ -211,11 +242,15 @@ function TerminalExperience() {
     setError(null);
     setReceipt(null);
     setCompiled(null);
+    setConfirmedReviewFingerprint(null);
+    setPreflightSnapshot(null);
     setPilotMode(null);
     setRagSources([]);
     setSourcesExpanded(false);
     setStreamTimeline([]);
-    setAuditExpanded(false);
+    setTradeDetailsExpanded(false);
+    setTradeModalStatus(options.openTradeModal ? "compiling" : "idle");
+    setTradeModalOpen(Boolean(options.openTradeModal));
     setMessages((current) => {
       const nextMessages: PilotMessage[] = [
         ...current,
@@ -315,6 +350,10 @@ function TerminalExperience() {
   function handlePilotEvent(event: PilotStreamEvent, assistantId: string) {
     if (event.type === "mode") {
       setPilotMode(event.mode);
+      if (event.mode === "trade") {
+        setTradeModalOpen(true);
+        setTradeModalStatus("compiling");
+      }
       updateAssistantMessage(assistantId, {
         mode: event.mode
       });
@@ -340,6 +379,9 @@ function TerminalExperience() {
     }
 
     if (event.type === "stage") {
+      if (tradeModalOpen || pilotMode === "trade") {
+        setTradeModalStatus("compiling");
+      }
       setStreamTimeline((current) => upsertStage(current, event));
       return;
     }
@@ -355,7 +397,9 @@ function TerminalExperience() {
 
       setCompiled(result);
       setPilotMode("trade");
-      setAuditExpanded(true);
+      setTradeModalOpen(true);
+      setTradeModalStatus(tradeStatusForCompiled(result));
+      setTradeDetailsExpanded(false);
       updateAssistantMessage(assistantId, {
         mode: "trade",
         pending: false,
@@ -427,6 +471,9 @@ function TerminalExperience() {
     executionRef.current = true;
     setBusy("execute");
     setError(null);
+    setPreflightSnapshot(null);
+    setTradeModalOpen(true);
+    setTradeModalStatus("ready_to_sign");
 
     try {
       const executionNetwork = compiled.ptb.transactionData.network === "devnet" ? "devnet" : "testnet";
@@ -436,116 +483,17 @@ function TerminalExperience() {
       }
 
       if (!compiled.ptb.execution.managerId) {
-        const transaction = buildCreatePredictManagerTransaction({
-          packageId: compiled.ptb.transactionData.packageId,
-          gasBudget: compiled.ptb.gasBudget
-        });
-        const signed = await dAppKit.signAndExecuteTransaction({ transaction });
-        const digest = getExecutedDigest(signed);
-        const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
-          digest,
-          include: {
-            effects: true,
-            events: true,
-            objectTypes: true
-          }
-        });
-        assertExecuted(confirmed);
-        const createdManagerId = extractPredictManagerId(confirmed, compiled.ptb.transactionData.packageId);
-
-        if (!createdManagerId) {
-          throw new Error("PredictManager was created, but DeepPilot could not identify the new object id.");
-        }
-
-        setManagerId(createdManagerId);
-        updateManagerInUrl(createdManagerId);
-
-        const executionReceipt: ExecutionReceipt = {
-          digest,
-          status: "success",
-          walletAddress: account.address,
-          network: executionNetwork,
-          action: "manager_create",
-          managerId: createdManagerId,
-          note: "Created official DeepBook PredictManager. Re-run review before minting."
-        };
-        setReceipt(executionReceipt);
-        saveExecutionReceipt(executionReceipt, intent, compiled);
-
-        toast({
-          title: "PredictManager created",
-          description: `${shortAddress(createdManagerId)} · review refreshed`
-        });
-        await runPilot(intent.trim(), createdManagerId);
+        await signCreateManager(compiled, executionNetwork);
         return;
       }
 
-      const refreshed = await refreshReviewBeforeSigning(compiled);
-
-      if (!isReviewActive(refreshed)) {
-        setCompiled(refreshed);
-        setAuditExpanded(true);
-        throw new Error(refreshed.reviewFreshness?.reason || "Market expired, refresh review");
-      }
-
-      if (!refreshed.ptb || refreshed.guardian.blocked) {
-        setCompiled(refreshed);
-        setAuditExpanded(true);
-        throw new Error(refreshed.guardian.summary || "Execution blocked after refreshing review.");
-      }
-
-      if (compiled.ptb.execution.managerId && executableFingerprint(compiled) !== executableFingerprint(refreshed)) {
-        setCompiled(refreshed);
-        setAuditExpanded(true);
-        throw new Error("Review changed, confirm again");
-      }
-
-      if (refreshed.quote?.status !== "available" || new Date(refreshed.quote.expiresAt).getTime() <= Date.now()) {
-        setCompiled(refreshed);
-        setAuditExpanded(true);
-        throw new Error("Quote is stale or unavailable. Refresh the review before signing.");
-      }
-
-      const built = buildBinaryMintTransaction({
-        transactionData: refreshed.ptb.transactionData,
-        managerId: refreshed.ptb.execution.managerId,
-        managerBalanceRaw: refreshed.profile?.tradingBalanceRaw ?? refreshed.ptb.execution.managerBalanceRaw,
-        gasBudget: refreshed.ptb.gasBudget
-      });
-      setCompiled(refreshed);
-      const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
-      const digest = getExecutedDigest(signed);
-      const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
-        digest,
-        include: {
-          effects: true,
-          events: true,
-          objectTypes: true
-        }
-      });
-      assertExecuted(confirmed);
-
-      const executionReceipt: ExecutionReceipt = {
-        digest,
-        status: "success",
-        walletAddress: account.address,
-        network: executionNetwork,
-        action: "predict_mint",
-        managerId: built.managerId,
-        topUpRaw: built.topUpRaw,
-        note: "Executed DUSDC top-up if needed and DeepBook Predict mint in one wallet transaction."
-      };
-      setReceipt(executionReceipt);
-      saveExecutionReceipt(executionReceipt, refreshed.intent.raw, refreshed);
-
-      toast({
-        title: "Predict trade executed",
-        description: digest
-      });
-      await runPilot(intent.trim(), built.managerId);
+      const executableReview = await refreshExecutableReview(compiled);
+      validateReviewForSigning(executableReview);
+      await signPredictMint(executableReview, executionNetwork);
     } catch (executionError) {
       const message = explainWalletExecutionError(executionError);
       setError(message);
+      setTradeModalStatus((current) => current === "review_changed" || current === "preflight_failed" || current === "funding_required" ? current : "failed");
       toast({
         variant: "destructive",
         title: "Wallet execution failed",
@@ -554,6 +502,222 @@ function TerminalExperience() {
     } finally {
       executionRef.current = false;
       setBusy(null);
+    }
+  }
+
+  async function signCreateManager(current: CompileApiResult, executionNetwork: "devnet" | "testnet") {
+    if (!account) {
+      throw new Error("Connect a wallet before creating a PredictManager.");
+    }
+
+    await preflightSuiGas({
+      network: executionNetwork,
+      owner: account.address,
+      execution: current.ptb?.execution ?? null
+    });
+    setTradeModalStatus("signing");
+
+    const transaction = buildCreatePredictManagerTransaction({
+      packageId: current.ptb!.transactionData.packageId
+    });
+    const signed = await dAppKit.signAndExecuteTransaction({ transaction });
+    const digest = getExecutedDigest(signed);
+    const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
+      digest,
+      include: {
+        effects: true,
+        events: true,
+        objectTypes: true
+      }
+    });
+    assertExecuted(confirmed);
+    const createdManagerId = extractPredictManagerId(confirmed, current.ptb!.transactionData.packageId);
+
+    if (!createdManagerId) {
+      throw new Error("PredictManager was created, but DeepPilot could not identify the new object id.");
+    }
+
+    setManagerId(createdManagerId);
+    updateManagerInUrl(createdManagerId);
+
+    const executionReceipt: ExecutionReceipt = {
+      digest,
+      status: "success",
+      walletAddress: account.address,
+      network: executionNetwork,
+      action: "manager_create",
+      managerId: createdManagerId,
+      note: "Created official DeepBook PredictManager. Re-run review before minting."
+    };
+    setReceipt(executionReceipt);
+    setTradeModalStatus("executed");
+    saveExecutionReceipt(executionReceipt, intent, current);
+
+    toast({
+      title: "PredictManager created",
+      description: `${shortAddress(createdManagerId)} · review refreshed`
+    });
+    await runPilot(intent.trim(), createdManagerId, { openTradeModal: true });
+  }
+
+  async function refreshExecutableReview(current: CompileApiResult) {
+    let executableReview = current;
+    const compiledFingerprint = executableFingerprint(current);
+    const canSignConfirmedReview =
+      current.reviewFreshness?.refreshed &&
+      confirmedReviewFingerprint === compiledFingerprint;
+
+    if (!canSignConfirmedReview) {
+      const refreshed = await refreshReviewBeforeSigning(current);
+
+      if (!isReviewActive(refreshed)) {
+        setCompiled(refreshed);
+        setConfirmedReviewFingerprint(null);
+        throw new Error(refreshed.reviewFreshness?.reason || "Market expired, refresh review");
+      }
+
+      if (!refreshed.ptb || refreshed.guardian.blocked) {
+        setCompiled(refreshed);
+        setConfirmedReviewFingerprint(null);
+        throw new Error(refreshed.guardian.summary || "Execution blocked after refreshing review.");
+      }
+
+      const refreshedFingerprint = executableFingerprint(refreshed);
+
+      if (current.ptb?.execution.managerId && compiledFingerprint !== refreshedFingerprint) {
+        setCompiled(refreshed);
+        setConfirmedReviewFingerprint(refreshedFingerprint);
+        setTradeDetailsExpanded(false);
+        setTradeModalStatus("review_changed");
+        throw new Error("Review changed. Check the updated quote, then click Review & Sign again.");
+      }
+
+      executableReview = refreshed;
+    } else if (!isReviewActive(executableReview)) {
+      setConfirmedReviewFingerprint(null);
+      throw new Error(executableReview.reviewFreshness?.reason || "Market expired, refresh review");
+    }
+
+    return executableReview;
+  }
+
+  function validateReviewForSigning(current: CompileApiResult) {
+    if (current.quote?.status !== "available" || new Date(current.quote.expiresAt).getTime() <= Date.now()) {
+      setCompiled(current);
+      setConfirmedReviewFingerprint(null);
+      throw new Error("Quote is stale or unavailable. Refresh the review before signing.");
+    }
+
+    if (!current.ptb || current.guardian.blocked) {
+      throw new Error(current.guardian.summary || "Execution blocked after refreshing review.");
+    }
+
+    if (current.ptb.execution.fundingStatus !== "sufficient" && current.ptb.execution.fundingStatus !== "not_required") {
+      setTradeModalStatus("funding_required");
+      throw new Error("Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this position.");
+    }
+  }
+
+  async function signPredictMint(current: CompileApiResult, executionNetwork: "devnet" | "testnet") {
+    if (!account || !current.ptb) {
+      throw new Error("Connect a wallet before signing a Predict transaction.");
+    }
+
+    const built = buildBinaryMintTransaction({
+      transactionData: current.ptb.transactionData,
+      managerId: current.ptb.execution.managerId
+    });
+    setCompiled(current);
+    await preflightMintExecution({
+      network: executionNetwork,
+      owner: account.address,
+      execution: current.ptb.execution
+    });
+    setConfirmedReviewFingerprint(null);
+    setTradeModalStatus("signing");
+    const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
+    const digest = getExecutedDigest(signed);
+    const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
+      digest,
+      include: {
+        effects: true,
+        events: true,
+        objectTypes: true
+      }
+    });
+    assertExecuted(confirmed);
+
+    const executionReceipt: ExecutionReceipt = {
+      digest,
+      status: "success",
+      walletAddress: account.address,
+      network: executionNetwork,
+      action: "predict_mint",
+      managerId: built.managerId,
+      note: "Executed DeepBook Predict mint using pre-funded Trading Balance."
+    };
+    setReceipt(executionReceipt);
+    setTradeModalStatus("executed");
+    saveExecutionReceipt(executionReceipt, current.intent.raw, current);
+
+    toast({
+      title: "Predict trade executed",
+      description: digest
+    });
+  }
+
+  async function preflightSuiGas({
+    network: executionNetwork,
+    owner,
+    execution
+  }: {
+    network: "devnet" | "testnet";
+    owner: string;
+    execution: NonNullable<CompileApiResult["ptb"]>["execution"] | null;
+  }) {
+    setTradeModalStatus("ready_to_sign");
+
+    try {
+      const client = dAppKit.getClient(executionNetwork);
+      const suiBalance = await client.getBalance({ owner });
+      const suiBalanceRaw = extractBalanceRaw(suiBalance);
+
+      setPreflightSnapshot({
+        suiBalanceRaw: suiBalanceRaw.toString(),
+        requiredSuiRaw: MIN_SUI_GAS_BALANCE_MIST.toString(),
+        estimatedPaymentRaw: execution?.estimatedPaymentRaw ?? null,
+        managerBalanceRaw: execution?.managerBalanceRaw ?? null,
+        fundingShortfallRaw: execution?.fundingShortfallRaw ?? null
+      });
+
+      if (suiBalanceRaw < MIN_SUI_GAS_BALANCE_MIST) {
+        setTradeModalStatus("preflight_failed");
+        throw new Error(`Need testnet SUI for gas. Wallet has ${formatRawSui(suiBalanceRaw)} SUI; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available before signing.`);
+      }
+    } catch (preflightError) {
+      setTradeModalStatus("preflight_failed");
+      throw preflightError;
+    }
+  }
+
+  async function preflightMintExecution({
+    network: executionNetwork,
+    owner,
+    execution
+  }: {
+    network: "devnet" | "testnet";
+    owner: string;
+    execution: NonNullable<CompileApiResult["ptb"]>["execution"];
+  }) {
+    await preflightSuiGas({
+      network: executionNetwork,
+      owner,
+      execution
+    });
+
+    if (execution.fundingStatus !== "sufficient" && execution.fundingStatus !== "not_required") {
+      setTradeModalStatus("preflight_failed");
+      throw new Error("Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this position.");
     }
   }
 
@@ -578,37 +742,6 @@ function TerminalExperience() {
     return await response.json() as CompileApiResult;
   }
 
-  async function handleOnboardingManagerCreated({
-    managerId: createdManagerId,
-    digest,
-    network: createdNetwork
-  }: {
-    managerId: string;
-    digest: string;
-    network: "devnet" | "testnet";
-  }) {
-    if (!compiled || !account) {
-      return;
-    }
-
-    setManagerId(createdManagerId);
-    updateManagerInUrl(createdManagerId);
-    setManagerPromptDismissed(true);
-
-    const executionReceipt: ExecutionReceipt = {
-      digest,
-      status: "success",
-      walletAddress: account.address,
-      network: createdNetwork,
-      action: "manager_create",
-      managerId: createdManagerId,
-      note: "Created official DeepBook PredictManager. Re-run review before minting."
-    };
-    setReceipt(executionReceipt);
-    saveExecutionReceipt(executionReceipt, intent, compiled);
-    await runPilot(intent.trim(), createdManagerId);
-  }
-
   const guardian = compiled?.guardian;
   const blocked = guardian?.blocked ?? true;
   const marketStrike = compiled?.market?.metrics.selectedStrike;
@@ -627,14 +760,6 @@ function TerminalExperience() {
         : urlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
   const hasLockedStrike = Boolean(compiled?.market || intentStrike || urlStrike);
   const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
-  const reviewNeedsManager = Boolean(
-    account?.address &&
-    pilotMode === "trade" &&
-    compiled?.ptb &&
-    !compiled.ptb.execution.managerId &&
-    !managerPromptDismissed
-  );
-  const onboardingNetwork = compiled?.ptb?.transactionData.network === "devnet" ? "devnet" : "testnet";
 
   return (
     <AppShell
@@ -651,14 +776,27 @@ function TerminalExperience() {
         </>
       }
     >
-        <PredictManagerOnboardingModal
-          open={reviewNeedsManager}
-          packageId={compiled?.ptb?.transactionData.packageId}
-          network={onboardingNetwork}
-          walletAddress={account?.address}
-          context="trade"
-          onDismiss={() => setManagerPromptDismissed(true)}
-          onCreated={handleOnboardingManagerCreated}
+        <TradeReviewModal
+          open={tradeModalOpen}
+          status={tradeModalStatus}
+          compiled={compiled}
+          streamTimeline={streamTimeline}
+          receipt={receipt}
+          error={error}
+          busy={busy === "execute"}
+          blocked={blocked}
+          detailsExpanded={tradeDetailsExpanded}
+          expandedFinding={expandedFinding}
+          preflight={preflightSnapshot}
+          accountAddress={account?.address}
+          onClose={() => {
+            if (busy !== "execute") {
+              setTradeModalOpen(false);
+            }
+          }}
+          onDetailsChange={setTradeDetailsExpanded}
+          onExpandFinding={setExpandedFinding}
+          onConfirm={executePredict}
         />
 
         <div className="terminal-grid">
@@ -681,65 +819,30 @@ function TerminalExperience() {
                 void runPilot(example);
               }}
             />
-
-            {pilotMode === "trade" || urlOracleId ? (
-              <TradeTicket
-                market={compiled?.market ?? null}
-                initialOracleId={urlOracleId}
-                initialStrike={urlStrike}
-                onGenerate={(nextIntent) => {
-                  setIntent(nextIntent);
-                  void runPilot(nextIntent);
-                }}
-              />
-            ) : null}
           </section>
 
           <aside className="audit-column flex min-w-0 flex-col gap-3">
-            {pilotMode === "chat" ? (
-              <SourcesCard sources={ragSources} expanded={sourcesExpanded} onToggle={() => setSourcesExpanded((current) => !current)} />
-            ) : pilotMode === "trade" ? (
-              <>
-                <AuditToggle
-                  expanded={auditExpanded}
-                  busy={busy === "pilot"}
-                  compiled={compiled}
-                  onToggle={() => setAuditExpanded((current) => !current)}
-                />
-                <AnimatePresence initial={false}>
-                  {auditExpanded ? (
-                    <motion.div
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: "auto" }}
-                      exit={{ opacity: 0, height: 0 }}
-                      className="flex min-w-0 flex-col gap-3 overflow-hidden"
-                    >
-                      <OutcomeQuoteCard compiled={compiled} busy={busy === "pilot"} />
-                      <SafetyChecksCard
-                        compiled={compiled}
-                        busy={busy === "pilot"}
-                        streamTimeline={streamTimeline}
-                        expandedFinding={expandedFinding}
-                        onExpand={setExpandedFinding}
-                      />
-                      <TransactionCard compiled={compiled} accountAddress={account?.address} />
-                      <ExecutionCard
-                        compiled={compiled}
-                        receipt={receipt}
-                        error={error}
-                        busy={busy === "execute"}
-                        blocked={blocked}
-                        onConfirm={executePredict}
-                      />
-                    </motion.div>
-                  ) : null}
-                </AnimatePresence>
-              </>
-            ) : busy === "pilot" ? (
-              <ProcessingCard />
-            ) : (
-              <IdleAuditCard />
-            )}
+            <PilotActionsCard
+              pilotMode={pilotMode}
+              tradeStatus={tradeModalStatus}
+              busy={busy === "pilot"}
+              compiled={compiled}
+              receipt={receipt}
+              error={error}
+              sources={ragSources}
+              sourcesExpanded={sourcesExpanded}
+              onToggleSources={() => setSourcesExpanded((current) => !current)}
+              onOpenReview={() => setTradeModalOpen(true)}
+            />
+            <TradeTicket
+              market={compiled?.market ?? null}
+              initialOracleId={urlOracleId ?? marketPreview?.selectedMarket?.oracleId}
+              initialStrike={urlStrike ?? marketPreview?.selectedMarket?.selectedStrike}
+              onGenerate={(nextIntent) => {
+                setIntent(nextIntent);
+                void runPilot(nextIntent, managerId, { openTradeModal: true });
+              }}
+            />
           </aside>
         </div>
     </AppShell>
@@ -882,111 +985,388 @@ function MessageBubble({ message }: { message: PilotMessage }) {
   );
 }
 
-function IdleAuditCard() {
-  return (
-    <Card className="glass-line">
-      <CardHeader className="pb-2">
-        <SectionHeading title="Pilot Mode" detail="waiting" icon={<Bot className="h-4 w-4" />} />
-      </CardHeader>
-      <CardContent>
-        <MutedBox>
-          Ask a market question to see sources, or submit a trade request to open the Guardian and PTB review.
-        </MutedBox>
-      </CardContent>
-    </Card>
-  );
-}
-
-function ProcessingCard() {
-  return (
-    <Card className="glass-line">
-      <CardHeader className="pb-2">
-        <SectionHeading title="Processing" detail="routing" icon={<RefreshCw className="h-4 w-4 animate-spin" />} />
-      </CardHeader>
-      <CardContent>
-        <div className="rounded-md border border-border bg-background/60 p-3">
-          <div className="flex items-center gap-2 text-sm text-foreground">
-            <span className="h-2 w-2 rounded-full bg-foreground processing-dot" />
-            <span className="h-2 w-2 rounded-full bg-foreground processing-dot" style={{ animationDelay: "120ms" }} />
-            <span className="h-2 w-2 rounded-full bg-foreground processing-dot" style={{ animationDelay: "240ms" }} />
-            <span className="ml-2">Classifying request and preparing the next panel.</span>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function AuditToggle({
-  expanded,
+function PilotActionsCard({
+  pilotMode,
+  tradeStatus,
   busy,
   compiled,
-  onToggle
+  receipt,
+  error,
+  sources,
+  sourcesExpanded,
+  onToggleSources,
+  onOpenReview
 }: {
-  expanded: boolean;
+  pilotMode: PilotMode | null;
+  tradeStatus: TradeModalStatus;
   busy: boolean;
   compiled: CompileApiResult | null;
-  onToggle: () => void;
+  receipt: ExecutionReceipt | null;
+  error: string | null;
+  sources: RagSource[];
+  sourcesExpanded: boolean;
+  onToggleSources: () => void;
+  onOpenReview: () => void;
 }) {
-  const quote = compiled?.quote;
-  const quoteReady = quote?.status === "available";
-  const detail = quoteReady
-    ? "quote ready"
-    : quote?.status === "unavailable"
-      ? "quote unavailable"
-      : compiled?.guardian.decision
-        ? compiled.guardian.decision.toUpperCase()
-        : busy ? "checking" : "review";
-  const firstCommand = compiled?.ptb?.commands[0] ?? null;
-  const summaryRows = compiled
-    ? quoteReady
-      ? [
-          ["Outcome", `BTC ${quote.direction?.toUpperCase() ?? "--"}`],
-          ["Est. pay", `${formatDusdc(quote.estimatedCostDusdc)} DUSDC`],
-          ["Max payout", `${formatDusdc(quote.maxPayoutDusdc)} DUSDC`],
-          ["Expiry", formatExpiry(quote.expiry)],
-          ["Guardian", compiled.guardian.decision.toUpperCase()]
-        ]
-      : [
-          ["Guardian", compiled.guardian.decision.toUpperCase()],
-          ["Quote", quote?.status === "unavailable" ? "unavailable" : "not required"],
-          ["PTB digest", compiled.ptb?.digestPreview ? shortAddress(compiled.ptb.digestPreview) : "not compiled"],
-          ["Move target", firstCommand?.target ? compactMiddle(firstCommand.target, 18) : "locked"]
-        ]
-    : [
-        ["Guardian", busy ? "checking" : "waiting"],
-        ["Quote", busy ? "checking" : "waiting"],
-        ["PTB digest", "waiting"]
-      ];
+  const hasTrade = pilotMode === "trade" || Boolean(compiled);
+  const modeLabel = pilotMode ? pilotMode.toUpperCase() : busy ? "ROUTING" : "STANDBY";
 
   return (
     <Card className="glass-line">
       <CardHeader className="p-4 pb-2">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <ClipboardCheck className="h-4 w-4 text-muted-foreground" />
-              <CardTitle className="text-sm">Trade Review</CardTitle>
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm">Pilot Actions</CardTitle>
             </div>
-            <CardDescription className="text-xs">{detail}</CardDescription>
+            <CardDescription className="text-xs">{modeLabel}</CardDescription>
           </div>
-          <Button size="sm" variant="outline" onClick={onToggle}>
-            <ChevronDown className={cn("transition-transform", expanded && "rotate-180")} />
-            {expanded ? "Hide details" : "Show details"}
-          </Button>
+          {hasTrade ? (
+            <Button size="sm" variant="outline" onClick={onOpenReview}>
+              <ClipboardCheck />
+              Review
+            </Button>
+          ) : null}
         </div>
       </CardHeader>
-      <CardContent className="space-y-2 p-4 pt-0">
-        <div className="rounded-md border border-border bg-background/55">
-          {summaryRows.map(([label, value]) => (
-            <div key={label} className="grid grid-cols-[86px_1fr] gap-3 border-b border-border/70 px-3 py-2 last:border-b-0">
-              <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
-              <span className="min-w-0 truncate font-mono text-xs text-foreground/85">{value}</span>
-            </div>
-          ))}
-        </div>
+      <CardContent className="space-y-3 p-4 pt-0">
+        {hasTrade ? (
+          <>
+            <StatusPill status={tradeStatus} receipt={receipt} error={error} />
+            <ReviewSummaryBlock compiled={compiled} busy={busy} />
+          </>
+        ) : pilotMode === "chat" ? (
+          <CompactSources sources={sources} expanded={sourcesExpanded} onToggle={onToggleSources} />
+        ) : busy ? (
+          <MutedBox>Classifying request and preparing the next step.</MutedBox>
+        ) : (
+          <MutedBox>Ask a market question or use the ticket below to draft a Predict trade.</MutedBox>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function TradeReviewModal({
+  open,
+  status,
+  compiled,
+  streamTimeline,
+  receipt,
+  error,
+  busy,
+  blocked,
+  detailsExpanded,
+  expandedFinding,
+  preflight,
+  accountAddress,
+  onClose,
+  onDetailsChange,
+  onExpandFinding,
+  onConfirm
+}: {
+  open: boolean;
+  status: TradeModalStatus;
+  compiled: CompileApiResult | null;
+  streamTimeline: CompileResult["timeline"];
+  receipt: ExecutionReceipt | null;
+  error: string | null;
+  busy: boolean;
+  blocked: boolean;
+  detailsExpanded: boolean;
+  expandedFinding: string | null;
+  preflight: PreflightSnapshot | null;
+  accountAddress?: string;
+  onClose: () => void;
+  onDetailsChange: (value: boolean) => void;
+  onExpandFinding: (value: string | null) => void;
+  onConfirm: () => void;
+}) {
+  if (!open) {
+    return null;
+  }
+
+  const action = executionAction(compiled, blocked);
+  const canConfirm = action.canConfirm && !busy && status !== "executed";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/82 px-3 py-5 backdrop-blur-md">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.98, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: 10 }}
+        className="trade-review-modal glass-line max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-lg border border-border shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border/75 bg-card/75 p-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="grid h-9 w-9 place-items-center rounded-md border border-border bg-background/80">
+                {status === "signing" ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ClipboardCheck className="h-4 w-4" />}
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-semibold text-foreground">{tradeModalTitle(status)}</h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{tradeModalSubtitle(status, compiled)}</p>
+              </div>
+            </div>
+          </div>
+          <Button size="icon" variant="ghost" onClick={onClose} disabled={busy}>
+            <X />
+          </Button>
+        </div>
+
+        <div className="max-h-[calc(92vh-82px)] overflow-y-auto p-4">
+          <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="space-y-3">
+              <StatusPill status={status} receipt={receipt} error={error} />
+              <ReviewSummaryBlock compiled={compiled} busy={status === "compiling"} />
+              <TradeModalSteps status={status} compiled={compiled} streamTimeline={streamTimeline} preflight={preflight} busy={busy} />
+            </div>
+
+            <div className="space-y-3">
+              {receipt ? (
+                <div className="rounded-md border border-border bg-background/70 p-3">
+                  <div className="flex items-center gap-2 text-foreground">
+                    <Check className="h-4 w-4" />
+                    <p className="text-sm font-medium">{receipt.action === "manager_create" ? "PredictManager created" : "Executed"}</p>
+                  </div>
+                  <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{receipt.digest}</p>
+                </div>
+              ) : null}
+
+              {error ? (
+                <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm leading-6 text-destructive-foreground">
+                  {error}
+                </div>
+              ) : null}
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <Button variant="outline" onClick={() => onDetailsChange(!detailsExpanded)}>
+                  <ChevronDown className={cn("transition-transform", detailsExpanded && "rotate-180")} />
+                  {detailsExpanded ? "Hide details" : "Show details"}
+                </Button>
+                <Button
+                  className="h-10"
+                  variant={canConfirm ? "default" : "destructive"}
+                  disabled={!canConfirm}
+                  onClick={() => {
+                    if (action.href) {
+                      window.location.href = action.href;
+                      return;
+                    }
+
+                    onConfirm();
+                  }}
+                >
+                  {busy ? <RefreshCw className="animate-spin" /> : action.href ? <Wallet /> : canConfirm ? <LockKeyhole /> : <AlertTriangle />}
+                  {status === "executed" ? "Executed" : action.label}
+                </Button>
+              </div>
+
+              <AnimatePresence initial={false}>
+                {detailsExpanded ? (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: "auto" }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="space-y-3 overflow-hidden"
+                  >
+                    <OutcomeQuoteCard compiled={compiled} busy={status === "compiling"} />
+                    <SafetyChecksCard
+                      compiled={compiled}
+                      busy={status === "compiling"}
+                      streamTimeline={streamTimeline}
+                      expandedFinding={expandedFinding}
+                      onExpand={onExpandFinding}
+                    />
+                    <TransactionCard compiled={compiled} accountAddress={accountAddress} />
+                    <ExecutionCard
+                      compiled={compiled}
+                      receipt={receipt}
+                      error={error}
+                      busy={busy}
+                      blocked={blocked}
+                      onConfirm={onConfirm}
+                      showButton={false}
+                    />
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+function StatusPill({
+  status,
+  receipt,
+  error
+}: {
+  status: TradeModalStatus;
+  receipt: ExecutionReceipt | null;
+  error: string | null;
+}) {
+  const blocked = status === "failed" || status === "preflight_failed" || status === "funding_required";
+  const complete = status === "executed";
+
+  return (
+    <div className={cn(
+      "rounded-md border p-3",
+      blocked ? "border-destructive/35 bg-destructive/10" : "border-border bg-background/60"
+    )}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">{tradeStatusLabel(status)}</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {complete && receipt
+              ? `${receipt.action === "manager_create" ? "Manager created" : "Transaction executed"} · ${shortAddress(receipt.digest)}`
+              : error ?? tradeStatusDescription(status)}
+          </p>
+        </div>
+        {complete ? <Check className="h-4 w-4 text-foreground" /> : blocked ? <AlertTriangle className="h-4 w-4 text-destructive" /> : <CircleDashed className="h-4 w-4 text-muted-foreground" />}
+      </div>
+    </div>
+  );
+}
+
+function ReviewSummaryBlock({
+  compiled,
+  busy
+}: {
+  compiled: CompileApiResult | null;
+  busy: boolean;
+}) {
+  const rows = reviewSummaryRows(compiled, busy);
+
+  return (
+    <div className="rounded-md border border-border bg-background/55">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-[92px_1fr] gap-3 border-b border-border/70 px-3 py-2 last:border-b-0">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+          <span className="min-w-0 truncate font-mono text-xs text-foreground/85">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CompactSources({
+  sources,
+  expanded,
+  onToggle
+}: {
+  sources: RagSource[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  if (sources.length === 0) {
+    return <MutedBox>Waiting for Predict oracle, news, and local docs context.</MutedBox>;
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-muted-foreground">{sources.length} refs</span>
+        <Button size="sm" variant="outline" onClick={onToggle}>
+          <ChevronDown className={cn("transition-transform", expanded && "rotate-180")} />
+          {expanded ? "Hide" : "Show"}
+        </Button>
+      </div>
+      <div className="space-y-1">
+        {(expanded ? sources : sources.slice(0, 6)).map((source) => (
+          <div key={source.id} className="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border border-border bg-background/45 px-2 py-1.5">
+            <span className="font-mono text-[10px] text-muted-foreground">{source.id}</span>
+            <span className="min-w-0 truncate text-xs text-foreground/85">{compactSourceTitle(source)}</span>
+            <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{source.sourceType}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TradeModalSteps({
+  status,
+  compiled,
+  streamTimeline,
+  preflight,
+  busy
+}: {
+  status: TradeModalStatus;
+  compiled: CompileApiResult | null;
+  streamTimeline: CompileResult["timeline"];
+  preflight: PreflightSnapshot | null;
+  busy: boolean;
+}) {
+  const timeline = compiled?.timeline ?? streamTimeline;
+  const stageState = (label: string): "complete" | "blocked" | "pending" => {
+    const match = timeline.find((item) => item.label.toLowerCase().includes(label.toLowerCase()));
+
+    return match?.state ?? (compiled ? "complete" : "pending");
+  };
+  const steps: Array<{ label: string; state: "complete" | "blocked" | "pending"; detail: string }> = [
+    {
+      label: "Parsing intent",
+      state: stageState("Parsing intent"),
+      detail: compiled?.intent.status === "ready" ? compiled.intent.action.replaceAll("_", " ") : "Classifying request"
+    },
+    {
+      label: "Resolving active oracle",
+      state: stageState("Resolving"),
+      detail: compiled?.market?.oracle.oracle_id ? shortAddress(compiled.market.oracle.oracle_id) : "Nearest active market"
+    },
+    {
+      label: "Quoting payout",
+      state: compiled?.quote?.status === "available" ? "complete" : compiled?.quote?.status === "unavailable" ? "blocked" : stageState("Quoting"),
+      detail: compiled?.quote?.status === "available" ? `${formatDusdc(compiled.quote.estimatedCostDusdc)} DUSDC est. pay` : "DeepBook Predict quote"
+    },
+    {
+      label: "Guardian checks",
+      state: compiled?.guardian.blocked ? "blocked" : compiled ? "complete" : "pending",
+      detail: compiled?.guardian.decision ? compiled.guardian.decision.toUpperCase() : "Risk policy"
+    },
+    {
+      label: "Checking Trading Balance",
+      state: stageState("Checking Trading Balance"),
+      detail: compiled?.ptb?.execution.fundingStatus === "insufficient"
+        ? `Shortfall ${formatRawDusdc(compiled.ptb.execution.fundingShortfallRaw)} DUSDC`
+        : compiled?.ptb?.execution.fundingStatus ?? "Manager payment readiness"
+    },
+    {
+      label: "SUI gas preflight",
+      state: status === "preflight_failed" ? "blocked" : preflight || status === "signing" || status === "executed" ? "complete" : "pending",
+      detail: preflight ? `SUI ${formatRawSui(preflight.suiBalanceRaw)} · payment ${formatRawDusdc(preflight.estimatedPaymentRaw)} DUSDC` : "SUI gas and pre-funded payment"
+    },
+    {
+      label: status === "executed" ? "Executed" : "Ready to sign",
+      state: status === "executed" ? "complete" : status === "failed" || status === "funding_required" ? "blocked" : status === "signing" ? "pending" : compiled?.ptb?.execution.canSign && !compiled.guardian.blocked ? "complete" : "pending",
+      detail: status === "signing" ? "Wallet confirmation open" : "User-triggered wallet signature"
+    }
+  ];
+
+  return (
+    <div className="rounded-md border border-border bg-background/55 p-3">
+      <div className="space-y-1">
+        {steps.map((step, index) => (
+          <motion.div
+            key={step.label}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.03 }}
+            className="grid grid-cols-[24px_1fr] gap-3 rounded-md py-1.5"
+          >
+            <StatusIcon state={step.state} busy={busy || status === "compiling" || status === "signing"} />
+            <div className="min-w-0">
+              <p className="truncate text-sm text-foreground">{step.label}</p>
+              <p className="truncate text-xs text-muted-foreground">{step.detail}</p>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1245,9 +1625,9 @@ function TransactionCard({
           </MutedBox>
           <MutedBox>
             <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Wallet / Gas</span>
-            <span className="mt-1 block text-sm text-foreground/80">{gas?.label ?? "Awaiting wallet policy"}</span>
+            <span className="mt-1 block text-sm text-foreground/80">Wallet auto gas</span>
             <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-              {accountAddress ? shortAddress(accountAddress) : "Wallet not connected"} · {gas?.approved ? "policy approved" : "policy locked"}
+              {accountAddress ? shortAddress(accountAddress) : "Wallet not connected"} · {gas?.approved ? "preview policy approved" : "preview policy locked"}
             </span>
           </MutedBox>
           {compiled?.ptb?.sizing ? (
@@ -1272,72 +1652,6 @@ function TransactionCard({
             ))}
           </div>
         ) : null}
-      </CardContent>
-    </Card>
-  );
-}
-
-function SourcesCard({
-  sources,
-  expanded,
-  onToggle
-}: {
-  sources: RagSource[];
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <Card className="glass-line">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <CardTitle>RAG Sources</CardTitle>
-            <CardDescription>{sources.length ? `${sources.length} refs` : "waiting"}</CardDescription>
-          </div>
-          <Button size="sm" variant="outline" onClick={onToggle} disabled={sources.length === 0}>
-            <ChevronDown className={cn("transition-transform", expanded && "rotate-180")} />
-            {expanded ? "Hide" : "Show"}
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {sources.length === 0 ? (
-          <MutedBox>Waiting for Predict oracle, news, and local docs context.</MutedBox>
-        ) : !expanded ? (
-          <div className="space-y-1">
-            {sources.slice(0, 6).map((source) => (
-              <div key={source.id} className="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md border border-border bg-background/45 px-2 py-1.5">
-                <span className="font-mono text-[10px] text-muted-foreground">{source.id}</span>
-                <span className="min-w-0 truncate text-xs text-foreground/85">{compactSourceTitle(source)}</span>
-                <span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{source.sourceType}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          sources.map((source) => (
-            <div key={source.id} className="rounded-md border border-border bg-background/60 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">{source.title}</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{source.snippet}</p>
-                </div>
-                <Badge variant="outline" className="shrink-0 border-border text-[10px] uppercase text-muted-foreground">
-                  {source.partial ? "partial" : source.sourceType}
-                </Badge>
-              </div>
-              {source.url ? (
-                <a
-                  href={source.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-2 block truncate font-mono text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                >
-                  {source.url}
-                </a>
-              ) : null}
-            </div>
-          ))
-        )}
       </CardContent>
     </Card>
   );
@@ -1449,7 +1763,8 @@ function ExecutionCard({
   error,
   busy,
   blocked,
-  onConfirm
+  onConfirm,
+  showButton = true
 }: {
   compiled: CompileApiResult | null;
   receipt: ExecutionReceipt | null;
@@ -1457,23 +1772,10 @@ function ExecutionCard({
   busy: boolean;
   blocked: boolean;
   onConfirm: () => void;
+  showButton?: boolean;
 }) {
   const readiness = compiled?.ptb?.execution;
-  const canCreateManager = Boolean(compiled?.ptb && !readiness?.managerId && readiness?.walletAddress && !blocked);
-  const quoteFresh = Boolean(compiled?.quote?.status === "available" && new Date(compiled.quote.expiresAt).getTime() > Date.now());
-  const canMint = Boolean(compiled?.ptb && readiness?.canSign && !blocked && compiled.gas.approved && quoteFresh);
-  const canConfirm = canCreateManager || canMint;
-  const buttonLabel = blocked
-    ? "Blocked by Guardian"
-    : canCreateManager
-      ? "Create PredictManager"
-      : canMint
-        ? "Review & Sign"
-        : !readiness?.walletAddress
-          ? "Connect wallet"
-          : compiled?.quote?.status === "available" && !quoteFresh
-            ? "Refresh quote"
-            : "Review locked";
+  const action = executionAction(compiled, blocked);
 
   return (
     <Card className="glass-line">
@@ -1481,18 +1783,27 @@ function ExecutionCard({
         <SectionHeading title="Execution" detail="wallet tx" icon={<Wallet className="h-4 w-4" />} />
       </CardHeader>
       <CardContent>
-        <Button
-          className="h-11 w-full"
-          variant={canConfirm ? "default" : "destructive"}
-          disabled={!canConfirm || busy}
-          onClick={onConfirm}
-        >
-          {busy ? <RefreshCw className="animate-spin" /> : !canConfirm ? <AlertTriangle /> : <LockKeyhole />}
-          {buttonLabel}
-        </Button>
+        {showButton ? (
+          <Button
+            className="h-11 w-full"
+            variant={action.canConfirm ? "default" : "destructive"}
+            disabled={!action.canConfirm || busy}
+            onClick={() => {
+              if (action.href) {
+                window.location.href = action.href;
+                return;
+              }
+
+              onConfirm();
+            }}
+          >
+            {busy ? <RefreshCw className="animate-spin" /> : action.href ? <Wallet /> : !action.canConfirm ? <AlertTriangle /> : <LockKeyhole />}
+            {action.label}
+          </Button>
+        ) : null}
 
         {readiness ? (
-          <div className="mt-4 space-y-1">
+          <div className={cn("space-y-1", showButton && "mt-4")}>
             {readiness.checks.map((check) => (
               <div key={check.label} className="grid grid-cols-[1fr_18px] items-start gap-2 py-1.5">
                 <div className="min-w-0">
@@ -1539,6 +1850,193 @@ function ExecutionCard({
   );
 }
 
+function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
+  const readiness = compiled?.ptb?.execution;
+  const canCreateManager = Boolean(compiled?.ptb && !readiness?.managerId && readiness?.walletAddress && !blocked);
+  const quoteFresh = Boolean(compiled?.quote?.status === "available" && new Date(compiled.quote.expiresAt).getTime() > Date.now());
+  const fundingRequired = readiness?.fundingStatus === "insufficient" || (readiness?.fundingStatus === "unknown" && Boolean(readiness.managerId));
+  const canMint = Boolean(compiled?.ptb && readiness?.canSign && !blocked && compiled.gas.approved && quoteFresh);
+  const fundingHref = fundingRequired ? profileFundingHref(compiled) : null;
+  const canConfirm = canCreateManager || canMint || Boolean(fundingHref);
+  const label = blocked
+    ? "Blocked by Guardian"
+    : fundingHref
+      ? "Open Profile Funding"
+      : canCreateManager
+      ? "Create PredictManager"
+      : canMint
+        ? "Review & Sign"
+        : !readiness?.walletAddress
+          ? "Connect wallet"
+          : compiled?.quote?.status === "available" && !quoteFresh
+            ? "Refresh quote"
+            : "Review locked";
+
+  return { canConfirm, label, href: fundingHref };
+}
+
+function profileFundingHref(compiled: CompileApiResult | null) {
+  const managerId = compiled?.ptb?.execution.managerId ?? compiled?.profile?.managerId;
+  const params = new URLSearchParams({ fund: "1" });
+
+  if (managerId) {
+    params.set("managerId", managerId);
+  }
+
+  return `/profile?${params.toString()}`;
+}
+
+function reviewSummaryRows(compiled: CompileApiResult | null, busy: boolean): Array<[string, string]> {
+  const quote = compiled?.quote;
+
+  if (!compiled) {
+    return [
+      ["Guardian", busy ? "checking" : "waiting"],
+      ["Quote", busy ? "checking" : "waiting"],
+      ["PTB", "waiting"]
+    ];
+  }
+
+  if (quote?.status === "available") {
+    return [
+      ["Outcome", `BTC ${quote.direction?.toUpperCase() ?? "--"}`],
+      ["Est. pay", `${formatDusdc(quote.estimatedCostDusdc)} DUSDC`],
+      ["Max payout", `${formatDusdc(quote.maxPayoutDusdc)} DUSDC`],
+      ["Funding", fundingSummary(compiled)],
+      ["Expiry", formatExpiry(quote.expiry)],
+      ["Guardian", compiled.guardian.decision.toUpperCase()]
+    ];
+  }
+
+  const firstCommand = compiled.ptb?.commands[0] ?? null;
+
+  return [
+    ["Guardian", compiled.guardian.decision.toUpperCase()],
+    ["Quote", quote?.status === "unavailable" ? "unavailable" : "not required"],
+    ["PTB", compiled.ptb?.digestPreview ? shortAddress(compiled.ptb.digestPreview) : "not compiled"],
+    ["Move target", firstCommand?.target ? compactMiddle(firstCommand.target, 18) : "locked"]
+  ];
+}
+
+function fundingSummary(compiled: CompileApiResult) {
+  const execution = compiled.ptb?.execution;
+
+  if (!execution) {
+    return "waiting";
+  }
+
+  if (execution.fundingStatus === "sufficient") {
+    return "ready";
+  }
+
+  if (execution.fundingStatus === "insufficient") {
+    return `short ${formatRawDusdc(execution.fundingShortfallRaw)} DUSDC`;
+  }
+
+  if (execution.fundingStatus === "not_required") {
+    return "not required";
+  }
+
+  return "unknown";
+}
+
+function tradeModalTitle(status: TradeModalStatus) {
+  switch (status) {
+    case "compiling":
+      return "Preparing Predict review";
+    case "quote_ready":
+      return "Review Predict trade";
+    case "funding_required":
+      return "Funding required";
+    case "review_changed":
+      return "Review updated";
+    case "preflight_failed":
+      return "Wallet preflight failed";
+    case "ready_to_sign":
+      return "Checking wallet balances";
+    case "signing":
+      return "Wallet signing";
+    case "executed":
+      return "Execution complete";
+    case "failed":
+      return "Execution failed";
+    default:
+      return "Predict trade review";
+  }
+}
+
+function tradeModalSubtitle(status: TradeModalStatus, compiled: CompileApiResult | null) {
+  if (compiled?.quote?.status === "available") {
+    return `BTC ${compiled.quote.direction?.toUpperCase() ?? "--"} · ${formatDusdc(compiled.quote.estimatedCostDusdc)} DUSDC estimated pay · ${formatExpiry(compiled.quote.expiry)}`;
+  }
+
+  return tradeStatusDescription(status);
+}
+
+function tradeStatusLabel(status: TradeModalStatus) {
+  switch (status) {
+    case "compiling":
+      return "Compiling review";
+    case "quote_ready":
+      return "Quote ready";
+    case "funding_required":
+      return "Funding required";
+    case "review_changed":
+      return "Review changed";
+    case "preflight_failed":
+      return "Preflight failed";
+    case "ready_to_sign":
+      return "Preflight running";
+    case "signing":
+      return "Waiting for wallet";
+    case "executed":
+      return "Executed";
+    case "failed":
+      return "Failed";
+    default:
+      return "Idle";
+  }
+}
+
+function tradeStatusDescription(status: TradeModalStatus) {
+  switch (status) {
+    case "compiling":
+      return "DeepPilot is parsing the request, resolving the active oracle, quoting payout, and running Guardian.";
+    case "quote_ready":
+      return "Review the quote and safety checks before opening the wallet.";
+    case "funding_required":
+      return "Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this position.";
+    case "review_changed":
+      return "The refreshed quote or executable payload changed. Check the updated review, then sign again.";
+    case "preflight_failed":
+      return "Wallet balances do not satisfy the transaction requirements.";
+    case "ready_to_sign":
+      return "Checking SUI gas and pre-funded Trading Balance before opening the wallet.";
+    case "signing":
+      return "Confirm or reject the transaction in your wallet.";
+    case "executed":
+      return "Receipt saved locally. The Predict server may take a moment to index the position.";
+    case "failed":
+      return "The transaction did not execute. Check the message and try again after fixing the issue.";
+    default:
+      return "Use the ticket or Pilot Console to prepare a Predict trade.";
+  }
+}
+
+function tradeStatusForCompiled(result: CompileApiResult): TradeModalStatus {
+  if (result.intent.status === "needs_clarification" || result.guardian.blocked) {
+    return "failed";
+  }
+
+  const fundingStatus = result.ptb?.execution.fundingStatus;
+
+  if (fundingStatus === "insufficient" || (fundingStatus === "unknown" && Boolean(result.ptb?.execution.managerId))) {
+    return "funding_required";
+  }
+
+  return "quote_ready";
+}
+
 function tradeAssistantCopy(compiled: CompileApiResult) {
   if (compiled.intent.status === "needs_clarification") {
     return `I need one more field before building a transaction review: ${compiled.intent.missing.join(", ")}.\n${compiled.intent.reason}`;
@@ -1546,6 +2044,17 @@ function tradeAssistantCopy(compiled: CompileApiResult) {
 
   if (compiled.guardian.decision === "block") {
     return `Guardian returned BLOCK.\n${compiled.guardian.summary}\nReview the blocked checks on the right before changing the intent.`;
+  }
+
+  const execution = compiled.ptb?.execution;
+
+  if (execution?.fundingStatus === "insufficient" || (execution?.fundingStatus === "unknown" && Boolean(execution.managerId))) {
+    return [
+      "Trading Balance is insufficient; fund in Profile before opening this trade.",
+      `Estimated payment: ${formatRawDusdc(execution.estimatedPaymentRaw)} DUSDC`,
+      `Trading Balance: ${formatRawDusdc(execution.managerBalanceRaw)} DUSDC`,
+      `Shortfall: ${formatRawDusdc(execution.fundingShortfallRaw)} DUSDC`
+    ].join("\n");
   }
 
   const action = compiled.intent.action.replaceAll("_", " ");
@@ -1630,8 +2139,43 @@ function executableFingerprint(compiled: CompileApiResult) {
     mint: transaction?.mint ?? null,
     commandTargets: transaction?.commands.map((command) => command.target) ?? [],
     quantityRaw: compiled.quote?.quantityRaw ?? transaction?.mint.quantityRaw ?? null,
+    estimatedCostRaw: compiled.quote?.estimatedCostRaw ?? transaction?.quote?.estimatedCostRaw ?? null,
     quoteBudgetRaw: compiled.quote?.quoteBudgetRaw ?? null
   });
+}
+
+function extractBalanceRaw(value: unknown) {
+  const balance = isRecord(value) ? value.balance : null;
+
+  if (isRecord(balance)) {
+    const raw = stringRecordValue(balance, "coinBalance") ?? stringRecordValue(balance, "balance") ?? stringRecordValue(balance, "addressBalance");
+
+    if (raw) {
+      return BigInt(raw);
+    }
+  }
+
+  if (isRecord(value)) {
+    const raw = stringRecordValue(value, "totalBalance") ?? stringRecordValue(value, "coinBalance") ?? stringRecordValue(value, "balance");
+
+    if (raw) {
+      return BigInt(raw);
+    }
+  }
+
+  return 0n;
+}
+
+function parseRawAmount(value: string | null | undefined) {
+  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function stringRecordValue(value: Record<string, unknown>, key: string) {
+  return typeof value[key] === "string" && /^\d+$/.test(value[key]) ? value[key] : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }
 
 function defaultIntentFromSearch(searchParams: { get(name: string): string | null }) {
@@ -1814,6 +2358,26 @@ function formatDusdc(value: number | null) {
         minimumFractionDigits: value > 0 && value < 1 ? 4 : 2,
         maximumFractionDigits: value > 0 && value < 1 ? 6 : 2
       });
+}
+
+function formatRawDusdc(value: string | bigint | null | undefined) {
+  const raw = typeof value === "bigint" ? value : parseRawAmount(value);
+  const whole = Number(raw) / Number(DUSDC_BASE_UNITS);
+
+  return whole.toLocaleString("en-US", {
+    minimumFractionDigits: whole > 0 && whole < 1 ? 4 : 2,
+    maximumFractionDigits: whole > 0 && whole < 1 ? 6 : 2
+  });
+}
+
+function formatRawSui(value: string | bigint) {
+  const raw = typeof value === "bigint" ? value : parseRawAmount(value);
+  const whole = Number(raw) / Number(MIST_PER_SUI);
+
+  return whole.toLocaleString("en-US", {
+    minimumFractionDigits: whole > 0 && whole < 1 ? 4 : 2,
+    maximumFractionDigits: whole > 0 && whole < 1 ? 6 : 4
+  });
 }
 
 function formatUnitPrice(value: number | null) {

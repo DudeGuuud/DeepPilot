@@ -18,7 +18,6 @@ export const sponsorPolicy: SponsorPolicy = {
     "market_key::down",
     "range_key::new",
     "predict::create_manager",
-    "predict_manager::deposit",
     "predict::mint",
     "predict::mint_range",
     "predict::redeem_permissionless",

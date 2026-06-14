@@ -271,7 +271,9 @@ export interface ExecutionReadiness {
   managerBalanceRaw: string | null;
   requiredQuoteDusdc: number | null;
   requiredQuoteRaw: string | null;
-  requiredTopUpRaw: string | null;
+  estimatedPaymentRaw: string | null;
+  fundingShortfallRaw: string | null;
+  fundingStatus: "sufficient" | "insufficient" | "unknown" | "not_required";
   checks: ExecutionReadinessCheck[];
 }
 
@@ -511,7 +513,7 @@ export interface PredictOracleHistory {
 export interface ProfileActivityItem {
   id: string;
   time: string;
-  type: "compile" | "sponsor_preview" | "manager_create" | "predict_mint" | "mint" | "redeem" | "keeper";
+  type: "compile" | "sponsor_preview" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper";
   oracleId?: string;
   digest?: string;
   guardianDecision?: GuardianResult["decision"];
@@ -601,6 +603,7 @@ export interface ProfileSummary {
   wallet: string | null;
   network: PredictDeployment["network"];
   predictPackageId: string;
+  quoteAssetType: string;
   managerId: string | null;
   managerLinked: boolean;
   managerNeedsCreation: boolean;

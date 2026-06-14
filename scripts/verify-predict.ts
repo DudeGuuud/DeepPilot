@@ -2,7 +2,12 @@ import { z } from "zod";
 
 import { compileIntent } from "../src/lib/compile";
 import { parseJsonBody } from "../src/lib/http";
-import { buildBinaryMintTransaction, buildCreatePredictManagerTransaction } from "../src/lib/predict-execution";
+import {
+  buildBinaryMintTransaction,
+  buildCreatePredictManagerTransaction,
+  buildDepositToManagerTransaction,
+  buildWithdrawFromManagerTransaction
+} from "../src/lib/predict-execution";
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment, toPredictPrice } from "../src/lib/predict";
 import { enrichProfilePositionsWithLiveQuotes, getProfileSummary, normalizeProfilePnl, normalizeProfilePositions } from "../src/lib/profile";
 
@@ -36,8 +41,8 @@ assert(
   "PTB preview should target predict::mint"
 );
 assert(
-  result.ptb?.commands.some((command) => command.target === `${predictDeployment.packageId}::predict_manager::deposit`),
-  "PTB preview should include PredictManager DUSDC top-up"
+  !result.ptb?.commands.some((command) => command.target === `${predictDeployment.packageId}::predict_manager::deposit`),
+  "mint PTB preview should not include a PredictManager deposit command"
 );
 assert(
   result.ptb?.commands.some((command) => command.inputs?.quantityRaw === result.quote?.quantityRaw),
@@ -45,17 +50,30 @@ assert(
 );
 const fakeManagerId = "0x00000000000000000000000000000000000000000000000000000000feed0001";
 const createManagerTx = buildCreatePredictManagerTransaction({
-  packageId: predictDeployment.packageId,
-  gasBudget: result.ptb?.gasBudget
+  packageId: predictDeployment.packageId
 });
 const mintTx = buildBinaryMintTransaction({
   transactionData: result.ptb!.transactionData,
+  managerId: fakeManagerId
+});
+const depositTx = buildDepositToManagerTransaction({
+  packageId: predictDeployment.packageId,
   managerId: fakeManagerId,
-  managerBalanceRaw: "0",
-  gasBudget: result.ptb?.gasBudget
+  quoteAssetType: predictDeployment.quoteAssetType,
+  amountRaw: result.quote.estimatedCostRaw
+});
+const withdrawTx = buildWithdrawFromManagerTransaction({
+  packageId: predictDeployment.packageId,
+  managerId: fakeManagerId,
+  quoteAssetType: predictDeployment.quoteAssetType,
+  amountRaw: "1000000",
+  recipient: fakeManagerId
 });
 assert(createManagerTx, "create manager transaction should be buildable");
-assert(mintTx.topUpRaw === result.quote.estimatedCostRaw, "mint builder should top up the estimated raw DUSDC cost");
+assert(mintTx.estimatedCostRaw === result.quote.estimatedCostRaw, "mint builder should keep the estimated raw DUSDC cost");
+assert(depositTx, "deposit transaction should be buildable");
+assert(withdrawTx, "withdraw transaction should be buildable");
+assert(result.ptb?.execution.fundingStatus !== "sufficient", "unfunded smoke profile should not be signable");
 assert(
   !result.ptb?.commands.some((command) => command.target.endsWith("::log::record_intent")),
   "default gas-optimized PTB should not add the audit Move call"

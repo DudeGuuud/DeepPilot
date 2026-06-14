@@ -168,23 +168,6 @@ function buildCommands(
     });
   } else {
     commands.push(binaryKeyCommand(intent, market, 1));
-    const topUpRaw = requiredTopUpRaw(profile, quote);
-
-    if (topUpRaw > 0n) {
-      commands.push({
-        index: commands.length + 1,
-        command: "Top up PredictManager with DUSDC",
-        target: `${predictDeployment.packageId}::predict_manager::deposit`,
-        riskGate: "atomic",
-        inputs: {
-          managerObject: profile?.managerId ?? null,
-          quoteType: predictDeployment.quoteAssetType,
-          amountRaw: topUpRaw.toString(),
-          estimatedCostDusdc: quote?.status === "available" ? quote.estimatedCostDusdc : null,
-          managerBalanceDusdc: profile?.tradingBalanceDusdc ?? null
-        }
-      });
-    }
 
     commands.push({
       index: commands.length + 1,
@@ -273,13 +256,9 @@ function buildRequirements(
       detail: execution.managerId ?? "Create or load the user's shared PredictManager before submitting mint/redeem."
     },
     {
-      label: "DUSDC manager balance",
-      satisfied: true,
-      detail: execution.requiredTopUpRaw && BigInt(execution.requiredTopUpRaw) > 0n
-        ? `Wallet transaction will top up ${formatDusdc(rawDusdcToDisplay(execution.requiredTopUpRaw))} DUSDC before mint.`
-        : execution.managerBalanceDusdc === null
-          ? "Trading balance is not indexed yet; wallet transaction can top up the estimated cost before mint."
-          : `${execution.managerBalanceDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC trading balance detected.`
+      label: "Trading Balance",
+      satisfied: execution.fundingStatus === "sufficient" || execution.fundingStatus === "not_required",
+      detail: fundingRequirementDetail(execution)
     },
     {
       label: "Predict quantity",
@@ -363,7 +342,7 @@ function buildExecutionReadiness(
   const walletAddress = profile?.wallet ?? null;
   const managerId = profile?.managerId ?? null;
   const requiredQuoteRaw = quote?.status === "available" ? quote.estimatedCostRaw : null;
-  const requiredTopUp = quote?.status === "available" ? requiredTopUpRaw(profile, quote).toString() : null;
+  const funding = fundingReadiness(profile, quote, intent.action);
   const checks = [
     {
       label: "Wallet connected",
@@ -384,6 +363,11 @@ function buildExecutionReadiness(
       label: "Executable sizing",
       passed: sizing.executable,
       detail: sizing.reason
+    },
+    {
+      label: "Trading Balance",
+      passed: funding.status === "sufficient" || funding.status === "not_required",
+      detail: funding.detail
     }
   ];
   const canSign = checks.every((check) => check.passed);
@@ -400,7 +384,9 @@ function buildExecutionReadiness(
     managerBalanceRaw: profile?.tradingBalanceRaw ?? null,
     requiredQuoteDusdc: sizing.quoteBudgetDusdc,
     requiredQuoteRaw,
-    requiredTopUpRaw: requiredTopUp,
+    estimatedPaymentRaw: requiredQuoteRaw,
+    fundingShortfallRaw: funding.shortfallRaw,
+    fundingStatus: funding.status,
     checks
   };
 }
@@ -427,23 +413,83 @@ function formatDusdc(value: number | null) {
   return value === null ? "--" : value.toLocaleString(undefined, { maximumFractionDigits: 4 });
 }
 
-function requiredTopUpRaw(profile: ProfileSummary | null, quote: PredictQuotePreview | null) {
+function fundingReadiness(
+  profile: ProfileSummary | null,
+  quote: PredictQuotePreview | null,
+  action: Extract<ParsedIntent, { status: "ready" }>["action"]
+) {
+  if (action === "stablecoin_transfer" || action === "predict_redeem" || action === "predict_quote_only") {
+    return {
+      status: "not_required" as const,
+      shortfallRaw: null,
+      detail: "No new Predict mint payment required."
+    };
+  }
+
   if (quote?.status !== "available" || !quote.estimatedCostRaw) {
-    return 0n;
+    return {
+      status: "unknown" as const,
+      shortfallRaw: null,
+      detail: "Trading Balance cannot be checked until the Predict payment quote is available."
+    };
+  }
+
+  if (!profile?.managerId) {
+    return {
+      status: "unknown" as const,
+      shortfallRaw: quote.estimatedCostRaw,
+      detail: "Create a PredictManager before funding and opening this position."
+    };
+  }
+
+  if (!profile.tradingBalanceRaw || !/^\d+$/.test(profile.tradingBalanceRaw)) {
+    return {
+      status: "unknown" as const,
+      shortfallRaw: quote.estimatedCostRaw,
+      detail: "Trading Balance is not indexed yet. Refresh Profile after funding."
+    };
   }
 
   const required = BigInt(quote.estimatedCostRaw);
-  const balance = parseRawU64(profile?.tradingBalanceRaw);
+  const balance = parseRawU64(profile.tradingBalanceRaw);
+  const shortfall = balance >= required ? 0n : required - balance;
 
-  return balance >= required ? 0n : required - balance;
+  if (shortfall > 0n) {
+    return {
+      status: "insufficient" as const,
+      shortfallRaw: shortfall.toString(),
+      detail: `Trading Balance is short by ${formatDusdc(rawDusdcToDisplay(shortfall.toString()))} DUSDC. Add funds in Profile before opening this trade.`
+    };
+  }
+
+  return {
+    status: "sufficient" as const,
+    shortfallRaw: "0",
+    detail: `${formatDusdc(profile.tradingBalanceDusdc ?? rawDusdcToDisplay(profile.tradingBalanceRaw))} DUSDC Trading Balance available.`
+  };
+}
+
+function fundingRequirementDetail(execution: ExecutionReadiness) {
+  switch (execution.fundingStatus) {
+    case "sufficient":
+      return execution.managerBalanceDusdc === null
+        ? "Trading Balance is sufficient."
+        : `${execution.managerBalanceDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC Trading Balance available.`;
+    case "insufficient":
+      return `Add ${formatDusdc(rawDusdcToDisplay(execution.fundingShortfallRaw))} DUSDC in Profile before opening this position.`;
+    case "not_required":
+      return "No new Predict mint payment required.";
+    default:
+      return "Trading Balance is unavailable or not indexed yet.";
+  }
 }
 
 function parseRawU64(value?: string | null) {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
-function rawDusdcToDisplay(value: string) {
-  const raw = BigInt(value);
+function rawDusdcToDisplay(value?: string | null) {
+  const raw = value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 
   if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
     return null;

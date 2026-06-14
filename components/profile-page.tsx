@@ -1,6 +1,6 @@
 "use client";
 
-import { useCurrentAccount, useCurrentNetwork } from "@mysten/dapp-kit-react";
+import { useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
 import { AlertTriangle, Check, LockKeyhole, RefreshCw, Wallet } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -10,22 +10,44 @@ import { PredictManagerOnboardingModal } from "@/components/predict-manager-onbo
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useToast } from "@/components/ui/use-toast";
+import {
+  assertExecuted,
+  buildDepositToManagerTransaction,
+  buildWithdrawFromManagerTransaction,
+  getExecutedDigest
+} from "@/src/lib/predict-execution";
 import { readPreviewReceipts, storePreviewReceipt } from "@/src/lib/receipts";
 import type { ProfileActivityItem, ProfilePosition, ProfileSummary } from "@/src/lib/types";
+import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
 
 type ProfileTab = "positions" | "pnl" | "activity" | "risk" | "receipts" | "keeper";
+type FundingMode = "deposit" | "withdraw";
+
+const DUSDC_BASE_UNITS = 1_000_000n;
+const MIN_SUI_GAS_BALANCE_MIST = 20_000_000n;
+const MIST_PER_SUI = 1_000_000_000n;
 
 export function ProfilePage() {
   const account = useCurrentAccount();
   const network = useCurrentNetwork();
+  const dAppKit = useDAppKit();
+  const { toast } = useToast();
   const searchParams = useSearchParams();
   const urlManagerId = searchParams.get("managerId");
+  const highlightFunding = searchParams.get("fund") === "1";
   const [localManagerId, setLocalManagerId] = useState<string | null>(urlManagerId);
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [receipts, setReceipts] = useState<ProfileActivityItem[]>([]);
   const [tab, setTab] = useState<ProfileTab>("positions");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [fundingError, setFundingError] = useState<string | null>(null);
+  const [fundingBusy, setFundingBusy] = useState(false);
+  const [fundingMode, setFundingMode] = useState<FundingMode>("deposit");
+  const [fundingAmount, setFundingAmount] = useState("10");
+  const [walletDusdcRaw, setWalletDusdcRaw] = useState<string | null>(null);
+  const [walletDusdcLoading, setWalletDusdcLoading] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [managerPromptDismissed, setManagerPromptDismissed] = useState(false);
   const effectiveManagerId = localManagerId ?? urlManagerId;
@@ -87,6 +109,41 @@ export function ProfilePage() {
     };
   }, [account?.address, effectiveManagerId, reloadNonce]);
 
+  useEffect(() => {
+    if (!account?.address || !profile?.quoteAssetType) {
+      setWalletDusdcRaw(null);
+      return;
+    }
+
+    let cancelled = false;
+    setWalletDusdcLoading(true);
+
+    dAppKit.getClient(profile.network === "devnet" ? "devnet" : "testnet")
+      .getBalance({
+        owner: account.address,
+        coinType: profile.quoteAssetType
+      })
+      .then((balance) => {
+        if (!cancelled) {
+          setWalletDusdcRaw(readBalanceRaw(balance).toString());
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setWalletDusdcRaw(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setWalletDusdcLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [account?.address, dAppKit, profile?.network, profile?.quoteAssetType, reloadNonce]);
+
   const activity = useMemo(() => [...receipts, ...(profile?.activity ?? [])], [profile?.activity, receipts]);
   const showManagerModal = Boolean(account?.address && profile?.managerNeedsCreation && !managerPromptDismissed);
 
@@ -126,6 +183,137 @@ export function ProfilePage() {
     setLocalManagerId(managerId);
     updateManagerInUrl(managerId);
     setReloadNonce((current) => current + 1);
+  }
+
+  async function handleManagerFunding() {
+    if (fundingBusy) {
+      return;
+    }
+
+    setFundingError(null);
+    setFundingBusy(true);
+
+    try {
+      if (!account?.address) {
+        throw new Error("Connect wallet before funding Trading Balance.");
+      }
+
+      if (!profile?.managerId || !profile.predictPackageId || !profile.quoteAssetType) {
+        throw new Error("Create a PredictManager before funding Trading Balance.");
+      }
+
+      const targetNetwork = profile.network === "devnet" ? "devnet" : "testnet";
+
+      if (network && network !== targetNetwork) {
+        throw new Error(`Switch wallet network to ${targetNetwork} before funding Trading Balance.`);
+      }
+
+      const amountRaw = dusdcToRaw(fundingAmount);
+
+      if (amountRaw <= 0n) {
+        throw new Error("Enter a positive DUSDC amount.");
+      }
+
+      const client = dAppKit.getClient(targetNetwork);
+      const suiBalance = readBalanceRaw(await client.getBalance({ owner: account.address }));
+
+      if (suiBalance < MIN_SUI_GAS_BALANCE_MIST) {
+        throw new Error(`Need testnet SUI for gas. Wallet has ${formatRawSui(suiBalance)} SUI; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available.`);
+      }
+
+      const transaction = fundingMode === "deposit"
+        ? await buildDepositFundingTransaction(amountRaw)
+        : buildWithdrawFundingTransaction(amountRaw);
+      const signed = await dAppKit.signAndExecuteTransaction({ transaction });
+      const digest = getExecutedDigest(signed);
+      const confirmed = await client.waitForTransaction({
+        digest,
+        include: {
+          effects: true,
+          events: true,
+          objectTypes: true
+        }
+      });
+      assertExecuted(confirmed);
+
+      const summary = `${fundingMode === "deposit" ? "Deposited" : "Withdrew"} ${formatRawDusdc(amountRaw)} ${fundingMode === "deposit" ? "to" : "from"} Trading Balance`;
+      const receipt: ProfileActivityItem & {
+        walletAddress: string;
+        network: "devnet" | "testnet";
+        status: string;
+        note: string;
+      } = {
+        id: digest,
+        time: new Date().toISOString(),
+        type: "manager_funding",
+        digest,
+        summary,
+        walletAddress: account.address,
+        network: targetNetwork,
+        status: "success",
+        note: "Explicit PredictManager funding operation signed by the user."
+      };
+
+      storePreviewReceipt(receipt);
+      setReceipts(readPreviewReceipts(account.address));
+      setReloadNonce((current) => current + 1);
+      toast({
+        title: fundingMode === "deposit" ? "Trading Balance funded" : "Trading Balance withdrawn",
+        description: digest
+      });
+    } catch (fundingIssue) {
+      const message = explainWalletExecutionError(fundingIssue);
+      setFundingError(message);
+      toast({
+        variant: "destructive",
+        title: "Funding failed",
+        description: message
+      });
+    } finally {
+      setFundingBusy(false);
+    }
+  }
+
+  async function buildDepositFundingTransaction(amountRaw: bigint) {
+    if (!profile || !account?.address) {
+      throw new Error("Profile is not loaded.");
+    }
+
+    const walletBalance = readBalanceRaw(await dAppKit.getClient(profile.network === "devnet" ? "devnet" : "testnet").getBalance({
+      owner: account.address,
+      coinType: profile.quoteAssetType
+    }));
+
+    if (walletBalance < amountRaw) {
+      throw new Error(`Wallet DUSDC is insufficient. Need ${formatRawDusdc(amountRaw)}; wallet has ${formatRawDusdc(walletBalance)}.`);
+    }
+
+    return buildDepositToManagerTransaction({
+      packageId: profile.predictPackageId,
+      managerId: profile.managerId!,
+      quoteAssetType: profile.quoteAssetType,
+      amountRaw: amountRaw.toString()
+    });
+  }
+
+  function buildWithdrawFundingTransaction(amountRaw: bigint) {
+    if (!profile || !account?.address) {
+      throw new Error("Profile is not loaded.");
+    }
+
+    const tradingBalanceRaw = parseRawAmount(profile.tradingBalanceRaw);
+
+    if (tradingBalanceRaw < amountRaw) {
+      throw new Error(`Trading Balance is insufficient. Available ${formatRawDusdc(tradingBalanceRaw)}.`);
+    }
+
+    return buildWithdrawFromManagerTransaction({
+      packageId: profile.predictPackageId,
+      managerId: profile.managerId!,
+      quoteAssetType: profile.quoteAssetType,
+      amountRaw: amountRaw.toString(),
+      recipient: account.address
+    });
   }
 
   return (
@@ -201,6 +389,20 @@ export function ProfilePage() {
         </section>
 
         <aside className="space-y-3">
+          <TradingBalanceFundingCard
+            profile={profile}
+            accountAddress={account?.address}
+            walletDusdcRaw={walletDusdcRaw}
+            walletDusdcLoading={walletDusdcLoading}
+            mode={fundingMode}
+            amount={fundingAmount}
+            busy={fundingBusy}
+            error={fundingError}
+            highlighted={highlightFunding}
+            onModeChange={setFundingMode}
+            onAmountChange={setFundingAmount}
+            onSubmit={handleManagerFunding}
+          />
           <Card className="glass-line">
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
@@ -224,6 +426,103 @@ export function ProfilePage() {
         </aside>
       </div>
     </AppShell>
+  );
+}
+
+function TradingBalanceFundingCard({
+  profile,
+  accountAddress,
+  walletDusdcRaw,
+  walletDusdcLoading,
+  mode,
+  amount,
+  busy,
+  error,
+  highlighted,
+  onModeChange,
+  onAmountChange,
+  onSubmit
+}: {
+  profile: ProfileSummary | null;
+  accountAddress?: string;
+  walletDusdcRaw: string | null;
+  walletDusdcLoading: boolean;
+  mode: FundingMode;
+  amount: string;
+  busy: boolean;
+  error: string | null;
+  highlighted: boolean;
+  onModeChange: (mode: FundingMode) => void;
+  onAmountChange: (value: string) => void;
+  onSubmit: () => void;
+}) {
+  const managerReady = Boolean(profile?.managerId);
+  const canSubmit = Boolean(accountAddress && managerReady && !busy);
+
+  return (
+    <Card className={`glass-line ${highlighted ? "border-foreground/45 shadow-[0_0_0_1px_rgba(250,250,250,0.18)]" : ""}`}>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle>Trading Balance</CardTitle>
+            <CardDescription>Fund PredictManager before opening positions.</CardDescription>
+          </div>
+          <Wallet className="h-5 w-5 text-muted-foreground" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <BalanceBox label="Wallet DUSDC" value={walletDusdcLoading ? "loading" : formatRawDusdc(walletDusdcRaw)} />
+          <BalanceBox label="Trading Balance" value={formatRawDusdc(profile?.tradingBalanceRaw)} />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Button type="button" variant={mode === "deposit" ? "default" : "outline"} onClick={() => onModeChange("deposit")}>
+            Deposit
+          </Button>
+          <Button type="button" variant={mode === "withdraw" ? "default" : "outline"} onClick={() => onModeChange("withdraw")}>
+            Withdraw
+          </Button>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Amount</span>
+          <input
+            className="h-10 w-full rounded-md border border-input bg-background/70 px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            inputMode="decimal"
+            value={amount}
+            onChange={(event) => onAmountChange(event.target.value)}
+            placeholder="10"
+          />
+        </label>
+
+        <Button className="h-10 w-full" disabled={!canSubmit} onClick={onSubmit}>
+          {busy ? <RefreshCw className="animate-spin" /> : <LockKeyhole />}
+          {mode === "deposit" ? "Deposit DUSDC" : "Withdraw DUSDC"}
+        </Button>
+
+        {!managerReady ? (
+          <p className="rounded-md border border-border bg-background/60 p-3 text-xs leading-5 text-muted-foreground">
+            Create a PredictManager before funding Trading Balance.
+          </p>
+        ) : null}
+
+        {error ? (
+          <p className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-xs leading-5 text-destructive-foreground">
+            {error}
+          </p>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function BalanceBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/60 p-3">
+      <p className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">{label}</p>
+      <p className="mt-2 truncate text-sm font-semibold text-foreground">{value}</p>
+    </div>
   );
 }
 
@@ -251,7 +550,7 @@ function TabContent({
 
   if (tab === "activity" || tab === "receipts") {
     const items = tab === "receipts"
-      ? activity.filter((item) => item.type === "sponsor_preview" || item.type === "manager_create" || item.type === "predict_mint")
+      ? activity.filter((item) => item.type === "sponsor_preview" || item.type === "manager_create" || item.type === "manager_funding" || item.type === "predict_mint")
       : activity;
 
     return items.length ? (
@@ -493,6 +792,58 @@ function EmptyState({ text }: { text: string }) {
 
 function formatDusdc(value: number | null) {
   return value === null ? "--" : `${value.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC`;
+}
+
+function formatRawDusdc(value: string | bigint | null | undefined) {
+  if (value === null || value === undefined) {
+    return "--";
+  }
+
+  const raw = typeof value === "bigint" ? value : parseRawAmount(value);
+  const whole = Number(raw) / Number(DUSDC_BASE_UNITS);
+
+  return `${whole.toLocaleString(undefined, {
+    minimumFractionDigits: whole > 0 && whole < 1 ? 4 : 2,
+    maximumFractionDigits: whole > 0 && whole < 1 ? 6 : 2
+  })} DUSDC`;
+}
+
+function formatRawSui(value: string | bigint | null | undefined) {
+  const raw = typeof value === "bigint" ? value : parseRawAmount(value);
+  const whole = Number(raw) / Number(MIST_PER_SUI);
+
+  return whole.toLocaleString(undefined, {
+    minimumFractionDigits: whole > 0 && whole < 1 ? 4 : 2,
+    maximumFractionDigits: whole > 0 && whole < 1 ? 6 : 4
+  });
+}
+
+function dusdcToRaw(value: string) {
+  const trimmed = value.trim();
+
+  if (!/^\d+(\.\d{1,6})?$/.test(trimmed)) {
+    return 0n;
+  }
+
+  const [whole, fraction = ""] = trimmed.split(".");
+  const paddedFraction = fraction.padEnd(6, "0");
+
+  return BigInt(whole) * DUSDC_BASE_UNITS + BigInt(paddedFraction);
+}
+
+function parseRawAmount(value?: string | null) {
+  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+}
+
+function readBalanceRaw(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return 0n;
+  }
+
+  const record = value as Record<string, unknown>;
+  const raw = record.totalBalance ?? record.coinBalance ?? record.balance;
+
+  return typeof raw === "string" && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
 }
 
 function formatSignedDusdc(value: number | null) {
