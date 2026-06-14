@@ -7,9 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { PredictDirection, PredictMarketSnapshot } from "@/src/lib/types";
-import { cn } from "@/src/lib/utils";
 
-type TicketMode = "quote" | "buy" | "sell";
+type TicketMode = "buy" | "sell";
 
 export function TradeTicket({
   market,
@@ -23,7 +22,7 @@ export function TradeTicket({
   onGenerate: (intent: string) => void;
 }) {
   const [direction, setDirection] = useState<PredictDirection>("up");
-  const [mode, setMode] = useState<TicketMode>("quote");
+  const [mode, setMode] = useState<TicketMode>("buy");
   const [amount, setAmount] = useState("0.01");
   const [strike, setStrike] = useState(initialStrike ? String(initialStrike) : "");
   const [strikeEdited, setStrikeEdited] = useState(false);
@@ -50,7 +49,7 @@ export function TradeTicket({
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <CardTitle className="text-sm">Trade Ticket</CardTitle>
-            <CardDescription className="text-xs">Quote, buy, or close a Predict position.</CardDescription>
+            <CardDescription className="text-xs">Open or close a Predict position.</CardDescription>
           </div>
           <Badge variant="outline" className="shrink-0 border-border text-xs text-muted-foreground">
             {oracleId ? shortAddress(oracleId) : "next oracle"}
@@ -77,20 +76,17 @@ export function TradeTicket({
           </Button>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
-          {(["quote", "buy", "sell"] as const).map((ticketMode) => (
-            <button
+        <div className="grid grid-cols-2 gap-2">
+          {(["buy", "sell"] as const).map((ticketMode) => (
+            <Button
               key={ticketMode}
               type="button"
+              variant={mode === ticketMode ? "default" : "outline"}
               disabled={ticketMode === "sell" && !canRedeem}
-              className={cn(
-                "h-9 rounded-md border border-border bg-background/70 text-xs font-medium uppercase text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-45",
-                mode === ticketMode && "bg-accent text-foreground"
-              )}
               onClick={() => setMode(ticketMode)}
             >
-              {ticketMode}
-            </button>
+              {ticketMode === "buy" ? "BUY" : "CLOSE"}
+            </Button>
           ))}
         </div>
 
@@ -121,7 +117,7 @@ export function TradeTicket({
 
         <Button className="h-10 w-full" disabled={!canPrepare} onClick={() => onGenerate(buildIntent(mode, direction, amount, strike, oracleId))}>
           <Play />
-          {oracleId ? "Prepare review" : "Waiting for oracle"}
+          {oracleId ? "Prepare trade" : "Waiting for oracle"}
         </Button>
       </CardContent>
     </Card>
@@ -141,12 +137,11 @@ function buildIntent(
       : "Sell or redeem my BTC Predict position";
   }
 
-  const verb = mode === "quote" ? "Quote" : "Buy";
   const directionText = direction === "up" ? "UP" : "DOWN";
   const oracleText = oracleId ? ` using oracle ${oracleId}` : " on the next active DeepBook Predict oracle";
-  const strikeText = strike.trim() ? ` near ${strike.trim()}` : "";
+  const strikeText = strike.trim() ? ` at strike ${strike.trim()}` : "";
 
-  return `${verb} ${amount.trim() || "0.01"} DUSDC BTC ${directionText}${strikeText}${oracleText}`;
+  return `Buy ${amount.trim() || "0.01"} DUSDC BTC ${directionText}${strikeText}${oracleText}`;
 }
 
 function shortAddress(address: string) {

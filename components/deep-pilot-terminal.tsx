@@ -20,7 +20,7 @@ import {
   X
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +70,7 @@ const MARKET_PREVIEW_REFRESH_MS = 2_500;
 const MIN_SUI_GAS_BALANCE_MIST = 20_000_000n;
 const MIST_PER_SUI = 1_000_000_000n;
 const DUSDC_BASE_UNITS = 1_000_000n;
+const CONVERSATION_CONTEXT_TTL_MS = 5 * 60 * 1_000;
 
 type RunPilotOptions = {
   openTradeModal?: boolean;
@@ -123,6 +124,7 @@ type PilotMessage = {
   mode?: PilotMode;
   sources?: RagSource[];
   pending?: boolean;
+  createdAt?: number;
 };
 
 export default function DeepPilotTerminal() {
@@ -138,7 +140,9 @@ function TerminalExperience() {
   const urlOracleId = useMemo(() => oracleIdFromSearch(searchParams), [searchParams]);
   const urlStrike = useMemo(() => strikeFromSearch(searchParams), [searchParams]);
   const urlManagerId = useMemo(() => managerIdFromSearch(searchParams), [searchParams]);
-  const routeIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
+  const [activeRouteOracleId, setActiveRouteOracleId] = useState<string | null>(null);
+  const routeOracleIsActive = Boolean(urlOracleId && activeRouteOracleId === urlOracleId);
+  const routeIntent = DEFAULT_INTENT;
   const routeStateKey = `${urlOracleId ?? ""}:${urlStrike ?? ""}:${urlManagerId ?? ""}`;
   const [intent, setIntent] = useState(routeIntent);
   const [managerId, setManagerId] = useState<string | null>(urlManagerId);
@@ -162,9 +166,8 @@ function TerminalExperience() {
   const pilotAbortRef = useRef<AbortController | null>(null);
   const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null, options?: RunPilotOptions) => Promise<void>>(async () => {});
   runPilotRef.current = runPilot;
-
-  useEffect(() => {
-    setIntent(routeIntent);
+  const resetPilotRuntime = useCallback((nextIntent = DEFAULT_INTENT) => {
+    setIntent(nextIntent);
     setMessages([]);
     setPilotMode(null);
     setRagSources([]);
@@ -182,11 +185,47 @@ function TerminalExperience() {
     setConfirmedReviewFingerprint(null);
     pilotAbortRef.current?.abort();
     pilotAbortRef.current = null;
-  }, [routeIntent, routeStateKey]);
+  }, []);
+
+  useEffect(() => {
+    resetPilotRuntime(routeIntent);
+  }, [resetPilotRuntime, routeIntent, routeStateKey]);
+
+  useEffect(() => {
+    const stopPendingPilot = () => {
+      pilotAbortRef.current?.abort();
+      pilotAbortRef.current = null;
+      setBusy(null);
+      setMessages((current) => current.map((message) => message.pending ? { ...message, pending: false } : message));
+    };
+
+    const onPageHide = () => {
+      stopPendingPilot();
+      setTradeModalStatus("idle");
+    };
+
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        resetPilotRuntime(routeIntent);
+      }
+    };
+
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  }, [resetPilotRuntime, routeIntent]);
 
   useEffect(() => {
     setManagerId(urlManagerId);
   }, [urlManagerId]);
+
+  useEffect(() => {
+    setActiveRouteOracleId(null);
+  }, [urlOracleId]);
 
   useEffect(() => {
     setConfirmedReviewFingerprint(null);
@@ -208,7 +247,7 @@ function TerminalExperience() {
       inFlight = true;
 
       try {
-        const response = await fetch("/api/markets?status=active&expiry=next&pageSize=1", {
+        const response = await fetch(marketPreviewEndpoint(urlOracleId), {
           cache: "no-store"
         });
 
@@ -221,10 +260,12 @@ function TerminalExperience() {
         if (!cancelled) {
           hasPreview = true;
           setMarketPreview(payload);
+          setActiveRouteOracleId(urlOracleId && payload.selectedMarket?.oracleId === urlOracleId ? urlOracleId : null);
         }
       } catch {
         if (!cancelled && !hasPreview) {
           setMarketPreview(null);
+          setActiveRouteOracleId(null);
         }
       } finally {
         inFlight = false;
@@ -245,7 +286,7 @@ function TerminalExperience() {
       window.clearInterval(intervalId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [urlOracleId]);
 
   async function runPilot(nextIntent = intent, managerOverride = managerId, options: RunPilotOptions = {}) {
     const trimmedIntent = nextIntent.trim();
@@ -259,6 +300,7 @@ function TerminalExperience() {
     pilotAbortRef.current?.abort();
     const controller = new AbortController();
     const assistantId = createMessageId("assistant");
+    const startedAt = Date.now();
     pilotAbortRef.current = controller;
     setBusy("pilot");
     setError(null);
@@ -282,13 +324,15 @@ function TerminalExperience() {
         {
           id: createMessageId("user"),
           role: "user",
-          content: trimmedIntent
+          content: trimmedIntent,
+          createdAt: startedAt
         },
         {
           id: assistantId,
           role: "assistant",
           content: "",
-          pending: true
+          pending: true,
+          createdAt: startedAt
         }
       ];
 
@@ -757,9 +801,7 @@ function TerminalExperience() {
         intent: current.intent.raw || intent.trim(),
         walletAddress: account?.address,
         managerId: current.ptb?.execution.managerId ?? managerId ?? undefined,
-        refreshed: true,
-        conversation: buildConversationForPilot(messages),
-        lastMarketThesis: latestMarketThesis(messages)
+        refreshed: true
       })
     });
 
@@ -774,10 +816,12 @@ function TerminalExperience() {
   const blocked = guardian?.blocked ?? true;
   const marketStrike = compiled?.market?.metrics.selectedStrike;
   const intentStrike = compiled?.intent.status === "ready" ? compiled.intent.strike : undefined;
+  const effectiveUrlOracleId = routeOracleIsActive ? urlOracleId : null;
+  const effectiveUrlStrike = routeOracleIsActive ? urlStrike : null;
   const selectedOracleId =
     compiled?.market?.oracle.oracle_id ??
     (compiled?.intent.status === "ready" ? compiled.intent.oracleId : undefined) ??
-    urlOracleId ??
+    effectiveUrlOracleId ??
     marketPreview?.selectedMarket?.oracleId ??
     undefined;
   const selectedStrike =
@@ -785,8 +829,8 @@ function TerminalExperience() {
       ? marketStrike
       : typeof intentStrike === "number"
         ? intentStrike
-        : urlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
-  const hasLockedStrike = Boolean(compiled?.market || intentStrike || urlStrike);
+        : effectiveUrlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
+  const hasLockedStrike = Boolean(compiled?.market || intentStrike || effectiveUrlStrike);
   const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
   const showPilotActions = Boolean(pilotMode || compiled || busy === "pilot" || receipt || error || ragSources.length > 0);
 
@@ -867,8 +911,8 @@ function TerminalExperience() {
             ) : null}
             <TradeTicket
               market={compiled?.market ?? null}
-              initialOracleId={urlOracleId ?? marketPreview?.selectedMarket?.oracleId}
-              initialStrike={urlStrike ?? marketPreview?.selectedMarket?.selectedStrike}
+              initialOracleId={effectiveUrlOracleId ?? marketPreview?.selectedMarket?.oracleId}
+              initialStrike={effectiveUrlStrike ?? marketPreview?.selectedMarket?.selectedStrike}
               onGenerate={(nextIntent) => {
                 setIntent(nextIntent);
                 void runPilot(nextIntent, managerId, { openTradeModal: true });
@@ -878,6 +922,7 @@ function TerminalExperience() {
         </div>
     </AppShell>
   );
+
 }
 
 function PilotConsole({
@@ -2078,7 +2123,7 @@ function tradeStatusLabel(status: TradeModalStatus) {
     case "compiling":
       return "Compiling review";
     case "quote_ready":
-      return "Quote ready";
+      return "Review ready";
     case "funding_required":
       return "Funding required";
     case "review_changed":
@@ -2103,7 +2148,7 @@ function tradeStatusDescription(status: TradeModalStatus) {
     case "compiling":
       return "DeepPilot is parsing the request, resolving the active oracle, quoting payout, and running Guardian.";
     case "quote_ready":
-      return "Review the quote, safety checks, and next action before continuing.";
+      return "Review the outcome, safety checks, and next action before continuing.";
     case "funding_required":
       return "Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this position.";
     case "review_changed":
@@ -2163,9 +2208,9 @@ function tradeAssistantCopy(compiled: CompileApiResult) {
 
   if (compiled.intent.action === "predict_quote_only") {
     return [
-      "Predict quote preview is ready.",
+      "Predict market preview is ready.",
       `Guardian: ${compiled.guardian.decision.toUpperCase()}`,
-      "No wallet signature is required for quote-only mode."
+      "No wallet signature is required for this read-only preview."
     ].join("\n");
   }
 
@@ -2201,8 +2246,16 @@ function createMessageId(prefix: string) {
 }
 
 function buildConversationForPilot(messages: PilotMessage[]): PilotMessageSummary[] {
+  const freshAfter = Date.now() - CONVERSATION_CONTEXT_TTL_MS;
+
   return messages
-    .filter((message) => message.content.trim().length > 0)
+    .filter((message) => {
+      if (message.mode !== "chat" || message.pending || !message.content.trim()) {
+        return false;
+      }
+
+      return typeof message.createdAt === "number" && message.createdAt >= freshAfter;
+    })
     .slice(-6)
     .map((message) => ({
       role: message.role,
@@ -2213,7 +2266,15 @@ function buildConversationForPilot(messages: PilotMessage[]): PilotMessageSummar
 }
 
 function latestMarketThesis(messages: PilotMessage[]) {
-  const latest = [...messages].reverse().find((message) => message.role === "assistant" && message.mode === "chat" && message.content.trim());
+  const freshAfter = Date.now() - CONVERSATION_CONTEXT_TTL_MS;
+  const latest = [...messages].reverse().find((message) =>
+    message.role === "assistant" &&
+    message.mode === "chat" &&
+    !message.pending &&
+    message.content.trim() &&
+    typeof message.createdAt === "number" &&
+    message.createdAt >= freshAfter
+  );
 
   return latest ? sanitizePilotContext(latest.content).slice(0, 1200) : undefined;
 }
@@ -2272,16 +2333,18 @@ function parseRawAmount(value: string | null | undefined) {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
-function defaultIntentFromSearch(searchParams: { get(name: string): string | null }) {
-  const oracleId = oracleIdFromSearch(searchParams);
-  const strike = strikeFromSearch(searchParams);
+function marketPreviewEndpoint(urlOracleId: string | null) {
+  const params = new URLSearchParams({
+    status: "active",
+    expiry: urlOracleId ? "all" : "next",
+    pageSize: "1"
+  });
 
-  if (!oracleId) {
-    return DEFAULT_INTENT;
+  if (urlOracleId) {
+    params.set("selectedOracleId", urlOracleId);
   }
 
-  const strikeText = typeof strike === "number" ? ` near ${strike}` : "";
-  return `Quote 0.01 DUSDC BTC UP${strikeText} using oracle ${oracleId}`;
+  return `/api/markets?${params.toString()}`;
 }
 
 function oracleIdFromSearch(searchParams: { get(name: string): string | null }) {

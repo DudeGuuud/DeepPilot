@@ -76,6 +76,10 @@ export async function parseIntent(input: string, options: IntentCompilerOptions 
     );
   }
 
+  if (isCanonicalPredictIntent(raw)) {
+    return parseIntentFallback(raw);
+  }
+
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
 
   if (!apiKey) {
@@ -480,6 +484,13 @@ function looksUnsafe(value: string) {
   );
 }
 
+function isCanonicalPredictIntent(value: string) {
+  return (
+    /^(quote|buy)\s+\d+(?:\.\d+)?\s+d?usdc\s+btc\s+(up|down)\b/i.test(value) &&
+    /\busing oracle\s+0x[a-fA-F0-9]{16,64}\b/i.test(value)
+  ) || /^sell or redeem my btc predict position using oracle\s+0x[a-fA-F0-9]{16,64}\b/i.test(value);
+}
+
 function fallbackAction(text: string): PredictIntentAction {
   const asksForSettlementTiming =
     /\b(nearest settlement|fastest settlement|earliest settlement|nearest expiry|fastest expiry|soonest expiry)\b/i.test(text) ||
@@ -726,6 +737,8 @@ Rules:
 - Output valid JSON. The word json matters: return only the JSON object.
 - If user says 10u, 10 USDC, 10 DUSDC, or $10, set amount to "10", amountType to "quote".
 - Do not convert DUSDC budget into quantity. Only set quantity when user explicitly says quantity, qty, contracts, base, 数量, or 张数.
+- A single strike phrase such as "near 62500", "at strike 62500", or "行权价 62500" is a binary strike. Use predict_range_mint only when the user explicitly asks for range/between/lower+upper strikes.
+- If oracleId is supplied, treat it as the concrete Predict oracle. Do not ask for expiryPreference just because expiry text is absent.
 - If user gives a time like tonight 18:00, 6pm, or 今天六点, set expiryPreference to specific_time and compute requestedExpiryIso/requestedExpiryMs using the provided nowIso/defaultTimezone.
 - If user says next active expiry, nearest expiry, nearest time, fastest settlement, earliest settlement, 最近结算, 最快结算, 最近到期, or 最快到期, set expiryPreference to next_active.
 - Only active DeepBook Predict oracles are valid for a mint. If activeMarketContext is provided, prefer the market marked isEarliestActive when expiryPreference is next_active.

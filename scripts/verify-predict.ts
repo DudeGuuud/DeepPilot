@@ -84,7 +84,7 @@ assert(
 const transfer = await compileIntent(
   "Transfer 1 DUSDC to 0x0000000000000000000000000000000000000000000000000000000000000b0b"
 );
-const quoteOnly = await compileIntent(`Quote 10 DUSDC BTC UP near 62500 using oracle ${market.oracle.oracle_id}`);
+const quoteOnly = await compileIntent(`Quote 10 DUSDC BTC UP at strike 62500 using oracle ${market.oracle.oracle_id}`);
 const sellPreview = await compileIntent(`Sell or redeem my BTC Predict position using oracle ${market.oracle.oracle_id}`);
 const incompleteRedeem = await compileIntent("Redeem my BTC Predict position");
 const markets = await getPredictMarkets({ status: "active", asset: "BTC", selectedOracleId: market.oracle.oracle_id });
