@@ -38,6 +38,7 @@ import {
   getExecutedDigest
 } from "@/src/lib/predict-execution";
 import { storePreviewReceipt } from "@/src/lib/receipts";
+import { readSuiBalanceRaw } from "@/src/lib/sui-balances";
 import { cn } from "@/src/lib/utils";
 import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
 import type {
@@ -137,8 +138,9 @@ function TerminalExperience() {
   const urlOracleId = useMemo(() => oracleIdFromSearch(searchParams), [searchParams]);
   const urlStrike = useMemo(() => strikeFromSearch(searchParams), [searchParams]);
   const urlManagerId = useMemo(() => managerIdFromSearch(searchParams), [searchParams]);
-  const defaultIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
-  const [intent, setIntent] = useState(defaultIntent);
+  const routeIntent = useMemo(() => defaultIntentFromSearch(searchParams), [searchParams]);
+  const routeStateKey = `${urlOracleId ?? ""}:${urlStrike ?? ""}:${urlManagerId ?? ""}`;
+  const [intent, setIntent] = useState(routeIntent);
   const [managerId, setManagerId] = useState<string | null>(urlManagerId);
   const [messages, setMessages] = useState<PilotMessage[]>([]);
   const [pilotMode, setPilotMode] = useState<PilotMode | null>(null);
@@ -162,11 +164,25 @@ function TerminalExperience() {
   runPilotRef.current = runPilot;
 
   useEffect(() => {
-    setIntent(defaultIntent);
-    if (urlOracleId) {
-      void runPilotRef.current(defaultIntent, urlManagerId, { clearComposer: false });
-    }
-  }, [defaultIntent, urlOracleId, urlManagerId]);
+    setIntent(routeIntent);
+    setMessages([]);
+    setPilotMode(null);
+    setRagSources([]);
+    setSourcesExpanded(false);
+    setCompiled(null);
+    setStreamTimeline([]);
+    setReceipt(null);
+    setBusy(null);
+    setError(null);
+    setExpandedFinding(null);
+    setTradeModalOpen(false);
+    setTradeModalStatus("idle");
+    setTradeDetailsExpanded(false);
+    setPreflightSnapshot(null);
+    setConfirmedReviewFingerprint(null);
+    pilotAbortRef.current?.abort();
+    pilotAbortRef.current = null;
+  }, [routeIntent, routeStateKey]);
 
   useEffect(() => {
     setManagerId(urlManagerId);
@@ -563,6 +579,7 @@ function TerminalExperience() {
     saveExecutionReceipt(executionReceipt, intent, current);
 
     toast({
+      variant: "success",
       title: "PredictManager created",
       description: `${shortAddress(createdManagerId)} · review refreshed`
     });
@@ -574,7 +591,8 @@ function TerminalExperience() {
     const compiledFingerprint = executableFingerprint(current);
     const canSignConfirmedReview =
       current.reviewFreshness?.refreshed &&
-      confirmedReviewFingerprint === compiledFingerprint;
+      confirmedReviewFingerprint === compiledFingerprint &&
+      isReviewSignableNow(current);
 
     if (!canSignConfirmedReview) {
       const refreshed = await refreshReviewBeforeSigning(current);
@@ -592,15 +610,16 @@ function TerminalExperience() {
       }
 
       const refreshedFingerprint = executableFingerprint(refreshed);
+      setCompiled(refreshed);
 
       if (current.ptb?.execution.managerId && compiledFingerprint !== refreshedFingerprint) {
-        setCompiled(refreshed);
         setConfirmedReviewFingerprint(refreshedFingerprint);
         setTradeDetailsExpanded(false);
         setTradeModalStatus("review_changed");
         throw new Error("Review changed. Check the updated quote, then click Review & Sign again.");
       }
 
+      setConfirmedReviewFingerprint(refreshedFingerprint);
       executableReview = refreshed;
     } else if (!isReviewActive(executableReview)) {
       setConfirmedReviewFingerprint(null);
@@ -670,6 +689,7 @@ function TerminalExperience() {
     saveExecutionReceipt(executionReceipt, current.intent.raw, current);
 
     toast({
+      variant: "success",
       title: "Predict trade executed",
       description: digest
     });
@@ -688,8 +708,7 @@ function TerminalExperience() {
 
     try {
       const client = dAppKit.getClient(executionNetwork);
-      const suiBalance = await client.getBalance({ owner });
-      const suiBalanceRaw = extractBalanceRaw(suiBalance);
+      const suiBalanceRaw = await readSuiBalanceRaw(client, owner);
 
       setPreflightSnapshot({
         suiBalanceRaw: suiBalanceRaw.toString(),
@@ -701,7 +720,7 @@ function TerminalExperience() {
 
       if (suiBalanceRaw < MIN_SUI_GAS_BALANCE_MIST) {
         setTradeModalStatus("preflight_failed");
-        throw new Error(`Need testnet SUI for gas. Wallet has ${formatRawSui(suiBalanceRaw)} SUI; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available before signing.`);
+        throw new Error(`Need testnet SUI for gas. Wallet ${shortAddress(owner)} has ${formatRawSui(suiBalanceRaw)} SUI on ${executionNetwork}; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available before signing.`);
       }
     } catch (preflightError) {
       setTradeModalStatus("preflight_failed");
@@ -1037,7 +1056,7 @@ function PilotActionsCard({
       <CardContent className="space-y-3 p-4 pt-0">
         {hasTrade ? (
           <>
-            <StatusPill status={tradeStatus} receipt={receipt} error={error} />
+            <StatusPill status={tradeStatus} compiled={compiled} receipt={receipt} error={error} />
             <ReviewSummaryBlock compiled={compiled} busy={busy} />
           </>
         ) : pilotMode === "chat" ? (
@@ -1129,7 +1148,7 @@ function TradeReviewModal({
         <div className="max-h-[calc(92vh-82px)] overflow-y-auto p-4">
           <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
             <div className="space-y-3">
-              <StatusPill status={status} receipt={receipt} error={error} />
+              <StatusPill status={status} compiled={compiled} receipt={receipt} error={error} />
               <ReviewSummaryBlock compiled={compiled} busy={status === "compiling"} />
               <TradeModalSteps status={status} compiled={compiled} streamTimeline={streamTimeline} preflight={preflight} busy={busy} />
             </div>
@@ -1217,15 +1236,22 @@ function TradeReviewModal({
 
 function StatusPill({
   status,
+  compiled,
   receipt,
   error
 }: {
   status: TradeModalStatus;
+  compiled?: CompileApiResult | null;
   receipt: ExecutionReceipt | null;
   error: string | null;
 }) {
+  const guardianBlocked = isGuardianBlockedReview(status, compiled ?? null);
   const blocked = status === "failed" || status === "preflight_failed" || status === "funding_required";
   const complete = status === "executed";
+  const label = guardianBlocked ? "Review blocked" : tradeStatusLabel(status);
+  const description = guardianBlocked
+    ? compiled?.guardian.summary ?? "Guardian blocked this review before wallet signing."
+    : tradeStatusDescription(status);
 
   return (
     <div className={cn(
@@ -1234,11 +1260,11 @@ function StatusPill({
     )}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">{tradeStatusLabel(status)}</p>
+          <p className="text-sm font-medium text-foreground">{label}</p>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             {complete && receipt
               ? `${receipt.action === "manager_create" ? "Manager created" : "Transaction executed"} · ${shortAddress(receipt.digest)}`
-              : error ?? tradeStatusDescription(status)}
+              : error ?? description}
           </p>
         </div>
         {complete ? <Check className="h-4 w-4 text-foreground" /> : blocked ? <AlertTriangle className="h-4 w-4 text-destructive" /> : <CircleDashed className="h-4 w-4 text-muted-foreground" />}
@@ -2003,6 +2029,10 @@ function tradeModalTitle(status: TradeModalStatus, compiled?: CompileApiResult |
     return "Predict quote preview";
   }
 
+  if (isGuardianBlockedReview(status, compiled ?? null)) {
+    return "Review blocked";
+  }
+
   switch (status) {
     case "compiling":
       return "Preparing Predict review";
@@ -2030,6 +2060,10 @@ function tradeModalTitle(status: TradeModalStatus, compiled?: CompileApiResult |
 function tradeModalSubtitle(status: TradeModalStatus, compiled: CompileApiResult | null) {
   if (compiled?.intent.status === "ready" && compiled.intent.action === "predict_quote_only") {
     return "Quote-only preview · no wallet action required";
+  }
+
+  if (isGuardianBlockedReview(status, compiled)) {
+    return compiled?.guardian.summary ?? "Guardian blocked this review before wallet signing.";
   }
 
   if (compiled?.quote?.status === "available") {
@@ -2101,6 +2135,10 @@ function tradeStatusForCompiled(result: CompileApiResult): TradeModalStatus {
   }
 
   return "quote_ready";
+}
+
+function isGuardianBlockedReview(status: TradeModalStatus, compiled: CompileApiResult | null) {
+  return status === "failed" && Boolean(compiled?.guardian.blocked);
 }
 
 function tradeAssistantCopy(compiled: CompileApiResult) {
@@ -2201,6 +2239,18 @@ function isReviewActive(compiled: CompileApiResult) {
   return market.oracle.status === "active" && market.oracle.expiry > market.status.current_time_ms;
 }
 
+function isReviewSignableNow(compiled: CompileApiResult) {
+  if (!isReviewActive(compiled)) {
+    return false;
+  }
+
+  if (compiled.intent.status === "ready" && compiled.intent.action === "predict_binary_mint") {
+    return Boolean(compiled.quote?.status === "available" && new Date(compiled.quote.expiresAt).getTime() > Date.now());
+  }
+
+  return true;
+}
+
 function executableFingerprint(compiled: CompileApiResult) {
   const transaction = compiled.ptb?.transactionData;
 
@@ -2218,38 +2268,8 @@ function executableFingerprint(compiled: CompileApiResult) {
   });
 }
 
-function extractBalanceRaw(value: unknown) {
-  const balance = isRecord(value) ? value.balance : null;
-
-  if (isRecord(balance)) {
-    const raw = stringRecordValue(balance, "coinBalance") ?? stringRecordValue(balance, "balance") ?? stringRecordValue(balance, "addressBalance");
-
-    if (raw) {
-      return BigInt(raw);
-    }
-  }
-
-  if (isRecord(value)) {
-    const raw = stringRecordValue(value, "totalBalance") ?? stringRecordValue(value, "coinBalance") ?? stringRecordValue(value, "balance");
-
-    if (raw) {
-      return BigInt(raw);
-    }
-  }
-
-  return 0n;
-}
-
 function parseRawAmount(value: string | null | undefined) {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
-}
-
-function stringRecordValue(value: Record<string, unknown>, key: string) {
-  return typeof value[key] === "string" && /^\d+$/.test(value[key]) ? value[key] : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
 }
 
 function defaultIntentFromSearch(searchParams: { get(name: string): string | null }) {
@@ -2261,7 +2281,7 @@ function defaultIntentFromSearch(searchParams: { get(name: string): string | nul
   }
 
   const strikeText = typeof strike === "number" ? ` near ${strike}` : "";
-  return `Quote 10 DUSDC BTC UP${strikeText} using oracle ${oracleId}`;
+  return `Quote 0.01 DUSDC BTC UP${strikeText} using oracle ${oracleId}`;
 }
 
 function oracleIdFromSearch(searchParams: { get(name: string): string | null }) {

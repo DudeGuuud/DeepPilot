@@ -138,61 +138,65 @@ export async function compileIntent(input: string, options: CompileOptions = {})
     detail: guardian.decision
   });
   const quoteOnly = intent.status === "ready" && intent.action === "predict_quote_only";
+  const shouldQuote = needsQuote(intent) && !guardian.blocked;
   let quote: PredictQuotePreview | null = null;
   let quoteError: Error | null = null;
 
   options.onEvent?.({
     type: "stage",
     label: "Quoting Predict payout",
-    state: "pending"
+    state: shouldQuote ? "pending" : quoteOnly || !needsQuote(intent) ? "complete" : "blocked",
+    detail: shouldQuote ? undefined : quoteOnly ? "No mint quote required" : guardian.summary
   });
-  try {
-    quote = await getPredictQuotePreview(intent, market);
+  if (shouldQuote) {
+    try {
+      quote = await getPredictQuotePreview(intent, market);
 
-    if (quote?.status === "unavailable") {
-      quoteError = new Error(quote.warning ?? "Predict quote unavailable.");
-      guardian = quoteUnavailableGuardian(guardian, quote);
+      if (quote?.status === "unavailable") {
+        quoteError = new Error(quote.warning ?? "Predict quote unavailable.");
+        guardian = quoteUnavailableGuardian(guardian, quote);
+      }
+
+      options.onEvent?.({
+        type: "stage",
+        label: "Quoting Predict payout",
+        state: quoteError ? "blocked" : "complete",
+        detail: quote?.status === "available"
+          ? `${quote.estimatedCostDusdc?.toFixed(4)} DUSDC est. pay`
+          : quote?.status ?? "No quote required"
+      });
+    } catch (error) {
+      quoteError = error instanceof Error ? error : new Error("Predict quote request failed.");
+      guardian = quoteUnavailableGuardian(guardian, {
+        status: "unavailable",
+        source: "not_available",
+        oracleId: market?.oracle.oracle_id ?? null,
+        expiry: market?.oracle.expiry ?? null,
+        direction: intent.status === "ready" ? intent.direction ?? null : null,
+        strike: market?.metrics.selectedStrike ?? null,
+        quoteBudgetDusdc: intent.status === "ready" && intent.amountType === "quote" ? Number(intent.amount) : null,
+        quoteBudgetRaw: intent.status === "ready" && intent.amountType === "quote" ? toDusdcBaseUnits(Number(intent.amount)).toString() : null,
+        quantityRaw: null,
+        quantityDusdc: null,
+        estimatedCostDusdc: null,
+        estimatedCostRaw: null,
+        askPrice: null,
+        bidPrice: null,
+        maxPayoutDusdc: null,
+        maxPayoutRaw: null,
+        potentialProfitDusdc: null,
+        returnPct: null,
+        fetchedAt: new Date().toISOString(),
+        expiresAt: new Date().toISOString(),
+        warning: quoteError.message
+      });
+      options.onEvent?.({
+        type: "stage",
+        label: "Quoting Predict payout",
+        state: "blocked",
+        detail: quoteError.message
+      });
     }
-
-    options.onEvent?.({
-      type: "stage",
-      label: "Quoting Predict payout",
-      state: quoteError ? "blocked" : "complete",
-      detail: quote?.status === "available"
-        ? `${quote.estimatedCostDusdc?.toFixed(4)} DUSDC est. pay`
-        : quote?.status ?? "No quote required"
-    });
-  } catch (error) {
-    quoteError = error instanceof Error ? error : new Error("Predict quote request failed.");
-    guardian = quoteUnavailableGuardian(guardian, {
-      status: "unavailable",
-      source: "not_available",
-      oracleId: market?.oracle.oracle_id ?? null,
-      expiry: market?.oracle.expiry ?? null,
-      direction: intent.status === "ready" ? intent.direction ?? null : null,
-      strike: market?.metrics.selectedStrike ?? null,
-      quoteBudgetDusdc: intent.status === "ready" && intent.amountType === "quote" ? Number(intent.amount) : null,
-      quoteBudgetRaw: intent.status === "ready" && intent.amountType === "quote" ? toDusdcBaseUnits(Number(intent.amount)).toString() : null,
-      quantityRaw: null,
-      quantityDusdc: null,
-      estimatedCostDusdc: null,
-      estimatedCostRaw: null,
-      askPrice: null,
-      bidPrice: null,
-      maxPayoutDusdc: null,
-      maxPayoutRaw: null,
-      potentialProfitDusdc: null,
-      returnPct: null,
-      fetchedAt: new Date().toISOString(),
-      expiresAt: new Date().toISOString(),
-      warning: quoteError.message
-    });
-    options.onEvent?.({
-      type: "stage",
-      label: "Quoting Predict payout",
-      state: "blocked",
-      detail: quoteError.message
-    });
   }
 
   let gasPreview = decideGasMode(intent, guardian, market, quote);

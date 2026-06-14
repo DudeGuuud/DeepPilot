@@ -24,7 +24,7 @@ export function TradeTicket({
 }) {
   const [direction, setDirection] = useState<PredictDirection>("up");
   const [mode, setMode] = useState<TicketMode>("quote");
-  const [amount, setAmount] = useState("10");
+  const [amount, setAmount] = useState("0.01");
   const [strike, setStrike] = useState(initialStrike ? String(initialStrike) : "");
   const [strikeEdited, setStrikeEdited] = useState(false);
 
@@ -146,7 +146,7 @@ function buildIntent(
   const oracleText = oracleId ? ` using oracle ${oracleId}` : " on the next active DeepBook Predict oracle";
   const strikeText = strike.trim() ? ` near ${strike.trim()}` : "";
 
-  return `${verb} ${amount.trim() || "10"} DUSDC BTC ${directionText}${strikeText}${oracleText}`;
+  return `${verb} ${amount.trim() || "0.01"} DUSDC BTC ${directionText}${strikeText}${oracleText}`;
 }
 
 function shortAddress(address: string) {

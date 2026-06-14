@@ -89,6 +89,7 @@ export function PredictManagerOnboardingModal({
 
       await onCreated({ managerId, digest, network });
       toast({
+        variant: "success",
         title: "PredictManager created",
         description: `${shortAddress(managerId)} indexed soon by Predict server`
       });

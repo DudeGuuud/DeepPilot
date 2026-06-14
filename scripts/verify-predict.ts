@@ -146,6 +146,8 @@ const settledPositions = normalizeProfilePositions([
     strike: toPredictPrice(fixtureStrike),
     is_up: true,
     open_quantity: 1000000,
+    open_cost_basis: 600000,
+    redeemable_value: 1000000,
     mark_value: 1000000,
     status: "settled"
   }
@@ -220,6 +222,8 @@ assert(noCostBasisPositions[0].quoteStatus === "live", "live quote should still 
 assert(noCostBasisPositions[0].livePnlDusdc === null, "missing cost basis should keep live PnL unavailable");
 assert(settledPositions[0].canRedeem, "settled open position should be marked redeemable");
 assert(settledPositions[0].quoteStatus === "settled", "settled redeemable position should use settled quote status");
+assert(settledPositions[0].currentValueDusdc === 1, "settled redeemable position should expose redeemable exit value");
+assert(settledPositions[0].unrealizedPnlDusdc === 0.4, "settled redeemable PnL should use redeemable value minus cost basis when available");
 assert(fixturePnl?.source === "predict_server", "profile PnL should be labeled as server indexed");
 assert(fixturePnl.unrealizedPnlDusdc === -0.12, "profile PnL should scale unrealized PnL");
 assert(fixturePnl.realizedPnlDusdc === 4.414672, "profile PnL should use manager summary realized PnL when endpoint omits it");

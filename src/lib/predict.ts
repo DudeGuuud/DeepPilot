@@ -788,7 +788,9 @@ function filterOracles(
 ) {
   let filtered = oracles;
 
-  if (status !== "all") {
+  if (status === "active") {
+    filtered = filtered.filter((oracle) => oracle.status === "active" && oracle.expiry > nowMs);
+  } else if (status !== "all") {
     filtered = filtered.filter((oracle) => oracle.status === status);
   }
 

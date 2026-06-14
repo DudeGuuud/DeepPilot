@@ -18,6 +18,7 @@ import {
   getExecutedDigest
 } from "@/src/lib/predict-execution";
 import { readPreviewReceipts, storePreviewReceipt } from "@/src/lib/receipts";
+import { readCoinBalanceRaw, readSuiBalanceRaw } from "@/src/lib/sui-balances";
 import type { ProfileActivityItem, ProfilePosition, ProfileSummary } from "@/src/lib/types";
 import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
 
@@ -125,7 +126,7 @@ export function ProfilePage() {
       })
       .then((balance) => {
         if (!cancelled) {
-          setWalletDusdcRaw(readBalanceRaw(balance).toString());
+          setWalletDusdcRaw(readCoinBalanceRaw(balance).toString());
         }
       })
       .catch(() => {
@@ -215,10 +216,10 @@ export function ProfilePage() {
       }
 
       const client = dAppKit.getClient(targetNetwork);
-      const suiBalance = readBalanceRaw(await client.getBalance({ owner: account.address }));
+      const suiBalance = await readSuiBalanceRaw(client, account.address);
 
       if (suiBalance < MIN_SUI_GAS_BALANCE_MIST) {
-        throw new Error(`Need testnet SUI for gas. Wallet has ${formatRawSui(suiBalance)} SUI; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available.`);
+        throw new Error(`Need testnet SUI for gas. Wallet ${shortAddress(account.address)} has ${formatRawSui(suiBalance)} SUI on ${targetNetwork}; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available.`);
       }
 
       const transaction = fundingMode === "deposit"
@@ -258,6 +259,7 @@ export function ProfilePage() {
       setReceipts(readPreviewReceipts(account.address));
       setReloadNonce((current) => current + 1);
       toast({
+        variant: "success",
         title: fundingMode === "deposit" ? "Trading Balance funded" : "Trading Balance withdrawn",
         description: digest
       });
@@ -279,7 +281,7 @@ export function ProfilePage() {
       throw new Error("Profile is not loaded.");
     }
 
-    const walletBalance = readBalanceRaw(await dAppKit.getClient(profile.network === "devnet" ? "devnet" : "testnet").getBalance({
+    const walletBalance = readCoinBalanceRaw(await dAppKit.getClient(profile.network === "devnet" ? "devnet" : "testnet").getBalance({
       owner: account.address,
       coinType: profile.quoteAssetType
     }));
@@ -833,17 +835,6 @@ function dusdcToRaw(value: string) {
 
 function parseRawAmount(value?: string | null) {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
-}
-
-function readBalanceRaw(value: unknown) {
-  if (!value || typeof value !== "object") {
-    return 0n;
-  }
-
-  const record = value as Record<string, unknown>;
-  const raw = record.totalBalance ?? record.coinBalance ?? record.balance;
-
-  return typeof raw === "string" && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
 }
 
 function formatSignedDusdc(value: number | null) {

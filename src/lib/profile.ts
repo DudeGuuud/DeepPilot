@@ -199,10 +199,27 @@ export function normalizeProfilePositions(value: unknown): ProfilePosition[] {
     const openQuantityRaw = readRawIntegerFromKeys(position, ["open_quantity", "openQuantity", "quantity"]);
     const status = readStringFromKeys(position, ["status"]) ?? "unknown";
     const kind = inferPositionKind(position, direction, strike, lowerStrike, upperStrike);
-    const currentValueDusdc = normalizeDusdcFromKeys(position, ["mark_value", "markValue", "current_value", "currentValue", "server_value", "serverValue"]);
-    const unrealizedPnlDusdc = normalizeDusdcFromKeys(position, ["unrealized_pnl", "unrealizedPnl", "floating_pnl", "floatingPnl"]);
+    const indexedCurrentValueDusdc = normalizeDusdcFromKeys(position, ["mark_value", "markValue", "current_value", "currentValue", "server_value", "serverValue"]);
+    const redeemableValueDusdc = normalizeDusdcFromKeys(position, [
+      "redeemable_value",
+      "redeemableValue",
+      "redeem_value",
+      "redeemValue",
+      "redeem_payout",
+      "redeemPayout",
+      "settlement_value",
+      "settlementValue",
+      "settled_value",
+      "settledValue"
+    ]);
+    const indexedUnrealizedPnlDusdc = normalizeDusdcFromKeys(position, ["unrealized_pnl", "unrealizedPnl", "floating_pnl", "floatingPnl"]);
     const action = keeperAction(status, openQuantity ?? 0);
     const canRedeem = action === "redeemable";
+    const costBasisDusdc = normalizeDusdcFromKeys(position, ["open_cost_basis", "openCostBasis", "cost_basis", "costBasis"]);
+    const currentValueDusdc = canRedeem ? redeemableValueDusdc ?? indexedCurrentValueDusdc : indexedCurrentValueDusdc;
+    const unrealizedPnlDusdc = canRedeem && redeemableValueDusdc !== null && costBasisDusdc !== null
+      ? redeemableValueDusdc - costBasisDusdc
+      : indexedUnrealizedPnlDusdc;
     const quoteStatus = defaultQuoteStatus(canRedeem, currentValueDusdc, unrealizedPnlDusdc);
 
     return {
@@ -218,7 +235,7 @@ export function normalizeProfilePositions(value: unknown): ProfilePosition[] {
       upperStrike,
       openQuantityRaw,
       openQuantityDusdc: openQuantity === null ? null : normalizeDusdc(openQuantity),
-      costBasisDusdc: normalizeDusdcFromKeys(position, ["open_cost_basis", "openCostBasis", "cost_basis", "costBasis"]),
+      costBasisDusdc,
       currentValueDusdc,
       unrealizedPnlDusdc,
       realizedPnlDusdc: normalizeDusdcFromKeys(position, ["realized_pnl", "realizedPnl"]),

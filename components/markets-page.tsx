@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { Route } from "next";
-import { AlertTriangle, ChevronLeft, ChevronRight, RefreshCw, Search, Shield } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 
@@ -10,26 +10,24 @@ import { AppShell } from "@/components/app-shell";
 import {
   useMarketDiscovery,
   type MarketExpiryFilter,
-  type MarketRiskFilter,
-  type MarketStatusFilter
+  type MarketRiskFilter
 } from "@/components/market-data-provider";
 import { PredictMarketChart } from "@/components/predict-market-chart";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/src/lib/utils";
 import type { MarketListItem } from "@/src/lib/types";
 
 const MARKET_PAGE_SIZE = 4;
 
 export function MarketsPage() {
-  const [status, setStatus] = useState<MarketStatusFilter>("active");
   const [expiry, setExpiry] = useState<MarketExpiryFilter>("all");
   const [risk, setRisk] = useState<MarketRiskFilter>("all");
   const [page, setPage] = useState(1);
   const [selectedOracleId, setSelectedOracleId] = useState<string | null>(null);
   const { detail, error, loading, refresh, stale, ttlMs, updatedAt } = useMarketDiscovery({
-    status,
+    status: "active",
     asset: "BTC",
     expiry,
     risk,
@@ -50,7 +48,7 @@ export function MarketsPage() {
   return (
     <AppShell
       title="Predict market discovery"
-      description="Browse live DeepBook Predict BTC oracles, then move into intent execution with a selected oracle and strike."
+      description="Browse active DeepBook Predict BTC oracles, preview price history, then open the selected market in the trade cockpit."
       meta={
         <>
           <Button size="sm" variant="outline" onClick={refresh} disabled={loading}>
@@ -69,22 +67,10 @@ export function MarketsPage() {
         </>
       }
     >
-      <div className="markets-grid grid gap-4 lg:grid-cols-[minmax(0,1fr)_390px]">
+      <div className="markets-grid grid gap-4 lg:grid-cols-[minmax(0,0.98fr)_minmax(420px,0.72fr)]">
         <section className="markets-list-column min-w-0 space-y-3">
           <Card>
-            <CardContent className="grid gap-3 pt-5 md:grid-cols-4">
-              <FilterSelect
-                label="Status"
-                value={status}
-                onChange={(value) => {
-                  setStatus(value as MarketStatusFilter);
-                  resetPaging();
-                }}
-              >
-                <option value="active">active</option>
-                <option value="settled">settled</option>
-                <option value="all">all</option>
-              </FilterSelect>
+            <CardContent className="grid gap-3 pt-5 md:grid-cols-3">
               <FilterSelect label="Asset" value="BTC" disabled>
                 <option value="BTC">BTC</option>
               </FilterSelect>
@@ -169,7 +155,7 @@ export function MarketsPage() {
         </section>
 
         <aside className="markets-detail-column space-y-3">
-          <SelectedMarketPanel market={selected} loading={loading} />
+          <MarketChartPanel market={selected} loading={loading} />
         </aside>
       </div>
     </AppShell>
@@ -218,34 +204,46 @@ function MarketCard({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const tradeHref = tradeHrefForMarket(market);
+
   return (
-    <button
-      type="button"
+    <article
       className={cn(
-        "rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-accent/45",
+        "rounded-lg border border-border bg-card p-4 transition-colors hover:bg-accent/45",
         selected && "border-foreground/45 bg-accent/50"
       )}
-      onClick={onSelect}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-foreground">BTC expiry market</p>
-          <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{shortAddress(market.oracleId)}</p>
+      <button type="button" className="block w-full text-left" onClick={onSelect}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-foreground">BTC expiry market</p>
+            <p className="mt-1 truncate font-mono text-xs text-muted-foreground">{shortAddress(market.oracleId)}</p>
+          </div>
+          <RiskBadge level={market.riskLevel} />
         </div>
-        <RiskBadge level={market.riskLevel} />
-      </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2">
-        <Metric label="Status" value={market.status} />
-        <Metric label="Expiry" value={formatTime(market.expiry)} />
-        <Metric label="Spot" value={formatUsd(market.spot)} />
-        <Metric label="Forward" value={formatUsd(market.forward)} />
-        <Metric label="Tick" value={formatUsd(market.tickSize)} />
-        <Metric label="Vault use" value={`${(market.vaultUtilization * 100).toFixed(2)}%`} />
-      </div>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <Metric label="Expiry" value={formatTime(market.expiry)} />
+          <Metric label="Time left" value={formatDuration(market.timeToExpiryMs)} />
+          <Metric label="Spot" value={formatUsd(market.spot)} />
+          <Metric label="Forward" value={formatUsd(market.forward)} />
+          <Metric label="Strike" value={formatUsd(market.selectedStrike)} />
+          <Metric label="Vault use" value={`${(market.vaultUtilization * 100).toFixed(2)}%`} />
+        </div>
 
-      <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">{market.guardianSummary}</p>
-    </button>
+        <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted-foreground">{market.guardianSummary}</p>
+      </button>
+
+      <div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-3">
+        <span className="text-xs text-muted-foreground">Preview chart here, execute in Trade.</span>
+        <Button asChild size="sm" variant="outline" className="h-8 shrink-0">
+          <Link href={tradeHref as Route}>
+            Open market
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+        </Button>
+      </div>
+    </article>
   );
 }
 
@@ -259,7 +257,7 @@ function selectActionableMarket(markets: MarketListItem[]) {
   );
 }
 
-function SelectedMarketPanel({ market, loading }: { market: MarketListItem | null; loading: boolean }) {
+function MarketChartPanel({ market, loading }: { market: MarketListItem | null; loading: boolean }) {
   if (loading && !market) {
     return (
       <Card>
@@ -274,42 +272,12 @@ function SelectedMarketPanel({ market, loading }: { market: MarketListItem | nul
   if (!market) {
     return (
       <Card>
-        <CardContent className="pt-5 text-sm text-muted-foreground">Select a market to inspect its oracle state.</CardContent>
+        <CardContent className="pt-5 text-sm text-muted-foreground">Select an active market to preview its price history.</CardContent>
       </Card>
     );
   }
 
-  const tradeHref = `/trade?oracleId=${encodeURIComponent(market.oracleId)}${
-    market.selectedStrike ? `&strike=${encodeURIComponent(String(market.selectedStrike))}` : ""
-  }`;
-
-  return (
-    <>
-      <Card className="glass-line">
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <CardTitle>Selected Oracle</CardTitle>
-              <CardDescription>{shortAddress(market.oracleId)}</CardDescription>
-            </div>
-            <Shield className={cn("h-5 w-5", riskColor(market.riskLevel))} />
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-2 gap-2">
-            <Metric label="Spot" value={formatUsd(market.spot)} />
-            <Metric label="Strike" value={formatUsd(market.selectedStrike)} />
-            <Metric label="Oracle age" value={formatAge(market.oracleAgeMs)} />
-            <Metric label="Ask bounds" value={market.askBoundsAvailable ? "available" : "fallback"} />
-          </div>
-          <Button asChild className="h-10 w-full">
-            <Link href={tradeHref as Route}>Open trade ticket</Link>
-          </Button>
-        </CardContent>
-      </Card>
-      <PredictMarketChart oracleId={market.oracleId} strike={market.selectedStrike} />
-    </>
-  );
+  return <PredictMarketChart oracleId={market.oracleId} strike={market.selectedStrike} />;
 }
 
 function PaginationBar({
@@ -410,12 +378,24 @@ function formatTime(value: number) {
   });
 }
 
-function formatAge(valueMs: number | null) {
-  if (valueMs === null) {
+function formatDuration(valueMs: number | null) {
+  if (valueMs === null || valueMs <= 0) {
     return "--";
   }
 
-  return valueMs < 1_000 ? `${valueMs}ms` : `${(valueMs / 1_000).toFixed(1)}s`;
+  const minutes = Math.round(valueMs / 60_000);
+
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+
+  const hours = Math.round(minutes / 60);
+
+  if (hours < 48) {
+    return `${hours}h`;
+  }
+
+  return `${Math.round(hours / 24)}d`;
 }
 
 function formatAgo(value: number) {
@@ -434,4 +414,16 @@ function formatAgo(value: number) {
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+function tradeHrefForMarket(market: MarketListItem) {
+  const params = new URLSearchParams({
+    oracleId: market.oracleId
+  });
+
+  if (market.selectedStrike !== null) {
+    params.set("strike", String(market.selectedStrike));
+  }
+
+  return `/trade?${params.toString()}`;
 }

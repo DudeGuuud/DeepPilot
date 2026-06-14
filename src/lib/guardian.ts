@@ -94,6 +94,7 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
   );
   const blocked = hardBlock || score >= 80;
   const level = blocked ? "blocked" : score >= 55 ? "high" : score >= 24 ? "medium" : "low";
+  const hardBlockSummary = blocked ? summaryForHardBlock(findings) : null;
 
   return {
     score,
@@ -101,11 +102,12 @@ export function runGuardian(intent: ParsedIntent, market: PredictMarketSnapshot 
     blocked,
     decision: blocked ? "block" : level === "low" ? "allow" : "reduce",
     findings,
-    summary: blocked
+    summary: hardBlockSummary
+      ?? (blocked
       ? "Guardian blocks signing until market state or intent changes."
       : findings.length > 0
         ? "Guardian allows preview with reduced-confidence warnings."
-        : "Predict market checks passed."
+        : "Predict market checks passed.")
   };
 }
 
@@ -143,6 +145,26 @@ function findingWeight(type: GuardianFinding["type"]) {
     case "DUSDC_REQUIRED":
       return 48;
   }
+}
+
+function summaryForHardBlock(findings: GuardianFinding[]) {
+  if (findings.some((finding) => finding.type === "EXPIRED_ORACLE")) {
+    return "Selected Predict oracle is expired. Choose an active market from Markets and prepare a fresh review.";
+  }
+
+  if (findings.some((finding) => finding.type === "ORACLE_NOT_ACTIVE")) {
+    return "Selected Predict oracle is not active. Choose an active market before signing.";
+  }
+
+  if (findings.some((finding) => finding.type === "ORACLE_STALE")) {
+    return "Selected Predict oracle price is stale. Refresh the review or choose another active market.";
+  }
+
+  if (findings.some((finding) => finding.type === "INDEXER_LAG")) {
+    return "Predict server is lagging. Refresh after the indexer catches up.";
+  }
+
+  return null;
 }
 
 function formatAge(valueMs: number | null) {
