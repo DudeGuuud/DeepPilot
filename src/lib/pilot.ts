@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { PilotClassification } from "./types";
+import type { ActiveMarketContext, ConversationContext, PilotClassification } from "./types";
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
@@ -15,7 +15,15 @@ const classifierSchema = z.object({
 
 type ClassifierOutput = z.infer<typeof classifierSchema>;
 
-export async function classifyPilotInput(input: string): Promise<PilotClassification> {
+export type PilotClassifierOptions = {
+  activeMarketContext?: ActiveMarketContext | null;
+  conversationContext?: ConversationContext | null;
+};
+
+export async function classifyPilotInput(
+  input: string,
+  options: PilotClassifierOptions = {}
+): Promise<PilotClassification> {
   const raw = input.trim();
 
   if (!raw) {
@@ -31,11 +39,11 @@ export async function classifyPilotInput(input: string): Promise<PilotClassifica
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
 
   if (!apiKey || typeof window !== "undefined") {
-    return fallbackClassification(raw);
+    return fallbackClassification(raw, options);
   }
 
   try {
-    const classified = await callDeepSeekClassifier(raw, apiKey);
+    const classified = await callDeepSeekClassifier(raw, apiKey, options);
 
     return {
       ...classified,
@@ -43,11 +51,15 @@ export async function classifyPilotInput(input: string): Promise<PilotClassifica
       draftIntent: null
     };
   } catch {
-    return fallbackClassification(raw);
+    return fallbackClassification(raw, options);
   }
 }
 
-async function callDeepSeekClassifier(raw: string, apiKey: string): Promise<ClassifierOutput> {
+async function callDeepSeekClassifier(
+  raw: string,
+  apiKey: string,
+  options: PilotClassifierOptions
+): Promise<ClassifierOutput> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), CLASSIFIER_TIMEOUT_MS);
 
@@ -70,7 +82,9 @@ async function callDeepSeekClassifier(raw: string, apiKey: string): Promise<Clas
             content: JSON.stringify({
               nowIso: new Date().toISOString(),
               defaultTimezone: "Asia/Shanghai",
-              text: raw
+              text: raw,
+              activeMarketContext: options.activeMarketContext ?? null,
+              conversationContext: summarizeConversationContext(options.conversationContext)
             })
           }
         ],
@@ -129,9 +143,9 @@ function normalizeClassification(raw: string, classified: ClassifierOutput): Cla
   };
 }
 
-function fallbackClassification(raw: string): PilotClassification {
+function fallbackClassification(raw: string, options: PilotClassifierOptions): PilotClassification {
   const normalized = raw.toLowerCase();
-  const asset = detectAsset(raw);
+  const asset = detectAsset(raw) ?? inferContextAsset(options.conversationContext);
   const adviceQuestion =
     /\bshould\s+i\s+(buy|sell|bet|short|long)\b/.test(normalized) ||
     /\b(recommend|advice|advise|suggestion)\b/.test(normalized) ||
@@ -139,7 +153,8 @@ function fallbackClassification(raw: string): PilotClassification {
   const explicitTrade =
     /\b(bet|mint|redeem|claim|execute|order)\b/.test(normalized) ||
     /\b(buy|sell)\b.*\b(dusdc|usdc|down|up|position|contract|predict)\b/.test(normalized) ||
-    /(帮我|我要|给我|执行|下单|下注|买入|卖出|赎回|领取|做多|做空).*?(btc|eth|sol|trx|跌|涨|down|up|dusdc|usdc|\d+\s*u)/i.test(raw);
+    /(帮我|我要|给我|执行|下单|下注|买|买入|卖出|赎回|领取|做多|做空).*?(btc|eth|sol|trx|跌|涨|down|up|dusdc|usdc|\d+\s*u)/i.test(raw) ||
+    /(买跌|买涨|做空|做多).*?(\d+(?:\.\d+)?\s*(u|dusdc|usdc|\$))/i.test(raw);
   const mode = explicitTrade && !adviceQuestion ? "trade" : "chat";
   const missing = mode === "trade" ? tradeMissingFields(raw) : [];
 
@@ -179,7 +194,8 @@ function tradeMissingFields(raw: string) {
   const missing: string[] = [];
   const hasAmount = /(\d+(?:\.\d+)?\s*(u|dusdc|usdc|\$)|amount|金额)/i.test(raw);
   const hasDirection = /\b(up|down|call|put)\b|涨|跌|做多|做空/i.test(raw);
-  const hasExpiry = /\b(next|tonight|today|tomorrow|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b|今天|今晚|明天|到期|六点|[0-2]?\d点/i.test(raw);
+  const hasExpiry =
+    /\b(next|tonight|today|tomorrow|nearest|fastest|earliest|settlement|expiry|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b|今天|今晚|明天|到期|结算|最快|最近|六点|[0-2]?\d点/i.test(raw);
   const isRedeem = /\b(redeem|claim)\b|赎回|领取/.test(normalized);
 
   if (!isRedeem && !hasAmount) {
@@ -197,6 +213,31 @@ function tradeMissingFields(raw: string) {
   return missing;
 }
 
+function inferContextAsset(context?: ConversationContext | null): PilotClassification["asset"] {
+  const text = [
+    context?.lastMarketThesis ?? "",
+    ...(context?.messages ?? []).map((message) => message.content)
+  ].join(" ");
+
+  return detectAsset(text);
+}
+
+function summarizeConversationContext(context?: ConversationContext | null) {
+  if (!context) {
+    return null;
+  }
+
+  return {
+    lastMarketThesis: context.lastMarketThesis ?? null,
+    messages: context.messages.slice(-6).map((message) => ({
+      role: message.role,
+      content: message.content.slice(0, 700),
+      mode: message.mode,
+      sourceTitles: message.sourceTitles?.slice(0, 4) ?? []
+    }))
+  };
+}
+
 function classifierPrompt() {
   return `You are DeepPilot's pilot router. Return JSON only.
 
@@ -207,6 +248,8 @@ Classify one user message as either:
 
 Important safety rule:
 If the user asks "should I buy/sell/bet" or asks for a recommendation, classify as "chat", not "trade". Chat can explain data and risk, but must not recommend a trade.
+Use conversationContext only as context. If the current user message explicitly says buy, bet, mint, order, execute, 买, 买跌, 买涨, 下单, 下注, or 执行, recent BTC market discussion may fill the asset context. Never classify a pure follow-up advice question as trade.
+For trade wording, fastest settlement / nearest expiry / 最近结算 / 最快结算 means the next active Predict expiry.
 
 Supported assets: BTC, ETH, SOL, TRX.
 

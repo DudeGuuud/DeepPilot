@@ -1,7 +1,16 @@
-import type { CompileResult, CompileStreamEvent, GuardianResult, PredictQuotePreview, ProfileSummary, PtbPlan } from "./types";
+import type {
+  ActiveMarketContext,
+  CompileResult,
+  CompileStreamEvent,
+  ConversationContext,
+  GuardianResult,
+  PredictQuotePreview,
+  ProfileSummary,
+  PtbPlan
+} from "./types";
 import { runGuardian } from "./guardian";
 import { parseIntent } from "./intent";
-import { getPredictMarketSnapshot, getPredictQuotePreview, toDusdcBaseUnits } from "./predict";
+import { getActivePredictMarketContext, getPredictMarketSnapshot, getPredictQuotePreview, toDusdcBaseUnits } from "./predict";
 import { getProfileSummary } from "./profile";
 import { buildPtbPlan } from "./ptb";
 import { decideGasMode, validateSponsorPlan } from "./sponsor";
@@ -9,17 +18,48 @@ import { decideGasMode, validateSponsorPlan } from "./sponsor";
 export type CompileOptions = {
   walletAddress?: string | null;
   managerId?: string | null;
+  activeMarketContext?: ActiveMarketContext | null;
+  conversationContext?: ConversationContext | null;
+  refreshed?: boolean;
   onEvent?: (event: CompileStreamEvent) => void;
 };
 
 export async function compileIntent(input: string, options: CompileOptions = {}): Promise<CompileResult> {
+  let activeMarketContext = options.activeMarketContext ?? null;
+
+  if (!activeMarketContext) {
+    options.onEvent?.({
+      type: "stage",
+      label: "Loading active Predict context",
+      state: "pending"
+    });
+    try {
+      activeMarketContext = await getActivePredictMarketContext();
+      options.onEvent?.({
+        type: "stage",
+        label: "Loading active Predict context",
+        state: activeMarketContext.markets.length ? "complete" : "blocked",
+        detail: activeMarketContext.earliestActiveOracleId ?? "No active BTC oracle"
+      });
+    } catch (error) {
+      options.onEvent?.({
+        type: "stage",
+        label: "Loading active Predict context",
+        state: "blocked",
+        detail: error instanceof Error ? error.message : "Predict market context unavailable"
+      });
+    }
+  }
+
   options.onEvent?.({
     type: "stage",
     label: "Parsing intent with DeepSeek",
     state: "pending"
   });
   const intent = await parseIntent(input, {
-    onEvent: options.onEvent
+    onEvent: options.onEvent,
+    activeMarketContext,
+    conversationContext: options.conversationContext ?? null
   });
   let market = null;
   let marketError: Error | null = null;
@@ -185,6 +225,9 @@ export async function compileIntent(input: string, options: CompileOptions = {})
   }
 
   const gas = validateSponsorPlan(gasPreview, ptb);
+  const reviewFreshness = buildReviewFreshness(intent, market, quote, {
+    refreshed: Boolean(options.refreshed)
+  });
 
   return {
     intent,
@@ -194,7 +237,12 @@ export async function compileIntent(input: string, options: CompileOptions = {})
     gas,
     quote,
     ptb,
+    reviewFreshness,
     timeline: [
+      {
+        label: "Loading active Predict context",
+        state: activeMarketContext?.markets.length ? "complete" : "blocked"
+      },
       {
         label: "Parsing intent",
         state: intent.status === "ready" ? "complete" : "blocked"
@@ -228,6 +276,72 @@ export async function compileIntent(input: string, options: CompileOptions = {})
         state: quoteOnly || ptb ? "complete" : guardian.blocked || ptbError ? "blocked" : "pending"
       }
     ]
+  };
+}
+
+function buildReviewFreshness(
+  intent: CompileResult["intent"],
+  market: CompileResult["market"],
+  quote: PredictQuotePreview | null,
+  options: { refreshed: boolean }
+): NonNullable<CompileResult["reviewFreshness"]> {
+  const checkedAt = new Date().toISOString();
+
+  if (intent.status !== "ready") {
+    return {
+      checkedAt,
+      active: false,
+      refreshed: options.refreshed,
+      reason: "Intent needs clarification before a signable review can be fresh."
+    };
+  }
+
+  if (intent.action === "stablecoin_transfer") {
+    return {
+      checkedAt,
+      active: true,
+      refreshed: options.refreshed,
+      reason: "Stablecoin transfer review does not depend on a Predict oracle."
+    };
+  }
+
+  if (!market) {
+    return {
+      checkedAt,
+      active: false,
+      refreshed: options.refreshed,
+      reason: "No active Predict market was resolved for this review."
+    };
+  }
+
+  const marketNow = market.status.current_time_ms;
+  const marketActive = market.oracle.status === "active" && market.oracle.expiry > marketNow;
+
+  if (!marketActive) {
+    return {
+      checkedAt,
+      active: false,
+      refreshed: options.refreshed,
+      reason: "Market expired, refresh review"
+    };
+  }
+
+  if (intent.action === "predict_binary_mint") {
+    const quoteActive = quote?.status === "available" && new Date(quote.expiresAt).getTime() > Date.now();
+
+    return {
+      checkedAt,
+      active: Boolean(quoteActive),
+      refreshed: options.refreshed,
+      reason: quoteActive ? "Market and quote were checked against current Predict state." : "Quote is stale or unavailable."
+    };
+  }
+
+  return {
+    checkedAt,
+    active: true,
+    refreshed: options.refreshed,
+    reason: "Market was checked against current Predict state."
   };
 }
 

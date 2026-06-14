@@ -339,6 +339,33 @@ function defaultMemoryStatus(wallet: string | null, managerId: string | null): P
       status: "not_configured",
       policy: "Owner-only encrypted receipt pointers; browser-local receipts stay local until the user opts in."
     },
+    preview: {
+      provider: "Walrus + Seal",
+      status: "preview_only",
+      policy: "Seal-encrypted memory preview; not uploaded until user opts in.",
+      keys: [
+        {
+          key: "risk_preference",
+          label: "risk preference",
+          value: "Local risk limits and preferred confirmation style"
+        },
+        {
+          key: "last_market_thesis",
+          label: "last market thesis",
+          value: "Recent AI market summary approved by the user"
+        },
+        {
+          key: "keeper_history",
+          label: "keeper history",
+          value: "Settlement and redeem reminder history"
+        },
+        {
+          key: "sealed_receipt_pointer",
+          label: "sealed receipt pointer",
+          value: "Encrypted receipt pointer for future Walrus storage"
+        }
+      ]
+    },
     longTermMemory: {
       provider: "Walrus Memory / MemWal",
       status: "not_configured",

@@ -7,6 +7,7 @@ import { predictDeployment } from "./predict-config";
 import { runGuardian } from "./guardian";
 import { z } from "zod";
 import type {
+  ActiveMarketContext,
   MarketDiscoveryResult,
   MarketListItem,
   OracleState,
@@ -156,6 +157,36 @@ export function createPredictClientPreview() {
     predictId: predictDeployment.predictId,
     quoteAsset: "DUSDC"
   } as const;
+}
+
+export async function getActivePredictMarketContext(limit = DEFAULT_MARKET_PAGE_SIZE): Promise<ActiveMarketContext> {
+  const [rawStatus, rawOracles] = await Promise.all([
+    fetchPredict("/status", predictStatusSchema),
+    fetchPredict(`/predicts/${predictDeployment.predictId}/oracles`, z.array(oracleSummarySchema))
+  ]);
+  const status = normalizeStatus(rawStatus);
+  const active = rawOracles
+    .map(normalizeOracle)
+    .filter((oracle) => oracle.predict_id === predictDeployment.predictId)
+    .filter((oracle) => oracle.underlying_asset === "BTC")
+    .filter((oracle) => oracle.status === "active")
+    .filter((oracle) => oracle.expiry > status.current_time_ms)
+    .sort((left, right) => left.expiry - right.expiry)
+    .slice(0, Math.max(1, limit));
+  const earliest = active[0]?.oracle_id ?? null;
+
+  return {
+    asset: "BTC",
+    nowIso: new Date(status.current_time_ms).toISOString(),
+    earliestActiveOracleId: earliest,
+    markets: active.map((oracle) => ({
+      oracleId: oracle.oracle_id,
+      expiry: oracle.expiry,
+      expiryIso: new Date(oracle.expiry).toISOString(),
+      status: oracle.status,
+      isEarliestActive: oracle.oracle_id === earliest
+    }))
+  };
 }
 
 export async function getPredictMarkets(input: MarketFilters = {}): Promise<MarketDiscoveryResult> {

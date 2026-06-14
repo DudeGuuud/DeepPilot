@@ -26,7 +26,6 @@ import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { PredictMarketChart } from "@/components/predict-market-chart";
@@ -47,6 +46,7 @@ import type {
   GuardianFinding,
   MarketDiscoveryResult,
   MarketListItem,
+  PilotMessageSummary,
   PilotMode,
   PilotStreamEvent,
   PredictMarketSnapshot,
@@ -201,6 +201,8 @@ function TerminalExperience() {
       return;
     }
 
+    const conversation = buildConversationForPilot(messages);
+    const lastMarketThesis = latestMarketThesis(messages);
     pilotAbortRef.current?.abort();
     const controller = new AbortController();
     const assistantId = createMessageId("assistant");
@@ -240,7 +242,9 @@ function TerminalExperience() {
         body: JSON.stringify({
           message: trimmedIntent,
           walletAddress: account?.address,
-          managerId: managerOverride ?? undefined
+          managerId: managerOverride ?? undefined,
+          conversation,
+          lastMarketThesis
         }),
         signal: controller.signal
       });
@@ -476,16 +480,39 @@ function TerminalExperience() {
         return;
       }
 
-      if (compiled.quote?.status !== "available" || new Date(compiled.quote.expiresAt).getTime() <= Date.now()) {
+      const refreshed = await refreshReviewBeforeSigning(compiled);
+
+      if (!isReviewActive(refreshed)) {
+        setCompiled(refreshed);
+        setAuditExpanded(true);
+        throw new Error(refreshed.reviewFreshness?.reason || "Market expired, refresh review");
+      }
+
+      if (!refreshed.ptb || refreshed.guardian.blocked) {
+        setCompiled(refreshed);
+        setAuditExpanded(true);
+        throw new Error(refreshed.guardian.summary || "Execution blocked after refreshing review.");
+      }
+
+      if (compiled.ptb.execution.managerId && executableFingerprint(compiled) !== executableFingerprint(refreshed)) {
+        setCompiled(refreshed);
+        setAuditExpanded(true);
+        throw new Error("Review changed, confirm again");
+      }
+
+      if (refreshed.quote?.status !== "available" || new Date(refreshed.quote.expiresAt).getTime() <= Date.now()) {
+        setCompiled(refreshed);
+        setAuditExpanded(true);
         throw new Error("Quote is stale or unavailable. Refresh the review before signing.");
       }
 
       const built = buildBinaryMintTransaction({
-        transactionData: compiled.ptb.transactionData,
-        managerId: compiled.ptb.execution.managerId,
-        managerBalanceRaw: compiled.profile?.tradingBalanceRaw ?? compiled.ptb.execution.managerBalanceRaw,
-        gasBudget: compiled.ptb.gasBudget
+        transactionData: refreshed.ptb.transactionData,
+        managerId: refreshed.ptb.execution.managerId,
+        managerBalanceRaw: refreshed.profile?.tradingBalanceRaw ?? refreshed.ptb.execution.managerBalanceRaw,
+        gasBudget: refreshed.ptb.gasBudget
       });
+      setCompiled(refreshed);
       const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
       const digest = getExecutedDigest(signed);
       const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
@@ -509,7 +536,7 @@ function TerminalExperience() {
         note: "Executed DUSDC top-up if needed and DeepBook Predict mint in one wallet transaction."
       };
       setReceipt(executionReceipt);
-      saveExecutionReceipt(executionReceipt, intent, compiled);
+      saveExecutionReceipt(executionReceipt, refreshed.intent.raw, refreshed);
 
       toast({
         title: "Predict trade executed",
@@ -528,6 +555,27 @@ function TerminalExperience() {
       executionRef.current = false;
       setBusy(null);
     }
+  }
+
+  async function refreshReviewBeforeSigning(current: CompileApiResult): Promise<CompileApiResult> {
+    const response = await fetch("/api/compile", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        intent: current.intent.raw || intent.trim(),
+        walletAddress: account?.address,
+        managerId: current.ptb?.execution.managerId ?? managerId ?? undefined,
+        refreshed: true,
+        conversation: buildConversationForPilot(messages),
+        lastMarketThesis: latestMarketThesis(messages)
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error("Could not refresh review before signing.");
+    }
+
+    return await response.json() as CompileApiResult;
   }
 
   async function handleOnboardingManagerCreated({
@@ -667,14 +715,14 @@ function TerminalExperience() {
                       className="flex min-w-0 flex-col gap-3 overflow-hidden"
                     >
                       <OutcomeQuoteCard compiled={compiled} busy={busy === "pilot"} />
-                      <CompilerCard compiled={compiled} busy={busy === "pilot"} streamTimeline={streamTimeline} />
-                      <GuardianCard
+                      <SafetyChecksCard
                         compiled={compiled}
+                        busy={busy === "pilot"}
+                        streamTimeline={streamTimeline}
                         expandedFinding={expandedFinding}
                         onExpand={setExpandedFinding}
                       />
-                      <PtbCard compiled={compiled} />
-                      <GasCard compiled={compiled} accountAddress={account?.address} />
+                      <TransactionCard compiled={compiled} accountAddress={account?.address} />
                       <ExecutionCard
                         compiled={compiled}
                         receipt={receipt}
@@ -896,7 +944,8 @@ function AuditToggle({
           ["Outcome", `BTC ${quote.direction?.toUpperCase() ?? "--"}`],
           ["Est. pay", `${formatDusdc(quote.estimatedCostDusdc)} DUSDC`],
           ["Max payout", `${formatDusdc(quote.maxPayoutDusdc)} DUSDC`],
-          ["Return", formatSignedPercent(quote.returnPct)]
+          ["Expiry", formatExpiry(quote.expiry)],
+          ["Guardian", compiled.guardian.decision.toUpperCase()]
         ]
       : [
           ["Guardian", compiled.guardian.decision.toUpperCase()],
@@ -1023,15 +1072,46 @@ function QuoteSkeleton({ busy }: { busy: boolean }) {
   );
 }
 
-function CompilerCard({
+function EncryptedMemoryPreviewCard() {
+  const keys = ["risk preference", "last market thesis", "keeper history", "sealed receipt pointer"];
+
+  return (
+    <div className="rounded-md border border-border bg-background/45 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">Encrypted memory preview</p>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            Seal-encrypted memory preview; not uploaded until user opts in.
+          </p>
+        </div>
+        <LockKeyhole className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {keys.map((key) => (
+          <Badge key={key} variant="outline" className="border-border text-[10px] text-muted-foreground">
+            {key}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SafetyChecksCard({
   compiled,
   busy,
-  streamTimeline
+  streamTimeline,
+  expandedFinding,
+  onExpand
 }: {
   compiled: CompileApiResult | null;
   busy: boolean;
   streamTimeline: CompileResult["timeline"];
+  expandedFinding: string | null;
+  onExpand: (value: string | null) => void;
 }) {
+  const guardian = compiled?.guardian;
+  const level = guardian?.level ?? "medium";
   const fallback = [
     "Parsing intent",
     "Reading DeepBook Predict state",
@@ -1042,24 +1122,66 @@ function CompilerCard({
   const timeline = compiled?.timeline ?? (streamTimeline.length ? streamTimeline : fallback.map((label) => ({ label, state: "pending" as const })));
 
   return (
-    <Card>
+    <Card className="glass-line">
       <CardHeader className="pb-2">
-        <SectionHeading title="Execution Checklist" detail={`${timeline.length} steps`} />
+        <SectionHeading
+          title="Safety Checks"
+          detail={guardian?.decision ? guardian.decision.toUpperCase() : `${timeline.length} steps`}
+          icon={<Shield className={cn("h-4 w-4", riskColor(level))} />}
+        />
       </CardHeader>
-      <CardContent className="space-y-1">
-        {timeline.map((item, index) => (
-          <motion.div
-            key={item.label}
-            initial={{ opacity: 0, y: 4 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.03 }}
-            className="grid grid-cols-[24px_1fr_auto] items-center gap-3 rounded-md px-1 py-2"
-          >
-            <StatusIcon state={item.state} busy={busy} />
-            <span className="min-w-0 truncate text-sm text-foreground">{item.label}</span>
-            <span className="text-xs capitalize text-muted-foreground">{item.state}</span>
-          </motion.div>
-        ))}
+      <CardContent className="space-y-3">
+        <div className="rounded-md border border-border bg-background/60 p-3">
+          <div className="grid grid-cols-[64px_1fr] items-center gap-3">
+            <div className="grid aspect-square place-items-center rounded-full border border-border bg-background">
+              <div className="text-center">
+                <p className={cn("text-xl font-semibold tracking-tight", riskColor(level))}>{guardian?.score ?? "--"}</p>
+                <p className="text-[9px] uppercase tracking-[0.16em] text-muted-foreground">{level}</p>
+              </div>
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">
+                {guardian?.blocked ? "Signing locked" : "Pre-sign checks pass"}
+              </p>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {guardian?.summary ?? "Guardian is checking market, quote, and policy state."}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          {timeline.map((item, index) => (
+            <motion.div
+              key={item.label}
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.03 }}
+              className="grid grid-cols-[24px_1fr_auto] items-center gap-3 rounded-md px-1 py-1.5"
+            >
+              <StatusIcon state={item.state} busy={busy} />
+              <span className="min-w-0 truncate text-sm text-foreground">{item.label}</span>
+              <span className="text-xs capitalize text-muted-foreground">{item.state}</span>
+            </motion.div>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {(guardian?.findings.length ?? 0) === 0 ? (
+            <MutedBox>Guardian checks passed.</MutedBox>
+          ) : (
+            guardian?.findings.map((finding) => (
+              <FindingCard
+                key={`${finding.type}-${finding.title}`}
+                finding={finding}
+                expanded={expandedFinding === finding.type}
+                onToggle={() => onExpand(expandedFinding === finding.type ? null : finding.type)}
+              />
+            ))
+          )}
+        </div>
+
+        <EncryptedMemoryPreviewCard />
       </CardContent>
     </Card>
   );
@@ -1076,15 +1198,26 @@ function upsertStage(
   return next;
 }
 
-function PtbCard({ compiled }: { compiled: CompileApiResult | null }) {
+function TransactionCard({
+  compiled,
+  accountAddress
+}: {
+  compiled: CompileApiResult | null;
+  accountAddress?: string;
+}) {
   const commands = compiled?.ptb?.commands ?? [];
+  const gas = compiled?.gas;
 
   return (
-    <Card>
+    <Card className="glass-line">
       <CardHeader className="pb-2">
-        <SectionHeading title="PTB" detail={commands.length ? `${commands.length} commands` : "locked"} />
+        <SectionHeading
+          title="Transaction"
+          detail={commands.length ? `${commands.length} commands` : "locked"}
+          icon={<Fuel className="h-4 w-4" />}
+        />
       </CardHeader>
-      <CardContent className="space-y-2">
+      <CardContent className="space-y-3">
         {commands.length === 0 ? (
           <MutedBox>{compiled?.guardian.blocked ? "Blocked before signing." : "Awaiting compile."}</MutedBox>
         ) : (
@@ -1102,26 +1235,37 @@ function PtbCard({ compiled }: { compiled: CompileApiResult | null }) {
             </div>
           ))
         )}
-        <MutedBox>
-          <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Digest</span>
-          <span className="mt-1 block break-all font-mono text-xs text-foreground/80">
-            {compiled?.ptb?.digestPreview ?? "not compiled"}
-          </span>
-        </MutedBox>
-        {compiled?.ptb?.sizing ? (
+
+        <div className="grid gap-2">
           <MutedBox>
-            <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Sizing</span>
-            <span className="mt-1 block text-sm text-foreground/80">{compiled.ptb.sizing.label}</span>
-            <span className="mt-1 block text-xs leading-5 text-muted-foreground">{compiled.ptb.sizing.reason}</span>
+            <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Digest</span>
+            <span className="mt-1 block break-all font-mono text-xs text-foreground/80">
+              {compiled?.ptb?.digestPreview ?? "not compiled"}
+            </span>
           </MutedBox>
-        ) : null}
+          <MutedBox>
+            <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Wallet / Gas</span>
+            <span className="mt-1 block text-sm text-foreground/80">{gas?.label ?? "Awaiting wallet policy"}</span>
+            <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+              {accountAddress ? shortAddress(accountAddress) : "Wallet not connected"} · {gas?.approved ? "policy approved" : "policy locked"}
+            </span>
+          </MutedBox>
+          {compiled?.ptb?.sizing ? (
+            <MutedBox>
+              <span className="text-xs uppercase tracking-[0.18em] text-muted-foreground">Sizing</span>
+              <span className="mt-1 block text-sm text-foreground/80">{compiled.ptb.sizing.label}</span>
+              <span className="mt-1 block text-xs leading-5 text-muted-foreground">{compiled.ptb.sizing.reason}</span>
+            </MutedBox>
+          ) : null}
+        </div>
+
         {compiled?.ptb?.requirements.length ? (
-          <div className="space-y-2">
+          <div className="space-y-1">
             {compiled.ptb.requirements.map((requirement) => (
-              <div key={requirement.label} className="grid grid-cols-[1fr_18px] items-start gap-2 rounded-md border border-border bg-background/60 p-3">
+              <div key={requirement.label} className="grid grid-cols-[1fr_18px] items-start gap-2 py-1.5">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-foreground">{requirement.label}</p>
-                  <p className="mt-1 text-xs leading-5 text-muted-foreground">{requirement.detail}</p>
+                  <p className="truncate text-sm text-muted-foreground">{requirement.label}</p>
+                  <p className="mt-0.5 text-xs leading-5 text-muted-foreground/80">{requirement.detail}</p>
                 </div>
                 {requirement.satisfied ? <Check className="h-4 w-4 text-foreground" /> : <X className="h-4 w-4 text-destructive" />}
               </div>
@@ -1299,95 +1443,6 @@ function VaultCard({
   );
 }
 
-function GuardianCard({
-  compiled,
-  expandedFinding,
-  onExpand
-}: {
-  compiled: CompileApiResult | null;
-  expandedFinding: string | null;
-  onExpand: (value: string | null) => void;
-}) {
-  const guardian = compiled?.guardian;
-  const level = guardian?.level ?? "medium";
-
-  return (
-    <Card className="glass-line">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <CardTitle>Guardian</CardTitle>
-            <CardDescription>{guardian?.summary ?? "Scanning intent."}</CardDescription>
-          </div>
-          <Shield className={cn("h-5 w-5", riskColor(level))} />
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="grid grid-cols-[96px_1fr] items-center gap-4">
-          <div className="grid aspect-square place-items-center rounded-full border border-border bg-background">
-            <div className="text-center">
-              <p className={cn("text-3xl font-semibold tracking-tight", riskColor(level))}>{guardian?.score ?? "--"}</p>
-              <p className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">{level}</p>
-            </div>
-          </div>
-          <div className="min-w-0 space-y-2">
-            <div className="flex items-center gap-2">
-              <span className={cn("h-2 w-2 rounded-full", guardian?.blocked ? "bg-destructive" : "bg-foreground pulse-dot")} />
-              <p className="text-sm text-foreground">{guardian?.blocked ? "Signing locked" : "Confirmation enabled"}</p>
-            </div>
-            <p className="text-sm leading-6 text-muted-foreground">
-              {guardian?.decision === "block" ? "Modify intent or refresh Predict state." : "Pre-sign checks are within policy."}
-            </p>
-          </div>
-        </div>
-
-        <Separator className="my-4" />
-
-        <div className="space-y-2">
-          {(guardian?.findings.length ?? 0) === 0 ? (
-            <MutedBox>Guardian checks passed.</MutedBox>
-          ) : (
-            guardian?.findings.map((finding) => (
-              <FindingCard
-                key={`${finding.type}-${finding.title}`}
-                finding={finding}
-                expanded={expandedFinding === finding.type}
-                onToggle={() => onExpand(expandedFinding === finding.type ? null : finding.type)}
-              />
-            ))
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function GasCard({ compiled, accountAddress }: { compiled: CompileApiResult | null; accountAddress?: string }) {
-  const gas = compiled?.gas;
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <SectionHeading title="Gas" detail={gas?.approved ? "approved" : "policy"} icon={<Fuel className="h-4 w-4" />} />
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-md border border-border bg-background/60 p-3">
-          <p className="text-sm font-medium text-foreground">{gas?.label ?? "Awaiting policy"}</p>
-          <p className="mt-1 text-xs text-muted-foreground">{accountAddress ? shortAddress(accountAddress) : "Wallet not connected"}</p>
-        </div>
-        <div className="space-y-1">
-          {(gas?.checks ?? []).map((check) => (
-            <div key={check.label} className="grid grid-cols-[1fr_18px] items-center gap-2 py-1.5">
-              <span className="min-w-0 truncate text-sm text-muted-foreground">{check.label}</span>
-              {check.passed ? <Check className="h-4 w-4 text-foreground" /> : <X className="h-4 w-4 text-destructive" />}
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
 function ExecutionCard({
   compiled,
   receipt,
@@ -1522,6 +1577,61 @@ function createMessageId(prefix: string) {
   }
 
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function buildConversationForPilot(messages: PilotMessage[]): PilotMessageSummary[] {
+  return messages
+    .filter((message) => message.content.trim().length > 0)
+    .slice(-6)
+    .map((message) => ({
+      role: message.role,
+      content: sanitizePilotContext(message.content).slice(0, 850),
+      mode: message.mode,
+      sourceTitles: message.sources?.slice(0, 4).map((source) => source.title.slice(0, 160))
+    }));
+}
+
+function latestMarketThesis(messages: PilotMessage[]) {
+  const latest = [...messages].reverse().find((message) => message.role === "assistant" && message.mode === "chat" && message.content.trim());
+
+  return latest ? sanitizePilotContext(latest.content).slice(0, 1200) : undefined;
+}
+
+function sanitizePilotContext(value: string) {
+  return value
+    .replace(/0x[a-fA-F0-9]{16,64}/g, "0x...")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isReviewActive(compiled: CompileApiResult) {
+  if (!compiled.reviewFreshness?.active) {
+    return false;
+  }
+
+  const market = compiled.market;
+
+  if (!market) {
+    return true;
+  }
+
+  return market.oracle.status === "active" && market.oracle.expiry > market.status.current_time_ms;
+}
+
+function executableFingerprint(compiled: CompileApiResult) {
+  const transaction = compiled.ptb?.transactionData;
+
+  return JSON.stringify({
+    packageId: transaction?.packageId ?? null,
+    predictObject: transaction?.predictObject ?? null,
+    manager: compiled.ptb?.execution.managerId ?? transaction?.manager ?? null,
+    oracleId: transaction?.oracleId ?? null,
+    key: transaction?.key ?? null,
+    mint: transaction?.mint ?? null,
+    commandTargets: transaction?.commands.map((command) => command.target) ?? [],
+    quantityRaw: compiled.quote?.quantityRaw ?? transaction?.mint.quantityRaw ?? null,
+    quoteBudgetRaw: compiled.quote?.quoteBudgetRaw ?? null
+  });
 }
 
 function defaultIntentFromSearch(searchParams: { get(name: string): string | null }) {

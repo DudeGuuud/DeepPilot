@@ -25,6 +25,7 @@ assert(
   "binary quote should fit inside the requested DUSDC budget"
 );
 assert(result.quote.estimatedCostRaw, "binary quote should include raw estimated cost");
+assert(result.reviewFreshness?.active, "compile result should include active review freshness");
 assert(Boolean(result.ptb), "PTB preview should be built");
 assert(result.gas.mode === "user_pays_gas", "Predict trade should use user-paid wallet gas");
 assert(result.gas.approved, "wallet gas policy should approve the smoke PTB preview");
@@ -179,6 +180,11 @@ assert(!emptyProfile.managerNeedsCreation, "profile without wallet should not pr
 assert(newWalletProfile.managerNeedsCreation, "connected wallet without manager should prompt manager creation");
 assert(newWalletProfile.positions.length === 0, "wallet without manager should not fabricate positions");
 assert(newWalletProfile.pnl === null, "wallet without manager should not fabricate PnL");
+assert(newWalletProfile.memory.preview.status === "preview_only", "memory should be preview-only before user opt-in");
+assert(
+  newWalletProfile.memory.preview.policy.includes("not uploaded until user opts in"),
+  "memory preview should not claim Walrus upload"
+);
 assert(fixturePositions.length === 1, "profile position normalizer should keep server rows");
 assert(fixturePositions[0].market === "BTC", "profile position normalizer should keep market asset");
 assert(fixturePositions[0].direction === "down", "profile position normalizer should map is_up to direction");

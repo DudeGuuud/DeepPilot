@@ -4,11 +4,20 @@ import { z } from "zod";
 import { compileIntent } from "@/src/lib/compile";
 import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http";
 import { createPredictClientPreview } from "@/src/lib/predict";
+import type { ConversationContext } from "@/src/lib/types";
 
 const bodySchema = z.object({
   intent: z.string().trim().min(1).max(500),
   walletAddress: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
-  managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional()
+  managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
+  refreshed: z.boolean().optional(),
+  lastMarketThesis: z.string().trim().max(1500).optional(),
+  conversation: z.array(z.object({
+    role: z.enum(["user", "assistant"]),
+    content: z.string().trim().min(1).max(900),
+    mode: z.enum(["chat", "trade"]).optional(),
+    sourceTitles: z.array(z.string().trim().min(1).max(160)).max(4).optional()
+  })).max(8).optional()
 });
 
 export async function POST(request: Request) {
@@ -40,11 +49,27 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ...(await compileIntent(body.data.intent, {
         walletAddress: body.data.walletAddress,
-        managerId: body.data.managerId
+        managerId: body.data.managerId,
+        refreshed: Boolean(body.data.refreshed),
+        conversationContext: conversationContextFromBody(body.data)
       })),
       predict: createPredictClientPreview()
     });
   } catch {
     return NextResponse.json({ error: "Intent compile failed" }, { status: 502 });
   }
+}
+
+function conversationContextFromBody(body: z.infer<typeof bodySchema>): ConversationContext | null {
+  const messages = body.conversation ?? [];
+  const lastMarketThesis = body.lastMarketThesis?.trim() || null;
+
+  if (!messages.length && !lastMarketThesis) {
+    return null;
+  }
+
+  return {
+    messages,
+    lastMarketThesis
+  };
 }

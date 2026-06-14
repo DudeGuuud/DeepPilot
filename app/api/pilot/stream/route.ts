@@ -5,7 +5,7 @@ import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http"
 import { classifyPilotInput } from "@/src/lib/pilot";
 import { createPredictClientPreview } from "@/src/lib/predict";
 import { buildRagContext, streamRagAnswer } from "@/src/lib/rag";
-import type { CompileStreamEvent, PilotStreamEvent } from "@/src/lib/types";
+import type { CompileStreamEvent, ConversationContext, PilotStreamEvent } from "@/src/lib/types";
 
 export const runtime = "nodejs";
 
@@ -13,7 +13,14 @@ const bodySchema = z.object({
   message: z.string().trim().min(1).max(500).optional(),
   intent: z.string().trim().min(1).max(500).optional(),
   walletAddress: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
-  managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional()
+  managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
+  lastMarketThesis: z.string().trim().max(1500).optional(),
+  conversation: z.array(z.object({
+    role: z.enum(["user", "assistant"]),
+    content: z.string().trim().min(1).max(900),
+    mode: z.enum(["chat", "trade"]).optional(),
+    sourceTitles: z.array(z.string().trim().min(1).max(160)).max(4).optional()
+  })).max(8).optional()
 }).refine((body) => Boolean(body.message || body.intent));
 
 export async function POST(request: Request) {
@@ -52,7 +59,10 @@ export async function POST(request: Request) {
             label: "Classifying request",
             state: "pending"
           });
-          const classification = await classifyPilotInput(message);
+          const conversationContext = conversationContextFromBody(body.data);
+          const classification = await classifyPilotInput(message, {
+            conversationContext
+          });
 
           send({
             type: "stage",
@@ -67,7 +77,7 @@ export async function POST(request: Request) {
           });
 
           if (classification.mode === "trade") {
-            await streamTradeReview(message, body.data, send);
+            await streamTradeReview(message, body.data, conversationContext, send);
             return;
           }
 
@@ -95,11 +105,13 @@ export async function POST(request: Request) {
 async function streamTradeReview(
   message: string,
   body: z.infer<typeof bodySchema>,
+  conversationContext: ConversationContext | null,
   send: (event: PilotStreamEvent) => void
 ) {
   const result = await compileIntent(message, {
     walletAddress: body.walletAddress,
     managerId: body.managerId,
+    conversationContext,
     onEvent: (event) => forwardCompileEvent(event, send)
   });
 
@@ -110,6 +122,20 @@ async function streamTradeReview(
       predict: createPredictClientPreview()
     } as typeof result
   });
+}
+
+function conversationContextFromBody(body: z.infer<typeof bodySchema>): ConversationContext | null {
+  const messages = body.conversation ?? [];
+  const lastMarketThesis = body.lastMarketThesis?.trim() || null;
+
+  if (!messages.length && !lastMarketThesis) {
+    return null;
+  }
+
+  return {
+    messages,
+    lastMarketThesis
+  };
 }
 
 async function streamChatAnswer(

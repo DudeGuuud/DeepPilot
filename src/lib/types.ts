@@ -51,6 +51,33 @@ export interface PilotClassification {
   missing: string[];
 }
 
+export interface PilotMessageSummary {
+  role: "user" | "assistant";
+  content: string;
+  mode?: PilotMode;
+  sourceTitles?: string[];
+}
+
+export interface ConversationContext {
+  messages: PilotMessageSummary[];
+  lastMarketThesis?: string | null;
+}
+
+export interface ActiveMarketContextItem {
+  oracleId: string;
+  expiry: number;
+  expiryIso: string;
+  status: string;
+  isEarliestActive: boolean;
+}
+
+export interface ActiveMarketContext {
+  asset: "BTC";
+  nowIso: string;
+  earliestActiveOracleId: string | null;
+  markets: ActiveMarketContextItem[];
+}
+
 export interface RagSource {
   id: string;
   title: string;
@@ -343,6 +370,12 @@ export interface CompileResult {
   gas: SponsorDecision;
   quote: PredictQuotePreview | null;
   ptb: PtbPlan | null;
+  reviewFreshness?: {
+    checkedAt: string;
+    active: boolean;
+    refreshed: boolean;
+    reason: string;
+  };
   timeline: Array<{
     label: string;
     state: "complete" | "blocked" | "pending";
@@ -545,6 +578,16 @@ export interface ProfileMemoryStatus {
     provider: "Walrus + Seal";
     status: "not_configured" | "ready";
     policy: string;
+  };
+  preview: {
+    provider: "Walrus + Seal";
+    status: "preview_only";
+    policy: string;
+    keys: Array<{
+      key: string;
+      label: string;
+      value: string;
+    }>;
   };
   longTermMemory: {
     provider: "Walrus Memory / MemWal";

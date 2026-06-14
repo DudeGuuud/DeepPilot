@@ -1,7 +1,7 @@
 "use client";
 
 import { useCurrentAccount, useCurrentNetwork } from "@mysten/dapp-kit-react";
-import { AlertTriangle, Check, RefreshCw, Wallet } from "lucide-react";
+import { AlertTriangle, Check, LockKeyhole, RefreshCw, Wallet } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
@@ -215,7 +215,7 @@ export function ProfilePage() {
               <StatusRow label="Wallet connected" active={Boolean(account)} />
               <StatusRow label="PredictManager linked" active={Boolean(profile?.managerId)} />
               <StatusRow label="Local receipts" active={receipts.length > 0} />
-              <StatusRow label="Walrus / Seal configured" active={profile?.memory.sealedReceipts.status === "ready"} />
+              <StatusRow label="Memory preview" active={profile?.memory.preview.status === "preview_only"} />
               <div className="rounded-md border border-border bg-background/60 p-3 text-sm leading-6 text-muted-foreground">
                 {profile?.message ?? "Loading profile state."}
               </div>
@@ -311,13 +311,7 @@ function TabContent({
         <PolicyBox title="Public index" items={profile.indexPolicy.publicValues} />
         <PolicyBox title="Consent required" items={profile.indexPolicy.consentRequiredValues} />
         <PolicyBox title="Private memory" items={profile.indexPolicy.privateValues} />
-        <div className="rounded-md border border-border bg-background/60 p-3">
-          <p className="text-sm font-medium text-foreground">Walrus / Seal</p>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">{profile.memory.sealedReceipts.policy}</p>
-          <p className="mt-2 text-xs text-muted-foreground">
-            {profile.memory.longTermMemory.provider} · {profile.memory.longTermMemory.namespace ?? "wallet required"}
-          </p>
-        </div>
+        <MemoryPreviewPanel profile={profile} />
       </div>
     ) : (
       <EmptyState text="Guardian risk logs start from local preview receipts and future on-chain audit events." />
@@ -344,6 +338,31 @@ function TabContent({
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function MemoryPreviewPanel({ profile }: { profile: ProfileSummary }) {
+  return (
+    <div className="rounded-md border border-border bg-background/60 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground">Encrypted memory preview</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{profile.memory.preview.policy}</p>
+        </div>
+        <LockKeyhole className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </div>
+      <div className="mt-3 grid gap-2">
+        {profile.memory.preview.keys.map((item) => (
+          <div key={item.key} className="rounded-md border border-border bg-background/50 p-2">
+            <p className="text-xs font-medium text-foreground">{item.label}</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{item.value}</p>
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-xs text-muted-foreground">
+        {profile.memory.longTermMemory.provider} · {profile.memory.longTermMemory.namespace ?? "wallet required"}
+      </p>
     </div>
   );
 }
