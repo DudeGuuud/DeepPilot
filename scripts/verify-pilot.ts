@@ -3,6 +3,7 @@ import { strict as assert } from "node:assert";
 import { compileIntent } from "../src/lib/compile";
 import { classifyPilotInput } from "../src/lib/pilot";
 import { buildRagContext, streamRagAnswer } from "../src/lib/rag";
+import { compileStrategy } from "../src/lib/strategy";
 
 const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
 const TRADE_SMOKE_INTENT = "Bet 10 DUSDC on BTC DOWN at the fastest settlement";
@@ -29,6 +30,9 @@ assert(answer.length > 0, "chat mode should stream an answer or fallback answer"
 
 const trade = await classifyPilotInput(TRADE_SMOKE_INTENT);
 assert.equal(trade.mode, "trade", "explicit Predict order should route to trade mode");
+
+const strategy = await classifyPilotInput("BTC split 9 DUSDC long across 1h 2h 3h expiries");
+assert.equal(strategy.mode, "strategy", "multi-leg strategy request should route to strategy mode");
 
 const followUpTrade = await classifyPilotInput("那就买跌 10u 最快结算", {
   conversationContext: {
@@ -92,6 +96,43 @@ assert.equal(fastestCompiled.intent.expiryPreference, "next_active", "最快结�
 assert(fastestCompiled.market?.oracle.status === "active", "fastest settlement should resolve an active oracle");
 assert(fastestCompiled.reviewFreshness?.refreshed, "refreshed compile should mark review freshness");
 
+const missingBudgetStrategy = await compileStrategy("BTC 分别在一小时两小时三小时做多");
+assert.equal(missingBudgetStrategy.plan.mode, "strategy", "strategy compiler should return a strategy plan");
+assert(missingBudgetStrategy.plan.missing.includes("amount"), "strategy without budget should require amount before signing");
+assert.equal(missingBudgetStrategy.aggregateReadiness.canSign, false, "strategy without amount must not be signable");
+
+const budgetedStrategy = await compileStrategy("BTC split 0.03 DUSDC long across 1h 2h 3h expiries");
+assert(budgetedStrategy.compiledLegs.length >= 1, "budgeted strategy should create at least one leg");
+assert(
+  budgetedStrategy.compiledLegs.some((leg) => leg.status === "ready" || leg.status === "blocked" || leg.status === "quoted"),
+  "strategy legs should be independently compiled"
+);
+
+const naturalHedge = await classifyPilotInput("帮我在最近可以结算的地方开一个对冲 大头是涨 玩 1du sd c");
+assert.equal(naturalHedge.mode, "strategy", "Chinese hedge request should route to strategy");
+assert(!naturalHedge.missing.includes("amount"), "spaced DUSDC text should still count as an amount");
+const naturalHedgeReview = await compileStrategy("帮我在最近可以结算的地方开一个对冲 大头是涨 玩 1du sd c");
+assert.equal(naturalHedgeReview.plan.missing.length, 0, "natural hedge should not miss amount");
+assert.equal(naturalHedgeReview.plan.legs.length, 2, "nearest hedge should create two opposite legs");
+assert.equal(naturalHedgeReview.plan.legs[0]?.direction, "up", "major hedge direction should be UP");
+assert.equal(naturalHedgeReview.plan.legs[1]?.direction, "down", "hedge leg should be DOWN");
+assert.equal(naturalHedgeReview.plan.legs[0]?.expiryPreference, "next_active", "nearest hedge should use next active expiry");
+assert.equal(naturalHedgeReview.plan.legs[0]?.oracleId, naturalHedgeReview.plan.legs[1]?.oracleId, "hedge legs should share the same nearest oracle");
+assert.equal(naturalHedgeReview.plan.legs[0]?.amountDusdc, 0.7, "major hedge leg should receive 70% of budget");
+assert.equal(naturalHedgeReview.plan.legs[1]?.amountDusdc, 0.3, "hedge leg should receive 30% of budget");
+
+const englishHedge = await classifyPilotInput("Use 1 DUSDC to hedge BTC on the fastest expiry, overweight upside");
+assert.equal(englishHedge.mode, "strategy", "English hedge wording should route to strategy");
+assert(!englishHedge.missing.includes("amount"), "English hedge wording should keep the DUSDC budget");
+const englishHedgeReview = await compileStrategy("Use 1 DUSDC to hedge BTC on the fastest expiry, overweight upside");
+assert.equal(englishHedgeReview.plan.legs[0]?.direction, "up", "overweight upside should make UP the major leg");
+assert.equal(englishHedgeReview.plan.legs[1]?.direction, "down", "hedge should keep the opposite DOWN leg");
+assert.equal(englishHedgeReview.plan.legs[0]?.amountDusdc, 0.7, "overweight upside should allocate 70% to UP");
+assert.equal(englishHedgeReview.plan.legs[1]?.amountDusdc, 0.3, "overweight upside should allocate 30% to DOWN");
+
+const adviceHedge = await classifyPilotInput("Should I hedge BTC with 1 DUSDC?");
+assert.equal(adviceHedge.mode, "chat", "advice phrasing should stay in chat mode");
+
 if (originalDeepSeekKey) {
   process.env.DEEPSEEK_API_KEY = originalDeepSeekKey;
 } else {
@@ -102,6 +143,7 @@ console.log("pilot smoke ok", {
   chatMode: chat.mode,
   chatSources: context.sources.length,
   tradeMode: trade.mode,
+  strategyMode: strategy.mode,
   followUpMode: followUpTrade.mode,
   quote: quote.status,
   guardian: compiled.guardian.decision,

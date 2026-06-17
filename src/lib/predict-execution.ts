@@ -1,6 +1,6 @@
 import { Transaction } from "@mysten/sui/transactions";
 
-import type { PtbTransactionData } from "./types";
+import type { BatchPredictMintTransactionData, PtbTransactionData } from "./types";
 
 const SUI_OBJECT_ID = /^0x[a-fA-F0-9]{1,64}$/;
 
@@ -13,10 +13,22 @@ export type BuildBinaryMintInput = {
   managerId?: string | null;
 };
 
+export type BuildBatchPredictMintInput = {
+  transactionData: BatchPredictMintTransactionData;
+  managerId?: string | null;
+};
+
 export type BuiltPredictMintTransaction = {
   transaction: Transaction;
   managerId: string;
   estimatedCostRaw: string;
+};
+
+export type BuiltBatchPredictMintTransaction = {
+  transaction: Transaction;
+  managerId: string;
+  estimatedCostRaw: string;
+  legCount: number;
 };
 
 export type BuildManagerFundingInput = {
@@ -131,6 +143,70 @@ export function buildBinaryMintTransaction({
     transaction: tx,
     managerId: resolvedManager,
     estimatedCostRaw
+  };
+}
+
+export function buildBatchPredictMintTransaction({
+  transactionData,
+  managerId
+}: BuildBatchPredictMintInput): BuiltBatchPredictMintTransaction {
+  const resolvedManager = managerId ?? transactionData.manager;
+  assertObjectId(transactionData.packageId, "Predict package id");
+  assertObjectId(transactionData.predictObject, "Predict object");
+  assertObjectId(resolvedManager, "PredictManager object");
+
+  if (!transactionData.legs.length) {
+    throw new Error("Batch Predict mint requires at least one leg.");
+  }
+
+  const tx = new Transaction();
+  let estimatedCostRaw = 0n;
+
+  for (const leg of transactionData.legs) {
+    assertObjectId(leg.oracleId, "Predict oracle object");
+    assertU64(leg.expiry, "Predict expiry");
+    assertU64(leg.strikeScaled, "Predict strike");
+    assertU64String(leg.quantityRaw, "Predict quantity");
+    assertU64String(leg.estimatedCostRaw, "Estimated mint cost");
+
+    if (!leg.keyTarget || !leg.keyTarget.startsWith(`${transactionData.packageId}::market_key::`)) {
+      throw new Error(`Batch leg ${leg.legId} has an invalid market key target.`);
+    }
+
+    if (leg.mintTarget !== `${transactionData.packageId}::predict::mint`) {
+      throw new Error(`Batch leg ${leg.legId} has an invalid mint target.`);
+    }
+
+    const key = tx.moveCall({
+      target: leg.keyTarget,
+      arguments: [
+        tx.pure.id(leg.oracleId),
+        tx.pure.u64(leg.expiry),
+        tx.pure.u64(BigInt(leg.strikeScaled))
+      ]
+    });
+
+    tx.moveCall({
+      target: leg.mintTarget,
+      typeArguments: [transactionData.quoteAssetType],
+      arguments: [
+        tx.object(transactionData.predictObject),
+        tx.object(resolvedManager),
+        tx.object(leg.oracleId),
+        key,
+        tx.pure.u64(BigInt(leg.quantityRaw)),
+        tx.object("0x6")
+      ]
+    });
+
+    estimatedCostRaw += BigInt(leg.estimatedCostRaw);
+  }
+
+  return {
+    transaction: tx,
+    managerId: resolvedManager,
+    estimatedCostRaw: estimatedCostRaw.toString(),
+    legCount: transactionData.legs.length
   };
 }
 

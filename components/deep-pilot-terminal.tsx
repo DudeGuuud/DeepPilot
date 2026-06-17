@@ -32,6 +32,7 @@ import { PredictMarketChart } from "@/components/predict-market-chart";
 import { TradeTicket } from "@/components/trade-ticket";
 import {
   assertExecuted,
+  buildBatchPredictMintTransaction,
   buildBinaryMintTransaction,
   buildCreatePredictManagerTransaction,
   extractPredictManagerId,
@@ -43,6 +44,9 @@ import { cn } from "@/src/lib/utils";
 import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
 import type {
   CompileResult,
+  BatchPredictMintTransactionData,
+  CompiledTradeLeg,
+  ExecutionReadinessCheck,
   GuardianFinding,
   MarketDiscoveryResult,
   MarketListItem,
@@ -52,6 +56,7 @@ import type {
   PredictMarketSnapshot,
   RagSource,
   RiskLevel,
+  StrategyReview,
   VaultSummary
 } from "@/src/lib/types";
 
@@ -97,7 +102,23 @@ type PreflightSnapshot = {
   fundingShortfallRaw: string | null;
 };
 
+type PreflightExecutionLike = {
+  estimatedPaymentRaw: string | null;
+  managerBalanceRaw: string | null;
+  fundingShortfallRaw: string | null;
+};
+
 type CompileApiResult = CompileResult & {
+  predict?: {
+    network: string;
+    transport: string;
+    endpoint: string;
+    predictId: string;
+    quoteAsset: string;
+  };
+};
+
+type StrategyApiReview = StrategyReview & {
   predict?: {
     network: string;
     transport: string;
@@ -112,7 +133,7 @@ type ExecutionReceipt = {
   status: "success" | "failed";
   walletAddress: string;
   network: "devnet" | "testnet";
-  action: "manager_create" | "predict_mint";
+  action: "manager_create" | "predict_mint" | "strategy_batch_mint";
   managerId?: string | null;
   note: string;
 };
@@ -140,6 +161,7 @@ function TerminalExperience() {
   const urlOracleId = useMemo(() => oracleIdFromSearch(searchParams), [searchParams]);
   const urlStrike = useMemo(() => strikeFromSearch(searchParams), [searchParams]);
   const urlManagerId = useMemo(() => managerIdFromSearch(searchParams), [searchParams]);
+  const reviewToken = useMemo(() => reviewTokenFromSearch(searchParams), [searchParams]);
   const [activeRouteOracleId, setActiveRouteOracleId] = useState<string | null>(null);
   const routeOracleIsActive = Boolean(urlOracleId && activeRouteOracleId === urlOracleId);
   const routeIntent = DEFAULT_INTENT;
@@ -152,6 +174,8 @@ function TerminalExperience() {
   const [sourcesExpanded, setSourcesExpanded] = useState(false);
   const [marketPreview, setMarketPreview] = useState<MarketDiscoveryResult | null>(null);
   const [compiled, setCompiled] = useState<CompileApiResult | null>(null);
+  const [strategyReview, setStrategyReview] = useState<StrategyApiReview | null>(null);
+  const [selectedStrategyLegIds, setSelectedStrategyLegIds] = useState<string[]>([]);
   const [streamTimeline, setStreamTimeline] = useState<CompileResult["timeline"]>([]);
   const [receipt, setReceipt] = useState<ExecutionReceipt | null>(null);
   const [busy, setBusy] = useState<"pilot" | "execute" | null>(null);
@@ -173,6 +197,8 @@ function TerminalExperience() {
     setRagSources([]);
     setSourcesExpanded(false);
     setCompiled(null);
+    setStrategyReview(null);
+    setSelectedStrategyLegIds([]);
     setStreamTimeline([]);
     setReceipt(null);
     setBusy(null);
@@ -190,6 +216,44 @@ function TerminalExperience() {
   useEffect(() => {
     resetPilotRuntime(routeIntent);
   }, [resetPilotRuntime, routeIntent, routeStateKey]);
+
+  useEffect(() => {
+    if (!reviewToken) {
+      return;
+    }
+
+    const token = reviewToken;
+    let cancelled = false;
+
+    async function loadReviewSeed() {
+      try {
+        const response = await fetch(`/api/review-seed?token=${encodeURIComponent(token)}`, {
+          cache: "no-store"
+        });
+
+        if (!response.ok) {
+          throw new Error("Review link is invalid or expired.");
+        }
+
+        const payload = await response.json() as { seed?: { message?: string } };
+        const message = payload.seed?.message?.trim();
+
+        if (!cancelled && message) {
+          await runPilotRef.current(message, managerId, { openTradeModal: true, clearComposer: false });
+        }
+      } catch (seedError) {
+        if (!cancelled) {
+          setError(seedError instanceof Error ? seedError.message : "Review link is invalid or expired.");
+        }
+      }
+    }
+
+    void loadReviewSeed();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [managerId, reviewToken]);
 
   useEffect(() => {
     const stopPendingPilot = () => {
@@ -232,7 +296,14 @@ function TerminalExperience() {
     setTradeModalStatus("idle");
     setTradeModalOpen(false);
     setPreflightSnapshot(null);
+    setStrategyReview(null);
+    setSelectedStrategyLegIds([]);
   }, [account?.address]);
+
+  const effectiveStrategyReview = useMemo(
+    () => strategyReview ? applyStrategySelection(strategyReview, selectedStrategyLegIds) : null,
+    [selectedStrategyLegIds, strategyReview]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -306,6 +377,8 @@ function TerminalExperience() {
     setError(null);
     setReceipt(null);
     setCompiled(null);
+    setStrategyReview(null);
+    setSelectedStrategyLegIds([]);
     setConfirmedReviewFingerprint(null);
     setPreflightSnapshot(null);
     setPilotMode(null);
@@ -419,7 +492,7 @@ function TerminalExperience() {
   function handlePilotEvent(event: PilotStreamEvent, assistantId: string) {
     if (event.type === "mode") {
       setPilotMode(event.mode);
-      if (event.mode === "trade") {
+      if (event.mode === "trade" || event.mode === "strategy") {
         setTradeModalOpen(true);
         setTradeModalStatus("compiling");
       }
@@ -448,7 +521,7 @@ function TerminalExperience() {
     }
 
     if (event.type === "stage") {
-      if (tradeModalOpen || pilotMode === "trade") {
+      if (tradeModalOpen || pilotMode === "trade" || pilotMode === "strategy") {
         setTradeModalStatus("compiling");
       }
       setStreamTimeline((current) => upsertStage(current, event));
@@ -465,6 +538,8 @@ function TerminalExperience() {
       }
 
       setCompiled(result);
+      setStrategyReview(null);
+      setSelectedStrategyLegIds([]);
       setPilotMode("trade");
       setTradeModalOpen(true);
       setTradeModalStatus(tradeStatusForCompiled(result));
@@ -473,6 +548,30 @@ function TerminalExperience() {
         mode: "trade",
         pending: false,
         content: tradeAssistantCopy(result)
+      });
+      return;
+    }
+
+    if (event.type === "strategy_compiled") {
+      const review = event.review as StrategyApiReview;
+      const compiledManagerId = review.aggregateReadiness.managerId ?? null;
+
+      if (compiledManagerId) {
+        setManagerId(compiledManagerId);
+        updateManagerInUrl(compiledManagerId);
+      }
+
+      setCompiled(null);
+      setStrategyReview(review);
+      setSelectedStrategyLegIds(defaultSelectedStrategyLegIds(review));
+      setPilotMode("strategy");
+      setTradeModalOpen(true);
+      setTradeModalStatus(strategyStatusForReview(review));
+      setTradeDetailsExpanded(false);
+      updateAssistantMessage(assistantId, {
+        mode: "strategy",
+        pending: false,
+        content: strategyAssistantCopy(review)
       });
       return;
     }
@@ -516,6 +615,11 @@ function TerminalExperience() {
 
   async function executePredict() {
     if (executionRef.current) {
+      return;
+    }
+
+    if (effectiveStrategyReview) {
+      await executeStrategy(effectiveStrategyReview);
       return;
     }
 
@@ -739,6 +843,163 @@ function TerminalExperience() {
     });
   }
 
+  async function executeStrategy(current: StrategyApiReview) {
+    if (executionRef.current) {
+      return;
+    }
+
+    if (!account) {
+      toast({
+        variant: "destructive",
+        title: "Wallet required",
+        description: "Connect a wallet before signing a strategy batch."
+      });
+      return;
+    }
+
+    executionRef.current = true;
+    setBusy("execute");
+    setError(null);
+    setPreflightSnapshot(null);
+    setTradeModalOpen(true);
+    setTradeModalStatus("ready_to_sign");
+
+    try {
+      const executionNetwork = current.batchTransactionData?.network === "devnet" ? "devnet" : "testnet";
+
+      if (network && network !== executionNetwork) {
+        throw new Error(`Switch wallet network to ${executionNetwork} before signing.`);
+      }
+
+      const executableReview = await refreshExecutableStrategyReview(current);
+      validateStrategyForSigning(executableReview);
+      await signStrategyBatch(executableReview, executionNetwork);
+    } catch (strategyError) {
+      const message = explainWalletExecutionError(strategyError);
+      setError(message);
+      setTradeModalStatus((currentStatus) => currentStatus === "review_changed" || currentStatus === "preflight_failed" || currentStatus === "funding_required" ? currentStatus : "failed");
+      toast({
+        variant: "destructive",
+        title: "Strategy execution failed",
+        description: message
+      });
+    } finally {
+      executionRef.current = false;
+      setBusy(null);
+    }
+  }
+
+  async function refreshExecutableStrategyReview(current: StrategyApiReview) {
+    let executableReview = current;
+    const currentFingerprint = strategyExecutableFingerprint(current);
+    const canSignConfirmedReview =
+      current.reviewFreshness.refreshed &&
+      confirmedReviewFingerprint === currentFingerprint &&
+      isStrategyReviewSignableNow(current);
+
+    if (!canSignConfirmedReview) {
+      const refreshed = applyStrategySelection(
+        await refreshStrategyBeforeSigning(current),
+        selectedStrategyLegIds
+      );
+
+      if (!isStrategyReviewActive(refreshed)) {
+        setStrategyReview(refreshed);
+        setConfirmedReviewFingerprint(null);
+        throw new Error(refreshed.reviewFreshness.reason || "One selected strategy leg expired. Refresh review.");
+      }
+
+      if (!refreshed.aggregateReadiness.canSign || !refreshed.batchTransactionData) {
+        setStrategyReview(refreshed);
+        setConfirmedReviewFingerprint(null);
+        throw new Error(refreshed.aggregateReadiness.reason);
+      }
+
+      const refreshedFingerprint = strategyExecutableFingerprint(refreshed);
+      setStrategyReview(refreshed);
+
+      if (currentFingerprint !== refreshedFingerprint) {
+        setConfirmedReviewFingerprint(refreshedFingerprint);
+        setTradeDetailsExpanded(false);
+        setTradeModalStatus("review_changed");
+        throw new Error("Strategy review changed. Check the updated legs, then click Review & Sign again.");
+      }
+
+      setConfirmedReviewFingerprint(refreshedFingerprint);
+      executableReview = refreshed;
+    } else if (!isStrategyReviewActive(executableReview)) {
+      setConfirmedReviewFingerprint(null);
+      throw new Error(executableReview.reviewFreshness.reason || "One selected strategy leg expired. Refresh review.");
+    }
+
+    return executableReview;
+  }
+
+  function validateStrategyForSigning(current: StrategyApiReview) {
+    if (!current.batchTransactionData || !current.aggregateReadiness.canSign) {
+      if (current.aggregateReadiness.fundingStatus === "insufficient") {
+        setTradeModalStatus("funding_required");
+        throw new Error("Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this strategy.");
+      }
+
+      throw new Error(current.aggregateReadiness.reason);
+    }
+
+    if (!isStrategyReviewSignableNow(current)) {
+      setConfirmedReviewFingerprint(null);
+      throw new Error("Strategy quote is stale or unavailable. Refresh the review before signing.");
+    }
+  }
+
+  async function signStrategyBatch(current: StrategyApiReview, executionNetwork: "devnet" | "testnet") {
+    if (!account || !current.batchTransactionData) {
+      throw new Error("Connect a wallet before signing a strategy batch.");
+    }
+
+    const built = buildBatchPredictMintTransaction({
+      transactionData: current.batchTransactionData,
+      managerId: current.aggregateReadiness.managerId
+    });
+    setStrategyReview(current);
+    await preflightSuiGas({
+      network: executionNetwork,
+      owner: account.address,
+      execution: current.aggregateReadiness
+    });
+    setConfirmedReviewFingerprint(null);
+    setTradeModalStatus("signing");
+    const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
+    const digest = getExecutedDigest(signed);
+    const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
+      digest,
+      include: {
+        effects: true,
+        events: true,
+        objectTypes: true
+      }
+    });
+    assertExecuted(confirmed);
+
+    const executionReceipt: ExecutionReceipt = {
+      digest,
+      status: "success",
+      walletAddress: account.address,
+      network: executionNetwork,
+      action: "strategy_batch_mint",
+      managerId: built.managerId,
+      note: `Executed ${built.legCount} DeepBook Predict legs in one batch transaction.`
+    };
+    setReceipt(executionReceipt);
+    setTradeModalStatus("executed");
+    saveExecutionReceipt(executionReceipt, current.plan.raw, current);
+
+    toast({
+      variant: "success",
+      title: "Strategy batch executed",
+      description: digest
+    });
+  }
+
   async function preflightSuiGas({
     network: executionNetwork,
     owner,
@@ -746,7 +1007,7 @@ function TerminalExperience() {
   }: {
     network: "devnet" | "testnet";
     owner: string;
-    execution: NonNullable<CompileApiResult["ptb"]>["execution"] | null;
+    execution: PreflightExecutionLike | null;
   }) {
     setTradeModalStatus("ready_to_sign");
 
@@ -812,8 +1073,29 @@ function TerminalExperience() {
     return await response.json() as CompileApiResult;
   }
 
+  async function refreshStrategyBeforeSigning(current: StrategyApiReview): Promise<StrategyApiReview> {
+    const response = await fetch("/api/strategy/compile", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        message: current.plan.raw,
+        walletAddress: account?.address,
+        managerId: current.aggregateReadiness.managerId ?? managerId ?? undefined,
+        refreshed: true,
+        conversation: buildConversationForPilot(messages),
+        lastMarketThesis: latestMarketThesis(messages)
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error("Could not refresh strategy review before signing.");
+    }
+
+    return await response.json() as StrategyApiReview;
+  }
+
   const guardian = compiled?.guardian;
-  const blocked = guardian?.blocked ?? true;
+  const blocked = effectiveStrategyReview ? !effectiveStrategyReview.aggregateReadiness.canSign : guardian?.blocked ?? true;
   const marketStrike = compiled?.market?.metrics.selectedStrike;
   const intentStrike = compiled?.intent.status === "ready" ? compiled.intent.strike : undefined;
   const effectiveUrlOracleId = routeOracleIsActive ? urlOracleId : null;
@@ -832,7 +1114,7 @@ function TerminalExperience() {
         : effectiveUrlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
   const hasLockedStrike = Boolean(compiled?.market || intentStrike || effectiveUrlStrike);
   const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
-  const showPilotActions = Boolean(pilotMode || compiled || busy === "pilot" || receipt || error || ragSources.length > 0);
+  const showPilotActions = Boolean(pilotMode || compiled || effectiveStrategyReview || busy === "pilot" || receipt || error || ragSources.length > 0);
 
   return (
     <AppShell
@@ -841,7 +1123,7 @@ function TerminalExperience() {
       meta={
         <>
           <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
-            {compiled?.predict?.transport ?? "Predict server"}
+            {compiled?.predict?.transport ?? effectiveStrategyReview?.predict?.transport ?? "Predict server"}
           </Badge>
           <Badge variant="outline" className="h-8 border-border bg-card text-muted-foreground">
             {network ?? "testnet"}
@@ -853,6 +1135,8 @@ function TerminalExperience() {
           open={tradeModalOpen}
           status={tradeModalStatus}
           compiled={compiled}
+          strategyReview={effectiveStrategyReview}
+          pilotMode={pilotMode}
           streamTimeline={streamTimeline}
           receipt={receipt}
           error={error}
@@ -869,6 +1153,12 @@ function TerminalExperience() {
           }}
           onDetailsChange={setTradeDetailsExpanded}
           onExpandFinding={setExpandedFinding}
+          onToggleStrategyLeg={(legId) => {
+            setSelectedStrategyLegIds((current) => current.includes(legId)
+              ? current.filter((id) => id !== legId)
+              : [...current, legId]);
+            setConfirmedReviewFingerprint(null);
+          }}
           onConfirm={executePredict}
         />
 
@@ -901,6 +1191,7 @@ function TerminalExperience() {
                 tradeStatus={tradeModalStatus}
                 busy={busy === "pilot"}
                 compiled={compiled}
+                strategyReview={effectiveStrategyReview}
                 receipt={receipt}
                 error={error}
                 sources={ragSources}
@@ -1058,6 +1349,7 @@ function PilotActionsCard({
   tradeStatus,
   busy,
   compiled,
+  strategyReview,
   receipt,
   error,
   sources,
@@ -1069,6 +1361,7 @@ function PilotActionsCard({
   tradeStatus: TradeModalStatus;
   busy: boolean;
   compiled: CompileApiResult | null;
+  strategyReview: StrategyApiReview | null;
   receipt: ExecutionReceipt | null;
   error: string | null;
   sources: RagSource[];
@@ -1076,7 +1369,8 @@ function PilotActionsCard({
   onToggleSources: () => void;
   onOpenReview: () => void;
 }) {
-  const hasTrade = pilotMode === "trade" || Boolean(compiled);
+  const hasStrategy = pilotMode === "strategy" || Boolean(strategyReview);
+  const hasTrade = pilotMode === "trade" || Boolean(compiled) || hasStrategy;
   const modeLabel = pilotMode ? pilotMode.toUpperCase() : busy ? "ROUTING" : "STANDBY";
 
   return (
@@ -1099,7 +1393,12 @@ function PilotActionsCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 p-4 pt-0">
-        {hasTrade ? (
+        {hasStrategy && strategyReview ? (
+          <>
+            <StatusPill status={tradeStatus} compiled={null} strategyReview={strategyReview} receipt={receipt} error={error} />
+            <StrategySummaryBlock review={strategyReview} />
+          </>
+        ) : hasTrade ? (
           <>
             <StatusPill status={tradeStatus} compiled={compiled} receipt={receipt} error={error} />
             <ReviewSummaryBlock compiled={compiled} busy={busy} />
@@ -1120,6 +1419,8 @@ function TradeReviewModal({
   open,
   status,
   compiled,
+  strategyReview,
+  pilotMode,
   streamTimeline,
   receipt,
   error,
@@ -1132,11 +1433,14 @@ function TradeReviewModal({
   onClose,
   onDetailsChange,
   onExpandFinding,
+  onToggleStrategyLeg,
   onConfirm
 }: {
   open: boolean;
   status: TradeModalStatus;
   compiled: CompileApiResult | null;
+  strategyReview: StrategyApiReview | null;
+  pilotMode: "chat" | "trade" | "strategy" | null;
   streamTimeline: CompileResult["timeline"];
   receipt: ExecutionReceipt | null;
   error: string | null;
@@ -1149,16 +1453,19 @@ function TradeReviewModal({
   onClose: () => void;
   onDetailsChange: (value: boolean) => void;
   onExpandFinding: (value: string | null) => void;
+  onToggleStrategyLeg: (legId: string) => void;
   onConfirm: () => void;
 }) {
   if (!open) {
     return null;
   }
 
-  const action = executionAction(compiled, blocked);
+  const action = strategyReview ? strategyExecutionAction(strategyReview, blocked) : executionAction(compiled, blocked);
   const canConfirm = action.canConfirm && !busy && status !== "executed";
-  const quoteOnly = isQuoteOnlyResult(compiled);
-  const fundingRequired = isFundingRequiredResult(compiled);
+  const quoteOnly = !strategyReview && isQuoteOnlyResult(compiled);
+  const fundingRequired = strategyReview?.aggregateReadiness.fundingStatus === "insufficient" || isFundingRequiredResult(compiled);
+  const isStrategyModal = Boolean(strategyReview) || pilotMode === "strategy";
+  const showDetails = isStrategyModal || detailsExpanded;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/82 px-3 py-5 backdrop-blur-md">
@@ -1179,9 +1486,9 @@ function TradeReviewModal({
               </div>
               <div className="min-w-0">
                 <h2 id="trade-review-modal-title" className="truncate text-base font-semibold text-foreground">
-                  {tradeModalTitle(status, compiled)}
+                  {strategyReview ? strategyModalTitle(status, strategyReview) : tradeModalTitle(status, compiled)}
                 </h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{tradeModalSubtitle(status, compiled)}</p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">{strategyReview ? strategyModalSubtitle(status, strategyReview) : tradeModalSubtitle(status, compiled)}</p>
               </div>
             </div>
           </div>
@@ -1193,9 +1500,11 @@ function TradeReviewModal({
         <div className="max-h-[calc(92vh-82px)] overflow-y-auto p-4">
           <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
             <div className="space-y-3">
-              <StatusPill status={status} compiled={compiled} receipt={receipt} error={error} />
-              <ReviewSummaryBlock compiled={compiled} busy={status === "compiling"} />
-              <TradeModalSteps status={status} compiled={compiled} streamTimeline={streamTimeline} preflight={preflight} busy={busy} />
+              <StatusPill status={status} compiled={compiled} strategyReview={strategyReview} receipt={receipt} error={error} />
+              {strategyReview ? <StrategySummaryBlock review={strategyReview} /> : <ReviewSummaryBlock compiled={compiled} busy={status === "compiling"} />}
+              {strategyReview
+                ? <StrategyModalSteps status={status} review={strategyReview} preflight={preflight} busy={busy} />
+                : <TradeModalSteps status={status} compiled={compiled} streamTimeline={streamTimeline} preflight={preflight} busy={busy} />}
             </div>
 
             <div className="space-y-3">
@@ -1215,11 +1524,13 @@ function TradeReviewModal({
                 </div>
               ) : null}
 
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <Button variant="outline" onClick={() => onDetailsChange(!detailsExpanded)}>
-                  <ChevronDown className={cn("transition-transform", detailsExpanded && "rotate-180")} />
-                  {detailsExpanded ? "Hide details" : "Show details"}
-                </Button>
+              <div className={cn("flex flex-col gap-2 sm:flex-row sm:items-center", isStrategyModal ? "sm:justify-end" : "sm:justify-between")}>
+                {!isStrategyModal ? (
+                  <Button variant="outline" onClick={() => onDetailsChange(!detailsExpanded)}>
+                    <ChevronDown className={cn("transition-transform", detailsExpanded && "rotate-180")} />
+                    {detailsExpanded ? "Hide details" : "Show details"}
+                  </Button>
+                ) : null}
                 <Button
                   className="h-10"
                   variant={canConfirm ? "default" : blocked ? "destructive" : "outline"}
@@ -1239,22 +1550,28 @@ function TradeReviewModal({
               </div>
 
               <AnimatePresence initial={false}>
-                {detailsExpanded ? (
+                {showDetails ? (
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
                     exit={{ opacity: 0, height: 0 }}
                     className="space-y-3 overflow-hidden"
                   >
-                    {!quoteOnly ? <OutcomeQuoteCard compiled={compiled} busy={status === "compiling"} /> : null}
-                    <SafetyChecksCard
-                      compiled={compiled}
-                      busy={status === "compiling"}
-                      streamTimeline={streamTimeline}
-                      expandedFinding={expandedFinding}
-                      onExpand={onExpandFinding}
-                    />
-                    {!quoteOnly && !fundingRequired ? (
+                    {strategyReview ? (
+                      <StrategyLegsCard review={strategyReview} onToggleLeg={onToggleStrategyLeg} />
+                    ) : isStrategyModal ? null : !quoteOnly ? <OutcomeQuoteCard compiled={compiled} busy={status === "compiling"} /> : null}
+                    {strategyReview ? (
+                      <StrategySafetyCard review={strategyReview} />
+                    ) : isStrategyModal ? null : (
+                      <SafetyChecksCard
+                        compiled={compiled}
+                        busy={status === "compiling"}
+                        streamTimeline={streamTimeline}
+                        expandedFinding={expandedFinding}
+                        onExpand={onExpandFinding}
+                      />
+                    )}
+                    {!strategyReview && !quoteOnly && !fundingRequired ? (
                       <>
                         <TransactionCard compiled={compiled} accountAddress={accountAddress} />
                         <ExecutionCard
@@ -1282,20 +1599,24 @@ function TradeReviewModal({
 function StatusPill({
   status,
   compiled,
+  strategyReview,
   receipt,
   error
 }: {
   status: TradeModalStatus;
   compiled?: CompileApiResult | null;
+  strategyReview?: StrategyApiReview | null;
   receipt: ExecutionReceipt | null;
   error: string | null;
 }) {
   const guardianBlocked = isGuardianBlockedReview(status, compiled ?? null);
   const blocked = status === "failed" || status === "preflight_failed" || status === "funding_required";
   const complete = status === "executed";
-  const label = guardianBlocked ? "Review blocked" : tradeStatusLabel(status);
+  const label = strategyReview && !complete ? "Strategy review" : guardianBlocked ? "Review blocked" : tradeStatusLabel(status);
   const description = guardianBlocked
     ? compiled?.guardian.summary ?? "Guardian blocked this review before wallet signing."
+    : strategyReview && !complete
+      ? strategyReview.aggregateReadiness.reason
     : tradeStatusDescription(status);
 
   return (
@@ -1326,6 +1647,27 @@ function ReviewSummaryBlock({
   busy: boolean;
 }) {
   const rows = reviewSummaryRows(compiled, busy);
+
+  return (
+    <div className="rounded-md border border-border bg-background/55">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-[92px_1fr] gap-3 border-b border-border/70 px-3 py-2 last:border-b-0">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+          <span className="min-w-0 truncate font-mono text-xs text-foreground/85">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StrategySummaryBlock({ review }: { review: StrategyApiReview }) {
+  const rows: Array<[string, string]> = [
+    ["Mode", "STRATEGY"],
+    ["Legs", `${review.aggregateReadiness.readyLegCount}/${review.aggregateReadiness.selectedLegCount} ready`],
+    ["Payment", `${formatRawDusdc(review.aggregateReadiness.estimatedPaymentRaw)} DUSDC`],
+    ["Balance", `${formatRawDusdc(review.aggregateReadiness.managerBalanceRaw)} DUSDC`],
+    ["Funding", review.aggregateReadiness.fundingStatus.toUpperCase()]
+  ];
 
   return (
     <div className="rounded-md border border-border bg-background/55">
@@ -1480,6 +1822,70 @@ function TradeModalSteps({
   );
 }
 
+function StrategyModalSteps({
+  status,
+  review,
+  preflight,
+  busy
+}: {
+  status: TradeModalStatus;
+  review: StrategyApiReview;
+  preflight: PreflightSnapshot | null;
+  busy: boolean;
+}) {
+  const steps: Array<{ label: string; state: "complete" | "blocked" | "pending"; detail: string }> = [
+    {
+      label: "Planning strategy",
+      state: review.plan.missing.length ? "blocked" : "complete",
+      detail: review.plan.missing.length ? `Missing ${review.plan.missing.join(", ")}` : review.plan.thesis
+    },
+    {
+      label: "Compiling legs",
+      state: review.compiledLegs.some((leg) => leg.status === "blocked") ? "blocked" : "complete",
+      detail: `${review.aggregateReadiness.readyLegCount}/${review.compiledLegs.length} legs ready`
+    },
+    {
+      label: "Aggregate Trading Balance",
+      state: review.aggregateReadiness.fundingStatus === "sufficient" ? "complete" : "blocked",
+      detail: review.aggregateReadiness.fundingStatus === "insufficient"
+        ? `Shortfall ${formatRawDusdc(review.aggregateReadiness.fundingShortfallRaw)} DUSDC`
+        : `${formatRawDusdc(review.aggregateReadiness.estimatedPaymentRaw)} DUSDC estimated pay`
+    },
+    {
+      label: "SUI gas preflight",
+      state: status === "preflight_failed" ? "blocked" : preflight || status === "signing" || status === "executed" ? "complete" : "pending",
+      detail: preflight ? `SUI ${formatRawSui(preflight.suiBalanceRaw)}` : "Wallet pays gas automatically"
+    },
+    {
+      label: status === "executed" ? "Executed" : "Ready to batch sign",
+      state: status === "executed" ? "complete" : status === "failed" ? "blocked" : status === "signing" ? "pending" : review.aggregateReadiness.canSign ? "complete" : "pending",
+      detail: `${review.aggregateReadiness.selectedLegCount} selected legs`
+    }
+  ];
+
+  return (
+    <div className="rounded-md border border-border bg-background/55 p-3">
+      <div className="space-y-1">
+        {steps.map((step, index) => (
+          <motion.div
+            key={step.label}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.03 }}
+            className="grid grid-cols-[24px_1fr] gap-3 rounded-md py-1.5"
+          >
+            <StatusIcon state={step.state} busy={busy || status === "compiling" || status === "signing"} />
+            <div className="min-w-0">
+              <p className="truncate text-sm text-foreground">{step.label}</p>
+              <p className="truncate text-xs text-muted-foreground">{step.detail}</p>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OutcomeQuoteCard({
   compiled,
   busy
@@ -1546,6 +1952,116 @@ function OutcomeQuoteCard({
             </p>
           </>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StrategyLegsCard({
+  review,
+  onToggleLeg
+}: {
+  review: StrategyApiReview;
+  onToggleLeg: (legId: string) => void;
+}) {
+  return (
+    <Card className="glass-line overflow-hidden">
+      <CardHeader className="p-4 pb-2">
+        <SectionHeading
+          title="Strategy Legs"
+          detail={`${review.aggregateReadiness.selectedLegCount} selected`}
+          icon={<ClipboardCheck className="h-4 w-4" />}
+        />
+        <CardDescription className="text-xs">
+          Candidate plan only. Batch signing uses selected ready legs.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3 p-4 pt-0">
+        <div className="rounded-md border border-border bg-background/55 p-3">
+          <p className="text-sm text-foreground">{review.plan.thesis}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {review.plan.riskNotes.map((note) => (
+              <Badge key={note} variant="outline" className="border-border text-[10px] text-muted-foreground">
+                {note}
+              </Badge>
+            ))}
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-md border border-border">
+          <div className="grid grid-cols-[36px_1fr_94px_94px_86px] gap-2 border-b border-border bg-background/70 px-3 py-2 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            <span />
+            <span>Outcome</span>
+            <span>Est. Pay</span>
+            <span>Max Payout</span>
+            <span>Status</span>
+          </div>
+          {review.compiledLegs.map((leg) => {
+            const quote = leg.result?.quote;
+            const disabled = leg.status === "blocked";
+
+            return (
+              <div key={leg.id} className="grid grid-cols-[36px_1fr_94px_94px_86px] gap-2 border-b border-border/70 px-3 py-2 last:border-b-0">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-foreground"
+                    checked={leg.selected}
+                    disabled={disabled}
+                    onChange={() => onToggleLeg(leg.id)}
+                    aria-label={`Select ${leg.id}`}
+                  />
+                </label>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">
+                    BTC {leg.leg.direction?.toUpperCase() ?? "--"}
+                  </p>
+                  <p className="mt-1 truncate text-xs text-muted-foreground">
+                    {formatExpiry(quote?.expiry ?? leg.result?.market?.oracle.expiry ?? null)} · {quote?.oracleId ? shortAddress(quote.oracleId) : leg.blockReason ?? leg.leg.note}
+                  </p>
+                </div>
+                <span className="self-center text-xs text-foreground">{formatDusdc(quote?.estimatedCostDusdc ?? null)}</span>
+                <span className="self-center text-xs text-foreground">{formatDusdc(quote?.maxPayoutDusdc ?? null)}</span>
+                <Badge variant="outline" className={cn("h-7 justify-center border-border text-[10px]", leg.status === "blocked" && "border-destructive/35 text-destructive")}>
+                  {leg.status}
+                </Badge>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function StrategySafetyCard({ review }: { review: StrategyApiReview }) {
+  return (
+    <Card className="glass-line">
+      <CardHeader className="pb-2">
+        <SectionHeading
+          title="Batch Readiness"
+          detail={review.aggregateReadiness.canSign ? "READY" : "LOCKED"}
+          icon={<Shield className="h-4 w-4" />}
+        />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-3">
+          <MarketMetric label="Estimated Pay" value={`${formatRawDusdc(review.aggregateReadiness.estimatedPaymentRaw)} DUSDC`} />
+          <MarketMetric label="Trading Balance" value={`${formatRawDusdc(review.aggregateReadiness.managerBalanceRaw)} DUSDC`} />
+          <MarketMetric label="Shortfall" value={`${formatRawDusdc(review.aggregateReadiness.fundingShortfallRaw)} DUSDC`} />
+        </div>
+        <div className="space-y-1">
+          {review.aggregateReadiness.checks.map((check) => (
+            <div key={check.label} className="grid grid-cols-[24px_1fr] gap-3 rounded-md py-1.5">
+              <StatusIcon state={check.passed ? "complete" : "blocked"} busy={false} />
+              <div className="min-w-0">
+                <p className="truncate text-sm text-foreground">{check.label}</p>
+                <p className="truncate text-xs text-muted-foreground">{check.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+        <EncryptedMemoryPreviewCard />
       </CardContent>
     </Card>
   );
@@ -1996,6 +2512,22 @@ function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
   return { canConfirm, label, href: fundingHref };
 }
 
+function strategyExecutionAction(review: StrategyApiReview, blocked: boolean) {
+  const fundingRequired = review.aggregateReadiness.fundingStatus === "insufficient";
+  const fundingHref = fundingRequired ? profileFundingHrefForManager(review.aggregateReadiness.managerId) : null;
+  const canRefreshAndBatch = Boolean(review.batchTransactionData && review.aggregateReadiness.canSign && !blocked && isStrategyReviewActive(review));
+  const canConfirm = canRefreshAndBatch || Boolean(fundingHref);
+  const label = fundingHref
+    ? "Open Profile Funding"
+    : canRefreshAndBatch
+      ? "Batch Review & Sign"
+      : !review.aggregateReadiness.walletAddress
+        ? "Connect wallet"
+        : "Strategy locked";
+
+  return { canConfirm, label, href: fundingHref };
+}
+
 function isQuoteOnlyResult(compiled: CompileApiResult | null) {
   return compiled?.intent.status === "ready" && compiled.intent.action === "predict_quote_only";
 }
@@ -2006,6 +2538,11 @@ function isFundingRequiredResult(compiled: CompileApiResult | null) {
 
 function profileFundingHref(compiled: CompileApiResult | null) {
   const managerId = compiled?.ptb?.execution.managerId ?? compiled?.profile?.managerId;
+
+  return profileFundingHrefForManager(managerId);
+}
+
+function profileFundingHrefForManager(managerId?: string | null) {
   const params = new URLSearchParams({ fund: "1" });
 
   if (managerId) {
@@ -2102,6 +2639,30 @@ function tradeModalTitle(status: TradeModalStatus, compiled?: CompileApiResult |
   }
 }
 
+function strategyModalTitle(status: TradeModalStatus, review: StrategyApiReview) {
+  if (status === "funding_required") {
+    return "Strategy funding required";
+  }
+
+  if (status === "review_changed") {
+    return "Strategy review changed";
+  }
+
+  if (status === "signing") {
+    return "Confirm strategy batch";
+  }
+
+  if (status === "executed") {
+    return "Strategy executed";
+  }
+
+  if (!review.aggregateReadiness.canSign) {
+    return "Strategy candidate";
+  }
+
+  return "Strategy batch review";
+}
+
 function tradeModalSubtitle(status: TradeModalStatus, compiled: CompileApiResult | null) {
   if (compiled?.intent.status === "ready" && compiled.intent.action === "predict_quote_only") {
     return "Quote-only preview · no wallet action required";
@@ -2116,6 +2677,22 @@ function tradeModalSubtitle(status: TradeModalStatus, compiled: CompileApiResult
   }
 
   return tradeStatusDescription(status);
+}
+
+function strategyModalSubtitle(status: TradeModalStatus, review: StrategyApiReview) {
+  if (status === "funding_required") {
+    return "Trading Balance is insufficient for the selected strategy legs.";
+  }
+
+  if (status === "review_changed") {
+    return "One or more selected legs changed after refresh. Review the updated batch before signing.";
+  }
+
+  if (status === "executed") {
+    return "Receipt saved locally. Predict positions may take a moment to appear in Profile.";
+  }
+
+  return `${review.aggregateReadiness.selectedLegCount} selected legs · ${formatRawDusdc(review.aggregateReadiness.estimatedPaymentRaw)} DUSDC estimated payment · candidate plan, not investment advice.`;
 }
 
 function tradeStatusLabel(status: TradeModalStatus) {
@@ -2286,6 +2863,207 @@ function sanitizePilotContext(value: string) {
     .trim();
 }
 
+function defaultSelectedStrategyLegIds(review: StrategyApiReview) {
+  return review.compiledLegs
+    .filter((leg) => leg.selected && leg.status !== "blocked")
+    .map((leg) => leg.id);
+}
+
+function applyStrategySelection(review: StrategyApiReview, selectedIds: string[]): StrategyApiReview {
+  const selected = new Set(selectedIds);
+  const compiledLegs = review.compiledLegs.map((leg) => ({
+    ...leg,
+    selected: selected.has(leg.id) && leg.status !== "blocked"
+  }));
+  const aggregateReadiness = buildClientAggregateReadiness(compiledLegs);
+  const batchTransactionData = aggregateReadiness.canSign
+    ? buildClientBatchTransactionData(review, compiledLegs)
+    : null;
+
+  return {
+    ...review,
+    compiledLegs,
+    aggregateReadiness,
+    batchTransactionData
+  };
+}
+
+function buildClientAggregateReadiness(compiledLegs: CompiledTradeLeg[]): StrategyApiReview["aggregateReadiness"] {
+  const selected = compiledLegs.filter((leg) => leg.selected);
+  const ready = selected.filter((leg) => leg.status === "ready" && leg.result?.ptb?.execution.canSign);
+  const firstResult = selected.find((leg) => leg.result)?.result ?? null;
+  const profile = firstResult?.profile ?? null;
+  const managerId = firstResult?.ptb?.execution.managerId ?? profile?.managerId ?? null;
+  const walletAddress = profile?.wallet ?? firstResult?.ptb?.execution.walletAddress ?? null;
+  const managerBalanceRaw = profile?.tradingBalanceRaw ?? firstResult?.ptb?.execution.managerBalanceRaw ?? null;
+  const estimatedPaymentRaw = sumRawAmounts(selected.map((leg) => leg.result?.quote?.estimatedCostRaw ?? null));
+  const funding = clientFundingStatus(managerBalanceRaw, estimatedPaymentRaw);
+  const checks: ExecutionReadinessCheck[] = [
+    {
+      label: "Selected legs",
+      passed: selected.length > 0,
+      detail: selected.length ? `${selected.length} selected legs` : "Select at least one ready leg."
+    },
+    {
+      label: "Every selected leg ready",
+      passed: selected.length > 0 && selected.length === ready.length,
+      detail: `${ready.length}/${selected.length} selected legs ready.`
+    },
+    {
+      label: "Wallet connected",
+      passed: Boolean(walletAddress),
+      detail: walletAddress ?? "Connect wallet before batch signing."
+    },
+    {
+      label: "PredictManager linked",
+      passed: Boolean(managerId),
+      detail: managerId ?? "Create or load PredictManager before batch signing."
+    },
+    {
+      label: "Aggregate Trading Balance",
+      passed: funding.status === "sufficient",
+      detail: funding.detail
+    }
+  ];
+  const canSign = checks.every((check) => check.passed);
+
+  return {
+    canSign,
+    mode: canSign ? "wallet_transaction" : "preview_only",
+    reason: canSign
+      ? "All selected legs are ready for one batch wallet signature."
+      : "Batch signing is locked until every selected leg and aggregate funding check passes.",
+    walletAddress,
+    managerId,
+    selectedLegCount: selected.length,
+    readyLegCount: ready.length,
+    blockedLegCount: selected.length - ready.length,
+    estimatedPaymentRaw,
+    estimatedPaymentDusdc: rawDusdcNumber(estimatedPaymentRaw),
+    managerBalanceRaw,
+    managerBalanceDusdc: rawDusdcNumber(managerBalanceRaw),
+    fundingShortfallRaw: funding.shortfallRaw,
+    fundingStatus: funding.status,
+    checks
+  };
+}
+
+function buildClientBatchTransactionData(
+  review: StrategyApiReview,
+  compiledLegs: CompiledTradeLeg[]
+): BatchPredictMintTransactionData | null {
+  const selected = compiledLegs.filter((leg) => leg.selected && leg.result?.ptb?.transactionData);
+  const first = selected[0]?.result?.ptb?.transactionData;
+
+  if (!first) {
+    return null;
+  }
+
+  const commands: BatchPredictMintTransactionData["commands"] = [];
+  const legs = selected.map((leg) => {
+    const transaction = leg.result!.ptb!.transactionData;
+    const keyCommand = transaction.commands.find((command) => command.target.includes("::market_key::"));
+    const mintCommand = transaction.commands.find((command) => command.target.endsWith("::predict::mint"));
+
+    if (keyCommand) {
+      commands.push({ ...keyCommand, index: commands.length + 1, command: `${leg.id}: ${keyCommand.command}` });
+    }
+
+    if (mintCommand) {
+      commands.push({ ...mintCommand, index: commands.length + 1, command: `${leg.id}: ${mintCommand.command}` });
+    }
+
+    return {
+      legId: leg.id,
+      oracleId: transaction.key.oracleId,
+      expiry: transaction.key.expiry,
+      strikeScaled: transaction.key.strikeScaled,
+      direction: transaction.key.direction,
+      keyTarget: transaction.key.target,
+      mintTarget: transaction.mint.target,
+      quantityRaw: transaction.mint.quantityRaw,
+      estimatedCostRaw: transaction.quote?.estimatedCostRaw ?? null
+    };
+  });
+
+  return {
+    kind: "BatchProgrammableTransaction",
+    network: first.network,
+    packageId: first.packageId,
+    predictObject: first.predictObject,
+    quoteAssetType: first.quoteAssetType,
+    manager: review.aggregateReadiness.managerId ?? first.manager,
+    legs,
+    commands
+  };
+}
+
+function strategyStatusForReview(review: StrategyApiReview): TradeModalStatus {
+  if (review.aggregateReadiness.fundingStatus === "insufficient") {
+    return "funding_required";
+  }
+
+  return review.aggregateReadiness.canSign ? "quote_ready" : "failed";
+}
+
+function strategyAssistantCopy(review: StrategyApiReview) {
+  const lines = [
+    "Strategy candidate is ready for review.",
+    `Thesis: ${review.plan.thesis}`,
+    `Legs: ${review.aggregateReadiness.readyLegCount}/${review.aggregateReadiness.selectedLegCount} ready`,
+    `Estimated payment: ${formatRawDusdc(review.aggregateReadiness.estimatedPaymentRaw)} DUSDC`,
+    `Trading Balance: ${formatRawDusdc(review.aggregateReadiness.managerBalanceRaw)} DUSDC`
+  ];
+
+  if (review.plan.missing.length) {
+    lines.push(`Missing before signing: ${review.plan.missing.join(", ")}`);
+  }
+
+  if (!review.aggregateReadiness.canSign) {
+    lines.push(review.aggregateReadiness.reason);
+  }
+
+  lines.push("This is a candidate plan, not investment advice. Review every leg before signing.");
+
+  return lines.join("\n");
+}
+
+function isStrategyReviewActive(review: StrategyApiReview) {
+  return review.reviewFreshness.active && review.compiledLegs
+    .filter((leg) => leg.selected)
+    .every((leg) => {
+      const market = leg.result?.market;
+
+      return Boolean(market && market.oracle.status === "active" && market.oracle.expiry > market.status.current_time_ms);
+    });
+}
+
+function isStrategyReviewSignableNow(review: StrategyApiReview) {
+  if (!isStrategyReviewActive(review)) {
+    return false;
+  }
+
+  return review.compiledLegs
+    .filter((leg) => leg.selected)
+    .every((leg) => leg.result?.quote?.status === "available" && new Date(leg.result.quote.expiresAt).getTime() > Date.now());
+}
+
+function strategyExecutableFingerprint(review: StrategyApiReview) {
+  return JSON.stringify({
+    selected: review.compiledLegs
+      .filter((leg) => leg.selected)
+      .map((leg) => ({
+        id: leg.id,
+        oracleId: leg.result?.ptb?.transactionData.oracleId ?? null,
+        key: leg.result?.ptb?.transactionData.key ?? null,
+        mint: leg.result?.ptb?.transactionData.mint ?? null,
+        estimatedCostRaw: leg.result?.quote?.estimatedCostRaw ?? null
+      })),
+    aggregatePaymentRaw: review.aggregateReadiness.estimatedPaymentRaw,
+    managerId: review.aggregateReadiness.managerId
+  });
+}
+
 function isReviewActive(compiled: CompileApiResult) {
   if (!compiled.reviewFreshness?.active) {
     return false;
@@ -2333,6 +3111,70 @@ function parseRawAmount(value: string | null | undefined) {
   return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
+function sumRawAmounts(values: Array<string | null | undefined>) {
+  let total = 0n;
+
+  for (const value of values) {
+    if (!value || !/^\d+$/.test(value)) {
+      return null;
+    }
+
+    total += BigInt(value);
+  }
+
+  return total.toString();
+}
+
+function clientFundingStatus(managerBalanceRaw: string | null, estimatedPaymentRaw: string | null) {
+  if (!estimatedPaymentRaw || !/^\d+$/.test(estimatedPaymentRaw)) {
+    return {
+      status: "unknown" as const,
+      shortfallRaw: null,
+      detail: "Aggregate payment is unavailable until every selected leg has a quote."
+    };
+  }
+
+  if (!managerBalanceRaw || !/^\d+$/.test(managerBalanceRaw)) {
+    return {
+      status: "unknown" as const,
+      shortfallRaw: estimatedPaymentRaw,
+      detail: "Trading Balance is unavailable or not indexed yet."
+    };
+  }
+
+  const required = BigInt(estimatedPaymentRaw);
+  const balance = BigInt(managerBalanceRaw);
+  const shortfall = balance >= required ? 0n : required - balance;
+
+  if (shortfall > 0n) {
+    return {
+      status: "insufficient" as const,
+      shortfallRaw: shortfall.toString(),
+      detail: `Trading Balance is short by ${formatRawDusdc(shortfall.toString())} DUSDC.`
+    };
+  }
+
+  return {
+    status: "sufficient" as const,
+    shortfallRaw: "0",
+    detail: `${formatRawDusdc(managerBalanceRaw)} DUSDC Trading Balance available.`
+  };
+}
+
+function rawDusdcNumber(value: string | null | undefined) {
+  if (!value || !/^\d+$/.test(value)) {
+    return null;
+  }
+
+  const raw = BigInt(value);
+
+  if (raw > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+
+  return Number(raw) / Number(DUSDC_BASE_UNITS);
+}
+
 function marketPreviewEndpoint(urlOracleId: string | null) {
   const params = new URLSearchParams({
     status: "active",
@@ -2367,6 +3209,12 @@ function managerIdFromSearch(searchParams: { get(name: string): string | null })
   return managerId;
 }
 
+function reviewTokenFromSearch(searchParams: { get(name: string): string | null }) {
+  const token = searchParams.get("review");
+
+  return token && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token) ? token : null;
+}
+
 function strikeFromSearch(searchParams: { get(name: string): string | null }) {
   const strike = searchParams.get("strike");
   const numericStrike = strike ? Number(strike) : NaN;
@@ -2387,18 +3235,22 @@ function updateManagerInUrl(managerId: string) {
 function saveExecutionReceipt(
   receipt: ExecutionReceipt,
   intent: string,
-  compiled: CompileApiResult
+  review: CompileApiResult | StrategyApiReview
 ) {
+  const isStrategy = "plan" in review;
+
   storePreviewReceipt({
     id: receipt.digest,
     time: new Date().toISOString(),
-    type: receipt.action,
-    oracleId: compiled.market?.oracle.oracle_id,
+    type: receipt.action === "strategy_batch_mint" ? "predict_mint" : receipt.action,
+    oracleId: isStrategy ? review.compiledLegs[0]?.result?.market?.oracle.oracle_id : review.market?.oracle.oracle_id,
     digest: receipt.digest,
-    guardianDecision: compiled.guardian.decision,
+    guardianDecision: isStrategy ? undefined : review.guardian.decision,
     summary: receipt.action === "manager_create"
       ? "PredictManager created"
-      : `Predict mint executed for: ${intent}`,
+      : receipt.action === "strategy_batch_mint"
+        ? `Strategy batch executed for: ${intent}`
+        : `Predict mint executed for: ${intent}`,
     walletAddress: receipt.walletAddress,
     network: receipt.network,
     status: receipt.status,

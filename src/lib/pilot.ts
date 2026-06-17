@@ -7,7 +7,7 @@ const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const CLASSIFIER_TIMEOUT_MS = 8_000;
 
 const classifierSchema = z.object({
-  mode: z.enum(["chat", "trade"]),
+  mode: z.enum(["chat", "trade", "strategy"]),
   asset: z.enum(["BTC", "ETH", "SOL", "TRX"]).nullable(),
   question: z.string().trim().min(1).max(500),
   missing: z.array(z.string()).default([])
@@ -127,10 +127,33 @@ async function callDeepSeekClassifier(
 }
 
 function normalizeClassification(raw: string, classified: ClassifierOutput): ClassifierOutput {
+  if (!isAdviceQuestion(raw) && isExplicitStrategyRequest(raw)) {
+    return {
+      ...classified,
+      mode: "strategy",
+      missing: strategyMissingFields(raw)
+    };
+  }
+
+  if (!isAdviceQuestion(raw) && isExplicitTradeRequest(raw) && classified.mode === "chat") {
+    return {
+      ...classified,
+      mode: "trade",
+      missing: tradeMissingFields(raw)
+    };
+  }
+
   if (classified.mode === "chat") {
     return {
       ...classified,
       missing: []
+    };
+  }
+
+  if (classified.mode === "strategy") {
+    return {
+      ...classified,
+      missing: strategyMissingFields(raw)
     };
   }
 
@@ -144,19 +167,14 @@ function normalizeClassification(raw: string, classified: ClassifierOutput): Cla
 }
 
 function fallbackClassification(raw: string, options: PilotClassifierOptions): PilotClassification {
-  const normalized = raw.toLowerCase();
-  const asset = detectAsset(raw) ?? inferContextAsset(options.conversationContext);
-  const adviceQuestion =
-    /\bshould\s+i\s+(buy|sell|bet|short|long)\b/.test(normalized) ||
-    /\b(recommend|advice|advise|suggestion)\b/.test(normalized) ||
-    /(要不要|该不该|建议|能不能).*?(买|卖|做多|做空|下注)/.test(raw);
-  const explicitTrade =
-    /\b(bet|mint|redeem|claim|execute|order)\b/.test(normalized) ||
-    /\b(buy|sell)\b.*\b(dusdc|usdc|down|up|position|contract|predict)\b/.test(normalized) ||
-    /(帮我|我要|给我|执行|下单|下注|买|买入|卖出|赎回|领取|做多|做空).*?(btc|eth|sol|trx|跌|涨|down|up|dusdc|usdc|\d+\s*u)/i.test(raw) ||
-    /(买跌|买涨|做空|做多).*?(\d+(?:\.\d+)?\s*(u|dusdc|usdc|\$))/i.test(raw);
-  const mode = explicitTrade && !adviceQuestion ? "trade" : "chat";
-  const missing = mode === "trade" ? tradeMissingFields(raw) : [];
+  const adviceQuestion = isAdviceQuestion(raw);
+  const explicitTrade = isExplicitTradeRequest(raw);
+  const explicitStrategy = isExplicitStrategyRequest(raw);
+  const mode = explicitStrategy && !adviceQuestion
+    ? "strategy"
+    : explicitTrade && !adviceQuestion ? "trade" : "chat";
+  const asset = detectAsset(raw) ?? inferContextAsset(options.conversationContext) ?? (mode === "strategy" ? "BTC" : null);
+  const missing = mode === "strategy" ? strategyMissingFields(raw) : mode === "trade" ? tradeMissingFields(raw) : [];
 
   return {
     mode,
@@ -192,7 +210,7 @@ function detectAsset(raw: string): PilotClassification["asset"] {
 function tradeMissingFields(raw: string) {
   const normalized = raw.toLowerCase();
   const missing: string[] = [];
-  const hasAmount = /(\d+(?:\.\d+)?\s*(u|dusdc|usdc|\$)|amount|金额)/i.test(raw);
+  const hasAmount = hasCurrencyAmount(raw) || /amount|金额/i.test(raw);
   const hasDirection = /\b(up|down|call|put)\b|涨|跌|做多|做空/i.test(raw);
   const hasExpiry =
     /\b(next|tonight|today|tomorrow|nearest|fastest|earliest|settlement|expiry|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b|今天|今晚|明天|到期|结算|最快|最近|六点|[0-2]?\d点/i.test(raw);
@@ -211,6 +229,65 @@ function tradeMissingFields(raw: string) {
   }
 
   return missing;
+}
+
+function strategyMissingFields(raw: string) {
+  const missing: string[] = [];
+  const hasAmount = hasCurrencyAmount(raw) || /amount|金额|预算/i.test(raw);
+  const hasDirection = /\b(up|down|call|put|long|short)\b|涨|跌|做多|做空|看涨|看跌/i.test(raw);
+
+  if (!hasAmount) {
+    missing.push("amount");
+  }
+
+  if (!hasDirection && !/hedge|对冲/i.test(raw)) {
+    missing.push("direction");
+  }
+
+  return missing;
+}
+
+function isAdviceQuestion(raw: string) {
+  const normalized = raw.toLowerCase();
+
+  return (
+    /\bshould\s+i\s+(buy|sell|bet|short|long)\b/.test(normalized) ||
+    /\b(recommend|advice|advise|suggestion)\b/.test(normalized) ||
+    /\bshould\s+i\s+(hedge|split|ladder|allocate|use|open|enter)\b/.test(normalized) ||
+    /\b(is|would)\s+it\s+(a\s+)?good\s+idea\s+to\b/.test(normalized) ||
+    /(要不要|该不该|建议|能不能).*?(买|卖|做多|做空|下注)/.test(raw) ||
+    /(什么是|怎么理解|解释一下|是什么意思).*?(对冲|策略|分批)/.test(raw)
+  );
+}
+
+function isExplicitTradeRequest(raw: string) {
+  const normalized = raw.toLowerCase();
+
+  return (
+    /\b(bet|mint|redeem|claim|execute|order)\b/.test(normalized) ||
+    /\b(buy|sell)\b.*\b(dusdc|usdc|down|up|position|contract|predict)\b/.test(normalized) ||
+    /(帮我|我要|给我|执行|下单|下注|买|买入|卖出|赎回|领取|做多|做空).*?(btc|eth|sol|trx|跌|涨|down|up|dusdc|usdc|\d+\s*u)/i.test(raw) ||
+    /(买跌|买涨|做空|做多).*?(\d+(?:\.\d+)?\s*(u|dusdc|usdc|\$))/i.test(normalizeCurrencyText(raw))
+  );
+}
+
+function isExplicitStrategyRequest(raw: string) {
+  const hasStrategyWord =
+    /\b(strategy|hedge|split|ladder|multi-leg|multi leg|portfolio plan)\b/i.test(raw) ||
+    /(策略|对冲|分批|阶梯|多笔|多腿|一小时|两小时|二小时|三小时|1小时|2小时|3小时)/i.test(raw);
+  const hasExecutionCue =
+    /\b(build|draft|open|execute|bet|buy|allocate|plan|play)\b/i.test(raw) ||
+    /(帮我|我要|给我|执行|下单|下注|开|开仓|买|买入|做|玩|生成|安排|分配)/i.test(raw);
+
+  return hasStrategyWord && (hasExecutionCue || hasCurrencyAmount(raw));
+}
+
+function hasCurrencyAmount(raw: string) {
+  return /(\d+(?:\.\d+)?)\s*(?:d?usdc|u|\$)/i.test(normalizeCurrencyText(raw));
+}
+
+function normalizeCurrencyText(raw: string) {
+  return raw.replace(/([a-z])\s+(?=[a-z])/gi, "$1");
 }
 
 function inferContextAsset(context?: ConversationContext | null): PilotClassification["asset"] {
@@ -244,18 +321,20 @@ function classifierPrompt() {
 Task:
 Classify one user message as either:
 - "trade": the user explicitly asks DeepPilot to execute, place, mint, buy/sell a Predict position, redeem, claim, or build a transaction review.
+- "strategy": the user explicitly asks DeepPilot to build a multi-leg trading plan, hedge, split, ladder, or allocate positions across several expiries.
 - "chat": the user asks about market movement, price performance, news, protocol risk, vault/oracle state, explanations, or asks for financial advice.
 
 Important safety rule:
-If the user asks "should I buy/sell/bet" or asks for a recommendation, classify as "chat", not "trade". Chat can explain data and risk, but must not recommend a trade.
+If the user asks "should I buy/sell/bet" or asks for a recommendation, classify as "chat", not "trade" or "strategy". Chat can explain data and risk, but must not recommend a trade.
 Use conversationContext only as context. If the current user message explicitly says buy, bet, mint, order, execute, 买, 买跌, 买涨, 下单, 下注, or 执行, recent BTC market discussion may fill the asset context. Never classify a pure follow-up advice question as trade.
 For trade wording, fastest settlement / nearest expiry / 最近结算 / 最快结算 means the next active Predict expiry.
+Strategy trigger examples: hedge, split, ladder, multi-leg, 分批, 对冲, 一小时两小时三小时. Only use strategy when the user asks to draft or execute a plan with multiple legs.
 
 Supported assets: BTC, ETH, SOL, TRX.
 
 Return this JSON object:
 {
-  "mode": "chat" | "trade",
+  "mode": "chat" | "trade" | "strategy",
   "asset": "BTC" | "ETH" | "SOL" | "TRX" | null,
   "question": "cleaned user question",
   "missing": ["amount", "direction", "expiry"]

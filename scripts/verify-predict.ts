@@ -3,6 +3,7 @@ import { z } from "zod";
 import { compileIntent } from "../src/lib/compile";
 import { parseJsonBody } from "../src/lib/http";
 import {
+  buildBatchPredictMintTransaction,
   buildBinaryMintTransaction,
   buildCreatePredictManagerTransaction,
   buildDepositToManagerTransaction,
@@ -61,6 +62,42 @@ const mintTx = buildBinaryMintTransaction({
   transactionData: result.ptb!.transactionData,
   managerId: fakeManagerId
 });
+const batchMintTx = buildBatchPredictMintTransaction({
+  transactionData: {
+    kind: "BatchProgrammableTransaction",
+    network: result.ptb!.transactionData.network,
+    packageId: result.ptb!.transactionData.packageId,
+    predictObject: result.ptb!.transactionData.predictObject,
+    quoteAssetType: result.ptb!.transactionData.quoteAssetType,
+    manager: fakeManagerId,
+    legs: [
+      {
+        legId: "leg-1",
+        oracleId: result.ptb!.transactionData.key.oracleId,
+        expiry: result.ptb!.transactionData.key.expiry,
+        strikeScaled: result.ptb!.transactionData.key.strikeScaled,
+        direction: result.ptb!.transactionData.key.direction,
+        keyTarget: result.ptb!.transactionData.key.target,
+        mintTarget: result.ptb!.transactionData.mint.target,
+        quantityRaw: result.ptb!.transactionData.mint.quantityRaw,
+        estimatedCostRaw: result.ptb!.transactionData.quote?.estimatedCostRaw ?? null
+      },
+      {
+        legId: "leg-2",
+        oracleId: result.ptb!.transactionData.key.oracleId,
+        expiry: result.ptb!.transactionData.key.expiry,
+        strikeScaled: result.ptb!.transactionData.key.strikeScaled,
+        direction: result.ptb!.transactionData.key.direction,
+        keyTarget: result.ptb!.transactionData.key.target,
+        mintTarget: result.ptb!.transactionData.mint.target,
+        quantityRaw: result.ptb!.transactionData.mint.quantityRaw,
+        estimatedCostRaw: result.ptb!.transactionData.quote?.estimatedCostRaw ?? null
+      }
+    ],
+    commands: result.ptb!.transactionData.commands
+  },
+  managerId: fakeManagerId
+});
 const depositTx = buildDepositToManagerTransaction({
   packageId: predictDeployment.packageId,
   managerId: fakeManagerId,
@@ -87,6 +124,7 @@ const redeemPermissionlessTx = buildRedeemPermissionlessTransaction({
 });
 assert(createManagerTx, "create manager transaction should be buildable");
 assert(mintTx.estimatedCostRaw === result.quote.estimatedCostRaw, "mint builder should keep the estimated raw DUSDC cost");
+assert(batchMintTx.legCount === 2, "batch mint builder should keep selected leg count");
 assert(depositTx, "deposit transaction should be buildable");
 assert(withdrawTx, "withdraw transaction should be buildable");
 assert(redeemPermissionlessTx, "settle-to-balance transaction should be buildable");

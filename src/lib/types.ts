@@ -12,7 +12,13 @@ export type GasMode = "sponsored" | "gasless_stablecoin_transfer" | "user_pays_g
 export type MarketRiskLevel = RiskLevel | "unknown";
 export type ExpiryPreference = "next_active" | "specific_time";
 export type TradeSizingMode = "quote_budget" | "explicit_quantity" | "not_required";
-export type PilotMode = "chat" | "trade";
+export type PilotMode = "chat" | "trade" | "strategy";
+export type TradeMethod =
+  | "predict_binary_mint"
+  | "predict_range_mint"
+  | "predict_redeem"
+  | "manager_funding";
+export type StrategyLegStatus = "draft" | "quoted" | "blocked" | "ready" | "executed";
 
 export type ParsedIntent =
   | {
@@ -61,6 +67,34 @@ export interface PilotMessageSummary {
 export interface ConversationContext {
   messages: PilotMessageSummary[];
   lastMarketThesis?: string | null;
+}
+
+export interface StrategyLeg {
+  id: string;
+  method: TradeMethod;
+  action: "buy_up" | "buy_down" | "range" | "redeem" | "fund_manager";
+  asset: "BTC";
+  direction: PredictDirection | null;
+  amountDusdc: number | null;
+  expiryPreference: "next_active" | "one_hour" | "two_hour" | "three_hour" | "custom";
+  targetDurationMinutes: number | null;
+  requestedExpiryMs: number | null;
+  oracleId?: string | null;
+  strike?: number | null;
+  selected: boolean;
+  note: string;
+}
+
+export interface StrategyPlan {
+  mode: "strategy";
+  asset: "BTC";
+  thesis: string;
+  totalBudgetDusdc: number | null;
+  legs: StrategyLeg[];
+  riskNotes: string[];
+  missing: string[];
+  source: "deterministic" | "llm";
+  raw: string;
 }
 
 export interface ActiveMarketContextItem {
@@ -384,6 +418,81 @@ export interface CompileResult {
   }>;
 }
 
+export interface CompiledTradeLeg {
+  id: string;
+  leg: StrategyLeg;
+  intentText: string;
+  result: CompileResult | null;
+  status: StrategyLegStatus;
+  selected: boolean;
+  blockReason: string | null;
+}
+
+export interface AggregateExecutionReadiness {
+  canSign: boolean;
+  mode: "wallet_transaction" | "preview_only";
+  reason: string;
+  walletAddress: string | null;
+  managerId: string | null;
+  selectedLegCount: number;
+  readyLegCount: number;
+  blockedLegCount: number;
+  estimatedPaymentRaw: string | null;
+  estimatedPaymentDusdc: number | null;
+  managerBalanceRaw: string | null;
+  managerBalanceDusdc: number | null;
+  fundingShortfallRaw: string | null;
+  fundingStatus: ExecutionReadiness["fundingStatus"];
+  checks: ExecutionReadinessCheck[];
+}
+
+export interface BatchPredictMintTransactionData {
+  kind: "BatchProgrammableTransaction";
+  network: PredictDeployment["network"];
+  packageId: string;
+  predictObject: string;
+  quoteAssetType: string;
+  manager: string | null;
+  legs: Array<{
+    legId: string;
+    oracleId: string | null;
+    expiry: number | null;
+    strikeScaled: number | null;
+    direction: PredictDirection | null;
+    keyTarget: string | null;
+    mintTarget: string | null;
+    quantityRaw: string | null;
+    estimatedCostRaw: string | null;
+  }>;
+  commands: PtbCommandPreview[];
+}
+
+export interface StrategyReview {
+  plan: StrategyPlan;
+  compiledLegs: CompiledTradeLeg[];
+  aggregateReadiness: AggregateExecutionReadiness;
+  batchTransactionData: BatchPredictMintTransactionData | null;
+  reviewFreshness: {
+    checkedAt: string;
+    active: boolean;
+    refreshed: boolean;
+    reason: string;
+  };
+  timeline: Array<{
+    label: string;
+    state: "complete" | "blocked" | "pending";
+  }>;
+}
+
+export interface ReviewSeed {
+  source: "web" | "telegram";
+  message: string;
+  conversationSummary?: string | null;
+  createdAt: string;
+  expiresAt: string;
+  modeHint?: PilotMode;
+}
+
 export type CompileStreamEvent =
   | {
       type: "stage";
@@ -406,6 +515,10 @@ export type CompileStreamEvent =
   | {
       type: "compiled";
       result: CompileResult;
+    }
+  | {
+      type: "strategy_compiled";
+      review: StrategyReview;
     }
   | {
       type: "error";
@@ -435,6 +548,10 @@ export type PilotStreamEvent =
   | {
       type: "compiled";
       result: CompileResult;
+    }
+  | {
+      type: "strategy_compiled";
+      review: StrategyReview;
     }
   | {
       type: "error";

@@ -5,6 +5,7 @@ import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http"
 import { classifyPilotInput } from "@/src/lib/pilot";
 import { createPredictClientPreview } from "@/src/lib/predict";
 import { buildRagContext, streamRagAnswer } from "@/src/lib/rag";
+import { compileStrategy } from "@/src/lib/strategy";
 import type { CompileStreamEvent, ConversationContext, PilotStreamEvent } from "@/src/lib/types";
 
 export const runtime = "nodejs";
@@ -18,7 +19,7 @@ const bodySchema = z.object({
   conversation: z.array(z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().trim().min(1).max(900),
-    mode: z.enum(["chat", "trade"]).optional(),
+    mode: z.enum(["chat", "trade", "strategy"]).optional(),
     sourceTitles: z.array(z.string().trim().min(1).max(160)).max(4).optional()
   })).max(8).optional()
 }).refine((body) => Boolean(body.message || body.intent));
@@ -81,6 +82,11 @@ export async function POST(request: Request) {
             return;
           }
 
+          if (classification.mode === "strategy") {
+            await streamStrategyReview(message, body.data, conversationContext, send);
+            return;
+          }
+
           await streamChatAnswer(message, classification, send);
         } catch (error) {
           send({
@@ -100,6 +106,28 @@ export async function POST(request: Request) {
       }
     }
   );
+}
+
+async function streamStrategyReview(
+  message: string,
+  body: z.infer<typeof bodySchema>,
+  conversationContext: ConversationContext | null,
+  send: (event: PilotStreamEvent) => void
+) {
+  const review = await compileStrategy(message, {
+    walletAddress: body.walletAddress,
+    managerId: body.managerId,
+    conversationContext,
+    onEvent: (event) => forwardCompileEvent(event, send)
+  });
+
+  send({
+    type: "strategy_compiled",
+    review: {
+      ...review,
+      predict: createPredictClientPreview()
+    } as typeof review
+  });
 }
 
 async function streamTradeReview(
