@@ -17,10 +17,13 @@ The app turns a constrained trading intent into:
   - `/api/pilot/stream` mode routing (`chat / trade / strategy`).
   - `/api/strategy/compile` + `/api/strategy/stream` for strategy planning.
   - `/api/review-seed` replay decode and terminal receipt persistence.
+  - `/api/telegram/webhook`, `/api/telegram/session`, and `/api/telegram/link` for Telegram login and Web Review handoff.
+  - `deep_pilot_profile::profile` Move module for Profile NFT, plan, quota snapshot, and memory pointer state.
   - Wallet-signed execution path in terminal for PredictManager create, single mint, and strategy batch mint.
 - In progress
   - `/api/sponsor` remains preview-only (`preview_authorized`) without dual-sign sponsor submit.
   - Keeper remains UI-level guidance/status for now; no dedicated background keeper daemon yet.
+  - Walrus Memory writes are optional through a MemWal-compatible relayer; without `MEMWAL_*`, the app uses Upstash fallback memory and does not claim Walrus upload.
 
 ## Current Scope
 
@@ -157,10 +160,14 @@ bun run lint
 bun run build
 bun run pilot:smoke
 bun run predict:smoke
+bun run telegram:smoke
 bun run move:build
+bun run telegram:set-webhook
 bun run dev
 bun run sui:testnet-key
 ```
+
+Use `bun run telegram:set-webhook` only after `APP_BASE_URL`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_WEBHOOK_SECRET` are set.
 
 ## Environment
 
@@ -192,10 +199,37 @@ Use normal server-side env names for DeepBook Predict deployment IDs and package
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_MODEL`
 
+Telegram, Profile NFT, quota, and optional memory:
+
+- `APP_BASE_URL`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `TELEGRAM_LINK_SECRET`
+- `TELEGRAM_LINK_SALT`
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+- `DEEP_PILOT_PROFILE_PACKAGE_ID`
+- `DEEP_PILOT_PROFILE_REGISTRY_ID`
+- `DEEP_PILOT_PROFILE_TREASURY_ID`
+- `PLAN_PRICE_MIST`
+- `PLAN_DURATION_DAYS`
+- `QUOTA_V1_DAILY_LIMIT`
+- `MEMWAL_ACCOUNT_ID`
+- `MEMWAL_DELEGATE_KEY`
+- `MEMWAL_SERVER_URL`
+
 Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` stays server-side unless you manually send it to the client.
 
 
 `PREDICT_ENABLE_ONCHAIN_LOG=false` is the default gas-optimized mode. Set it to `true` only for demos that need an extra on-chain audit event.
+
+## Telegram Handoff
+
+Telegram is an entry and preview surface only. The bot accepts commands such as `/login`, `/profile`, `/plans`, `/quota`, `/markets`, `/news BTC`, `/trade ...`, and `/strategy ...`. Trade and strategy commands return a signed `Review & Sign` link to `/trade?review=...`. The Web page decodes the seed, verifies the linked wallet when available, then recompiles the latest market, quote, Guardian, funding, and PTB state before any wallet prompt.
+
+Daily AI quota is enforced in Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are configured. v1 uses `QUOTA_V1_DAILY_LIMIT=50` for every plan; the Profile NFT stores plan and quota snapshot fields so Standard/Pro/Max limits can diverge later without changing the Telegram/Web flow.
+
+Profile NFT creation is user-signed through `/telegram/login`. The NFT stores a hashed Telegram identifier, plan, expiry, quota snapshot fields, and memory pointer fields. It does not store raw Telegram IDs, private keys, full chat history, or wallet signatures.
 
 ## Request Strategy
 
@@ -208,6 +242,12 @@ Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` 
 - `.env.example` - Vercel/local deployment configuration template
 - `src/lib/predict.ts` - DeepBook Predict public API client and snapshot builder
 - `src/lib/profile.ts` - PredictManager linkage/profile summary reader
+- `src/lib/profile-execution.ts` - Profile NFT transaction builders
+- `src/lib/telegram-bot.ts` - Telegram command and natural-language handler
+- `src/lib/telegram-auth.ts` - Telegram login token and wallet signature verification
+- `src/lib/telegram-session.ts` - Redis-backed Telegram session storage
+- `src/lib/quota.ts` - Upstash/in-memory daily quota enforcement
+- `src/lib/memory.ts` - MemWal-compatible best-effort memory write plus Upstash fallback
 - `src/lib/predict-config.ts` - server-side Predict deployment config
 - `src/lib/client-config.ts` - browser-safe wallet/RPC config
 - `src/lib/intent.ts` - deterministic Predict intent parser

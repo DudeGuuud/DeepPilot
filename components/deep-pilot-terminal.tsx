@@ -234,7 +234,8 @@ function TerminalExperience() {
 
     async function loadReviewSeed() {
       try {
-        const response = await fetch(`/api/review-seed?token=${encodeURIComponent(token)}`, {
+        const walletQuery = account?.address ? `&wallet=${encodeURIComponent(account.address)}` : "";
+        const response = await fetch(`/api/review-seed?token=${encodeURIComponent(token)}${walletQuery}`, {
           cache: "no-store"
         });
 
@@ -260,7 +261,7 @@ function TerminalExperience() {
     return () => {
       cancelled = true;
     };
-  }, [managerId, reviewToken]);
+  }, [account?.address, managerId, reviewToken]);
 
   useEffect(() => {
     const stopPendingPilot = () => {

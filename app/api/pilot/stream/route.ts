@@ -2,10 +2,13 @@ import { z } from "zod";
 
 import { compileIntent } from "@/src/lib/compile";
 import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http";
+import { memoryContextText, readAgentMemory } from "@/src/lib/memory";
 import { classifyPilotInput } from "@/src/lib/pilot";
 import { createPredictClientPreview } from "@/src/lib/predict";
 import { buildRagContext, streamRagAnswer } from "@/src/lib/rag";
+import { consumeRequestQuota } from "@/src/lib/request-quota";
 import { compileStrategy } from "@/src/lib/strategy";
+import { getTelegramSession } from "@/src/lib/telegram-session";
 import type { CompileStreamEvent, ConversationContext, PilotStreamEvent } from "@/src/lib/types";
 
 export const runtime = "nodejs";
@@ -15,6 +18,8 @@ const bodySchema = z.object({
   intent: z.string().trim().min(1).max(500).optional(),
   walletAddress: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
   managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
+  profileId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
+  telegramHash: z.string().trim().regex(/^[a-fA-F0-9]{64}$/).optional(),
   lastMarketThesis: z.string().trim().max(1500).optional(),
   conversation: z.array(z.object({
     role: z.enum(["user", "assistant"]),
@@ -55,12 +60,29 @@ export async function POST(request: Request) {
         };
 
         try {
+          const quota = await consumeRequestQuota({
+            profileId: body.data.profileId,
+            telegramHash: body.data.telegramHash,
+            walletAddress: body.data.walletAddress
+          });
+
+          if (quota && !quota.allowed) {
+            send({
+              type: "error",
+              error: `Daily AI quota exhausted. Open Plans to upgrade or wait until ${quota.resetAt}.`
+            });
+            return;
+          }
+
           send({
             type: "stage",
             label: "Classifying request",
             state: "pending"
           });
-          const conversationContext = conversationContextFromBody(body.data);
+          const conversationContext = conversationContextFromBody(
+            body.data,
+            await resolveMemoryContext(body.data)
+          );
           const classification = await classifyPilotInput(message, {
             conversationContext
           });
@@ -152,18 +174,33 @@ async function streamTradeReview(
   });
 }
 
-function conversationContextFromBody(body: z.infer<typeof bodySchema>): ConversationContext | null {
+function conversationContextFromBody(
+  body: z.infer<typeof bodySchema>,
+  memoryContext?: string | null
+): ConversationContext | null {
   const messages = body.conversation ?? [];
   const lastMarketThesis = body.lastMarketThesis?.trim() || null;
 
-  if (!messages.length && !lastMarketThesis) {
+  if (!messages.length && !lastMarketThesis && !memoryContext) {
     return null;
   }
 
   return {
     messages,
-    lastMarketThesis
+    lastMarketThesis,
+    memoryContext: memoryContext ?? null
   };
+}
+
+async function resolveMemoryContext(body: z.infer<typeof bodySchema>) {
+  const profileId = body.profileId
+    ?? (body.telegramHash ? (await getTelegramSession(body.telegramHash))?.profileId ?? null : null);
+
+  if (!profileId) {
+    return null;
+  }
+
+  return memoryContextText(await readAgentMemory(profileId));
 }
 
 async function streamChatAnswer(

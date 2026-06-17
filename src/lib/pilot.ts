@@ -293,6 +293,7 @@ function normalizeCurrencyText(raw: string) {
 function inferContextAsset(context?: ConversationContext | null): PilotClassification["asset"] {
   const text = [
     context?.lastMarketThesis ?? "",
+    context?.memoryContext ?? "",
     ...(context?.messages ?? []).map((message) => message.content)
   ].join(" ");
 
@@ -306,6 +307,7 @@ function summarizeConversationContext(context?: ConversationContext | null) {
 
   return {
     lastMarketThesis: context.lastMarketThesis ?? null,
+    memoryContext: context.memoryContext ?? null,
     messages: context.messages.slice(-6).map((message) => ({
       role: message.role,
       content: message.content.slice(0, 700),
@@ -326,7 +328,7 @@ Classify one user message as either:
 
 Important safety rule:
 If the user asks "should I buy/sell/bet" or asks for a recommendation, classify as "chat", not "trade" or "strategy". Chat can explain data and risk, but must not recommend a trade.
-Use conversationContext only as context. If the current user message explicitly says buy, bet, mint, order, execute, 买, 买跌, 买涨, 下单, 下注, or 执行, recent BTC market discussion may fill the asset context. Never classify a pure follow-up advice question as trade.
+Use conversationContext and memoryContext only as context. If the current user message explicitly says buy, bet, mint, order, execute, 买, 买跌, 买涨, 下单, 下注, or 执行, recent BTC market discussion or stored last trade shape may fill the asset context. Never classify a pure follow-up advice question as trade.
 For trade wording, fastest settlement / nearest expiry / 最近结算 / 最快结算 means the next active Predict expiry.
 Strategy trigger examples: hedge, split, ladder, multi-leg, 分批, 对冲, 一小时两小时三小时. Only use strategy when the user asks to draft or execute a plan with multiple legs.
 

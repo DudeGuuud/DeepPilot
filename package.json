@@ -14,7 +14,9 @@
     "typecheck": "tsc --noEmit",
     "predict:smoke": "bun run scripts/verify-predict.ts",
     "pilot:smoke": "bun run scripts/verify-pilot.ts",
+    "telegram:smoke": "bun run scripts/verify-telegram.ts",
     "move:build": "sui move build --path move --build-env testnet",
+    "telegram:set-webhook": "bun run scripts/set-telegram-webhook.ts",
     "sui:testnet-key": "bun run scripts/generate-testnet-key.ts"
   },
   "dependencies": {

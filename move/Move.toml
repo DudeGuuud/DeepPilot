@@ -4,3 +4,4 @@ edition = "2024.beta"
 
 [addresses]
 deep_pilot_log = "0x0"
+deep_pilot_profile = "0x0"

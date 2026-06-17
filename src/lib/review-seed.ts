@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { reviewSeedSecret } from "./deep-pilot-config";
 import type { ReviewSeed } from "./types";
 
 const REVIEW_SEED_TTL_MS = 10 * 60_000;
@@ -14,6 +15,7 @@ export function createReviewSeed(input: {
   message: string;
   conversationSummary?: string | null;
   modeHint?: ReviewSeed["modeHint"];
+  telegramHash?: string;
   ttlMs?: number;
 }): ReviewSeed {
   const createdAt = new Date();
@@ -25,7 +27,8 @@ export function createReviewSeed(input: {
     conversationSummary: input.conversationSummary ?? null,
     createdAt: createdAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
-    modeHint: input.modeHint
+    modeHint: input.modeHint,
+    telegramHash: input.telegramHash
   };
 }
 
@@ -64,10 +67,6 @@ export function decodeReviewSeed(token: string): ReviewSeed {
 
 function sign(payload: string) {
   return createHmac("sha256", reviewSeedSecret()).update(payload).digest("base64url");
-}
-
-function reviewSeedSecret() {
-  return process.env.REVIEW_SEED_SECRET?.trim() || process.env.DEEPSEEK_API_KEY?.trim() || "deeppilot-local-review-seed-secret";
 }
 
 function base64UrlEncode(value: string) {

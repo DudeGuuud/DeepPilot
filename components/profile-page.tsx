@@ -1,7 +1,7 @@
 "use client";
 
 import { useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
-import { AlertTriangle, Check, LockKeyhole, RefreshCw, Wallet } from "lucide-react";
+import { AlertTriangle, Check, LockKeyhole, RefreshCw, Sparkles, Wallet } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -42,6 +42,7 @@ export function ProfilePage() {
   const searchParams = useSearchParams();
   const urlManagerId = searchParams.get("managerId");
   const highlightFunding = searchParams.get("fund") === "1";
+  const highlightPlans = searchParams.get("plans") === "1";
   const [localManagerId, setLocalManagerId] = useState<string | null>(urlManagerId);
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [receipts, setReceipts] = useState<ProfileActivityItem[]>([]);
@@ -589,6 +590,7 @@ export function ProfilePage() {
             onAmountChange={setFundingAmount}
             onSubmit={handleManagerFunding}
           />
+          <PlanStatusCard highlighted={highlightPlans} />
           <Card className="glass-line">
             <CardHeader>
               <div className="flex items-start justify-between gap-3">
@@ -612,6 +614,42 @@ export function ProfilePage() {
         </aside>
       </div>
     </AppShell>
+  );
+}
+
+function PlanStatusCard({ highlighted }: { highlighted: boolean }) {
+  return (
+    <Card className={`glass-line ${highlighted ? "border-foreground/45 shadow-[0_0_0_1px_rgba(250,250,250,0.18)]" : ""}`}>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle>AI Plan</CardTitle>
+            <CardDescription>Telegram and Web AI quota policy.</CardDescription>
+          </div>
+          <Sparkles className="h-5 w-5 text-muted-foreground" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        <PlanRow label="Standard" detail="10/day future limit" active />
+        <PlanRow label="Pro" detail="50/day · 0.1 SUI/month" />
+        <PlanRow label="Max" detail="100/day · 0.1 SUI/month" />
+        <p className="rounded-md border border-border bg-background/60 p-3 text-xs leading-5 text-muted-foreground">
+          Demo quota is enforced as 50 AI messages/day for all plans. Use Telegram login to bind Profile NFT and subscribe.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PlanRow({ label, detail, active = false }: { label: string; detail: string; active?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background/60 px-3 py-2">
+      <div>
+        <p className="text-sm font-medium text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">{detail}</p>
+      </div>
+      {active ? <Badge variant="outline" className="border-border text-muted-foreground">default</Badge> : null}
+    </div>
   );
 }
 

@@ -13,6 +13,7 @@ export type MarketRiskLevel = RiskLevel | "unknown";
 export type ExpiryPreference = "next_active" | "specific_time";
 export type TradeSizingMode = "quote_budget" | "explicit_quantity" | "not_required";
 export type PilotMode = "chat" | "trade" | "strategy";
+export type DeepPilotPlanName = "standard" | "pro" | "max";
 export type TradeMethod =
   | "predict_binary_mint"
   | "predict_range_mint"
@@ -67,6 +68,7 @@ export interface PilotMessageSummary {
 export interface ConversationContext {
   messages: PilotMessageSummary[];
   lastMarketThesis?: string | null;
+  memoryContext?: string | null;
 }
 
 export interface StrategyLeg {
@@ -491,6 +493,39 @@ export interface ReviewSeed {
   createdAt: string;
   expiresAt: string;
   modeHint?: PilotMode;
+  telegramHash?: string;
+}
+
+export interface DeepPilotPlanConfig {
+  name: DeepPilotPlanName;
+  label: "Standard" | "Pro" | "Max";
+  displayLimit: number;
+  effectiveDailyLimit: number;
+  priceMist: string;
+  durationDays: number;
+}
+
+export interface QuotaStatus {
+  profileId: string;
+  used: number;
+  limit: number;
+  remaining: number;
+  resetAt: string;
+  exhausted: boolean;
+  allowed: boolean;
+  source: "upstash" | "memory";
+}
+
+export interface TelegramSession {
+  telegramHash: string;
+  chatId: string;
+  walletAddress: string | null;
+  profileId: string | null;
+  managerId: string | null;
+  plan: DeepPilotPlanName;
+  memoryNamespace: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type CompileStreamEvent =

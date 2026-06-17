@@ -157,7 +157,7 @@ export function buildStrategyPlan(
   conversationContext: ConversationContext | null = null
 ): StrategyPlan {
   const raw = input.trim();
-  const direction = detectDirection(raw);
+  const direction = detectDirection(raw, conversationContext);
   const amount = detectAmount(raw);
   const durations = detectDurations(raw);
   const isHedge = /hedge|对冲/i.test(raw);
@@ -386,8 +386,10 @@ function blockedLeg(leg: StrategyLeg, intentText: string, reason: string): Compi
   };
 }
 
-function detectDirection(raw: string): "up" | "down" {
-  if (/\b(down|put|short|lower)\b|跌|做空|看跌/i.test(raw)) {
+function detectDirection(raw: string, conversationContext?: ConversationContext | null): "up" | "down" {
+  const text = `${raw}\n${conversationContext?.memoryContext ?? ""}`;
+
+  if (/\b(down|put|short|lower)\b|跌|做空|看跌/i.test(text)) {
     return "down";
   }
 
@@ -525,7 +527,7 @@ function nearestMarketByDuration(context: ActiveMarketContext, nowMs: number, mi
 }
 
 function strategyThesis(raw: string, conversationContext: ConversationContext | null, isHedge: boolean) {
-  const context = conversationContext?.lastMarketThesis?.trim();
+  const context = conversationContext?.lastMarketThesis?.trim() || conversationContext?.memoryContext?.trim();
 
   if (context) {
     return `Candidate ${isHedge ? "hedge" : "ladder"} plan based on the latest market discussion: ${context}`;
