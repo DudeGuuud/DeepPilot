@@ -143,6 +143,11 @@ type PilotMessage = {
   role: "user" | "assistant";
   content: string;
   mode?: PilotMode;
+  reviewAction?: {
+    kind: "trade" | "strategy";
+    label: string;
+    description: string;
+  };
   sources?: RagSource[];
   pending?: boolean;
   createdAt?: number;
@@ -186,6 +191,7 @@ function TerminalExperience() {
   const [tradeDetailsExpanded, setTradeDetailsExpanded] = useState(false);
   const [preflightSnapshot, setPreflightSnapshot] = useState<PreflightSnapshot | null>(null);
   const [confirmedReviewFingerprint, setConfirmedReviewFingerprint] = useState<string | null>(null);
+  const [activeReviewMessageId, setActiveReviewMessageId] = useState<string | null>(null);
   const executionRef = useRef(false);
   const pilotAbortRef = useRef<AbortController | null>(null);
   const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null, options?: RunPilotOptions) => Promise<void>>(async () => {});
@@ -209,6 +215,7 @@ function TerminalExperience() {
     setTradeDetailsExpanded(false);
     setPreflightSnapshot(null);
     setConfirmedReviewFingerprint(null);
+    setActiveReviewMessageId(null);
     pilotAbortRef.current?.abort();
     pilotAbortRef.current = null;
   }, []);
@@ -298,6 +305,7 @@ function TerminalExperience() {
     setPreflightSnapshot(null);
     setStrategyReview(null);
     setSelectedStrategyLegIds([]);
+    setActiveReviewMessageId(null);
   }, [account?.address]);
 
   const effectiveStrategyReview = useMemo(
@@ -386,6 +394,7 @@ function TerminalExperience() {
     setSourcesExpanded(false);
     setStreamTimeline([]);
     setTradeDetailsExpanded(false);
+    setActiveReviewMessageId(null);
     setTradeModalStatus(options.openTradeModal ? "compiling" : "idle");
     setTradeModalOpen(Boolean(options.openTradeModal));
     if (options.clearComposer !== false) {
@@ -544,10 +553,16 @@ function TerminalExperience() {
       setTradeModalOpen(true);
       setTradeModalStatus(tradeStatusForCompiled(result));
       setTradeDetailsExpanded(false);
+      setActiveReviewMessageId(assistantId);
       updateAssistantMessage(assistantId, {
         mode: "trade",
         pending: false,
-        content: tradeAssistantCopy(result)
+        content: tradeAssistantCopy(result),
+        reviewAction: {
+          kind: "trade",
+          label: "Open Review & Sign",
+          description: "Resume the prepared Predict trade review."
+        }
       });
       return;
     }
@@ -568,10 +583,16 @@ function TerminalExperience() {
       setTradeModalOpen(true);
       setTradeModalStatus(strategyStatusForReview(review));
       setTradeDetailsExpanded(false);
+      setActiveReviewMessageId(assistantId);
       updateAssistantMessage(assistantId, {
         mode: "strategy",
         pending: false,
-        content: strategyAssistantCopy(review)
+        content: strategyAssistantCopy(review),
+        reviewAction: {
+          kind: "strategy",
+          label: "Open Strategy Review",
+          description: "Resume the prepared multi-leg review."
+        }
       });
       return;
     }
@@ -602,6 +623,23 @@ function TerminalExperience() {
 
   function submitIntent() {
     void runPilot(intent);
+  }
+
+  function openActiveReviewFromChat(messageId: string) {
+    if (messageId !== activeReviewMessageId || (!compiled && !effectiveStrategyReview)) {
+      toast({
+        variant: "destructive",
+        title: "Review unavailable",
+        description: "This chat message no longer has the active review. Generate a fresh review before signing."
+      });
+      return;
+    }
+
+    setPilotMode(effectiveStrategyReview ? "strategy" : "trade");
+    setTradeModalOpen(true);
+    if (tradeModalStatus === "idle") {
+      setTradeModalStatus(effectiveStrategyReview ? strategyStatusForReview(effectiveStrategyReview) : tradeStatusForCompiled(compiled!));
+    }
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -1173,10 +1211,12 @@ function TerminalExperience() {
             <PilotConsole
               intent={intent}
               messages={messages}
+              activeReviewMessageId={activeReviewMessageId}
               busy={busy === "pilot"}
               onChange={setIntent}
               onSubmit={submitIntent}
               onKeyDown={onComposerKeyDown}
+              onOpenReview={openActiveReviewFromChat}
               onExample={(example) => {
                 setIntent(example);
                 void runPilot(example);
@@ -1219,18 +1259,22 @@ function TerminalExperience() {
 function PilotConsole({
   intent,
   messages,
+  activeReviewMessageId,
   busy,
   onChange,
   onSubmit,
   onKeyDown,
+  onOpenReview,
   onExample
 }: {
   intent: string;
   messages: PilotMessage[];
+  activeReviewMessageId: string | null;
   busy: boolean;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  onOpenReview: (messageId: string) => void;
   onExample: (example: string) => void;
 }) {
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
@@ -1260,7 +1304,12 @@ function PilotConsole({
           <div className="pilot-transcript rounded-md border border-border bg-background/45 p-3">
             <div className="space-y-3">
               {messages.map((message) => (
-                <MessageBubble key={message.id} message={message} />
+                <MessageBubble
+                  key={message.id}
+                  message={message}
+                  canOpenReview={message.id === activeReviewMessageId}
+                  onOpenReview={onOpenReview}
+                />
               ))}
               <div ref={transcriptEndRef} aria-hidden="true" />
             </div>
@@ -1305,8 +1354,17 @@ function PilotConsole({
   );
 }
 
-function MessageBubble({ message }: { message: PilotMessage }) {
+function MessageBubble({
+  message,
+  canOpenReview,
+  onOpenReview
+}: {
+  message: PilotMessage;
+  canOpenReview: boolean;
+  onOpenReview: (messageId: string) => void;
+}) {
   const isUser = message.role === "user";
+  const reviewAction = !isUser && canOpenReview ? message.reviewAction : null;
 
   return (
     <div className={cn("flex gap-2", isUser ? "justify-end" : "justify-start")}>
@@ -1333,6 +1391,20 @@ function MessageBubble({ message }: { message: PilotMessage }) {
         )}
         {!isUser && message.mode === "chat" && message.content ? (
           <p className="mt-3 border-t border-border pt-3 text-xs leading-5 text-muted-foreground">{AI_DISCLOSURE}</p>
+        ) : null}
+        {reviewAction ? (
+          <div className="mt-3 border-t border-border pt-3">
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 w-full justify-center gap-2 rounded-md sm:w-auto"
+              onClick={() => onOpenReview(message.id)}
+            >
+              <ClipboardCheck className="h-4 w-4" />
+              {reviewAction.label}
+            </Button>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">{reviewAction.description}</p>
+          </div>
         ) : null}
       </div>
       {isUser ? (
