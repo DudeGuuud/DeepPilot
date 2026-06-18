@@ -7,6 +7,7 @@ import {
   BarChart3,
   Bot,
   ClipboardCheck,
+  ExternalLink,
   LockKeyhole,
   Radar,
   ShieldCheck,
@@ -15,6 +16,7 @@ import {
 
 import { SiteHeader } from "@/components/site-header";
 import { Button } from "@/components/ui/button";
+import { TELEGRAM_BOT_HANDLE, TELEGRAM_BOT_URL } from "@/src/lib/public-links";
 import { cn } from "@/src/lib/utils";
 
 const capabilities = [
@@ -26,7 +28,7 @@ const capabilities = [
   },
   {
     title: "Start from plain language",
-    description: "Ask a question, describe a trade, or hand off a Telegram prompt without filling out a complex ticket first.",
+    description: "Ask in the Web terminal or Telegram, then let DeepPilot turn the prompt into a wallet-reviewed flow.",
     icon: Bot,
     stat: "02 / ask"
   },
@@ -52,11 +54,13 @@ const capabilities = [
 
 const tickerItems = [
   "Live BTC markets",
+  "Telegram /login",
+  "Telegram /trade",
   "RiskOps checks",
   "Quote freshness",
   "Trading Balance",
+  "Web Review links",
   "SUI gas preflight",
-  "Telegram handoff",
   "Wallet-confirmed",
   "PnL tracking",
   "Settlement receipts",
@@ -82,7 +86,7 @@ const riskOpsSignals = [
 const workflow = [
   {
     title: "Ask",
-    description: "Start from the web app or a Telegram handoff."
+    description: "Start in the Web terminal or message the Telegram bot with market, news, trade, or strategy intent."
   },
   {
     title: "Choose",
@@ -94,7 +98,7 @@ const workflow = [
   },
   {
     title: "Review",
-    description: "Confirm the exact wallet action and refresh-sensitive details."
+    description: "Open the Web Review link from Telegram or continue in the Web app to verify refresh-sensitive details."
   },
   {
     title: "Sign",
@@ -109,10 +113,18 @@ const workflow = [
 const guardRails = [
   "AI helps organize the review; it does not make the user's trading decision.",
   "RiskOps checks market state, quote freshness, Trading Balance, wallet gas, and receipt visibility.",
-  "Telegram support starts or resumes a review, while execution still requires wallet confirmation.",
+  "Telegram starts review links and account binding, while execution still requires wallet confirmation in Web.",
   "Secrets and deployment settings stay server-side and are not shown on this page.",
   "DeepPilot is built for DeepBook Predict markets, not order matching.",
   "Signing stays user-controlled and only appears after the required checks pass."
+] as const;
+
+const telegramCommands = [
+  ["/login", "bind Telegram to a wallet through a signed Web challenge"],
+  ["/markets", "scan live BTC Predict markets before choosing a review"],
+  ["/news BTC", "summarize market context before drafting an intent"],
+  ["/trade ...", "create a Web Review link for a single Predict action"],
+  ["/strategy ...", "create a Web Review link for a multi-leg strategy"]
 ] as const;
 
 export function LandingPage() {
@@ -121,6 +133,7 @@ export function LandingPage() {
       <SiteHeader fixed activePath="/landing" />
       <Hero />
       <CapabilityStream />
+      <TelegramSection />
       <ReviewStream />
       <Workflow />
       <SafetyBoundary />
@@ -148,7 +161,7 @@ function Hero() {
             DeepPilot helps users discover live BTC markets, ask in plain language, continue from Telegram, run RiskOps checks, and sign only after wallet-ready checks pass.
           </p>
 
-          <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <Button asChild size="lg" className="h-12 px-6 text-base">
               <Link href={"/trade" as Route}>
                 Start a Review
@@ -160,6 +173,12 @@ function Hero() {
             </Button>
             <Button asChild size="lg" variant="ghost" className="h-12 px-6 text-base">
               <Link href={"/profile" as Route}>View Profile</Link>
+            </Button>
+            <Button asChild size="lg" variant="ghost" className="h-12 px-6 text-base">
+              <a href={TELEGRAM_BOT_URL} rel="noreferrer" target="_blank">
+                Open Telegram Bot
+                <ExternalLink className="h-4 w-4" />
+              </a>
             </Button>
           </div>
 
@@ -262,6 +281,47 @@ function CapabilityStream() {
               </div>
             );
           })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TelegramSection() {
+  return (
+    <section className="border-b border-border">
+      <div className="mx-auto grid w-full max-w-[1580px] gap-10 px-4 py-20 sm:px-6 lg:grid-cols-[minmax(280px,0.42fr)_minmax(0,1fr)] lg:px-8">
+        <div className="lg:sticky lg:top-24 lg:self-start">
+          <SectionLabel icon={<Bot className="h-4 w-4" />} label="Telegram bot" />
+          <h2 className="mt-4 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
+            Start in chat. Sign in Web.
+          </h2>
+          <p className="mt-5 text-sm leading-6 text-muted-foreground">
+            {TELEGRAM_BOT_HANDLE} lets users bind a wallet, check markets, read BTC context, and generate review links from plain-language commands.
+          </p>
+          <Button asChild variant="outline" className="mt-7 h-11 border-border bg-background/70 px-5">
+            <a href={TELEGRAM_BOT_URL} rel="noreferrer" target="_blank">
+              Open {TELEGRAM_BOT_HANDLE}
+              <ExternalLink className="h-4 w-4" />
+            </a>
+          </Button>
+        </div>
+
+        <div className="border-y border-border">
+          {telegramCommands.map(([command, description]) => (
+            <div key={command} className="grid gap-3 border-b border-border py-5 last:border-b-0 md:grid-cols-[150px_minmax(0,1fr)_56px] md:items-center">
+              <span className="font-mono text-xs text-emerald-100">{command}</span>
+              <span className="text-sm leading-6 text-muted-foreground">{description}</span>
+              <span className="h-px w-14 justify-self-end bg-sky-300" />
+            </div>
+          ))}
+          <div className="grid gap-3 border-t border-border py-5 md:grid-cols-[150px_minmax(0,1fr)_56px] md:items-center">
+            <span className="font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">Boundary</span>
+            <span className="text-sm leading-6 text-foreground">
+              Telegram prepares the review. Wallet signing stays in the Web flow after fresh RiskOps and balance checks.
+            </span>
+            <span className="h-px w-14 justify-self-end bg-emerald-300" />
+          </div>
         </div>
       </div>
     </section>

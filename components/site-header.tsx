@@ -9,6 +9,7 @@ const navItems = [
   { href: "/landing", label: "Home" },
   { href: "/markets", label: "Markets" },
   { href: "/trade", label: "Trade" },
+  { href: "/telegram/login", label: "Telegram" },
   { href: "/profile", label: "Profile" }
 ] as const;
 

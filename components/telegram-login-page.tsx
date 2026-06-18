@@ -18,6 +18,7 @@ import {
   type DeepPilotPlan
 } from "@/src/lib/profile-execution";
 import { assertExecuted, getExecutedDigest } from "@/src/lib/predict-execution";
+import { TELEGRAM_BOT_HANDLE, TELEGRAM_BOT_URL } from "@/src/lib/public-links";
 import type { DeepPilotPlanConfig, TelegramSession } from "@/src/lib/types";
 import { cn } from "@/src/lib/utils";
 import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
@@ -92,7 +93,8 @@ export function TelegramLoginPage() {
       void load();
     } else {
       setLoading(false);
-      setError("Missing Telegram login token.");
+      setError(null);
+      setData(null);
     }
 
     return () => {
@@ -323,6 +325,56 @@ export function TelegramLoginPage() {
     if (!response.ok) {
       throw new Error(payload.error ?? "Telegram session update failed.");
     }
+  }
+
+  if (!token) {
+    return (
+      <AppShell
+        title="Telegram wallet link"
+        description="Open the DeepPilot bot first, then start /login to create a secure wallet-link token."
+        meta={<Badge variant="outline">{targetNetwork}</Badge>}
+      >
+        <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+          <Card className="glass-line">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-muted-foreground" />
+                Start from Telegram
+              </CardTitle>
+              <CardDescription>
+                This page needs a one-time token from the bot. DeepPilot does not create wallet-link challenges from a bare Web URL.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-2 text-sm">
+                <StatusRow label="Telegram token" value="start /login in bot" active={false} />
+                <StatusRow label="Wallet signing" value="Web only" active />
+                <StatusRow label="Bot handle" value={TELEGRAM_BOT_HANDLE} active />
+              </div>
+
+              <Button asChild>
+                <a href={TELEGRAM_BOT_URL} rel="noreferrer" target="_blank">
+                  Open {TELEGRAM_BOT_HANDLE}
+                  <ExternalLink className="ml-2 h-4 w-4" />
+                </a>
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="glass-line">
+            <CardHeader>
+              <CardTitle>How binding works</CardTitle>
+              <CardDescription>Telegram starts the session; the wallet stays under user control.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm text-muted-foreground">
+              <p>1. Open the bot and send /login.</p>
+              <p>2. Use the generated Web link to sign the wallet-link challenge.</p>
+              <p>3. Return to Telegram for market prompts and Web Review links.</p>
+            </CardContent>
+          </Card>
+        </div>
+      </AppShell>
+    );
   }
 
   return (
