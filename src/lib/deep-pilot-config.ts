@@ -19,15 +19,19 @@ export function telegramWebhookSecret() {
 }
 
 export function telegramLinkSecret() {
-  return trimEnv("TELEGRAM_LINK_SECRET") || trimEnv("REVIEW_SEED_SECRET") || "deeppilot-local-telegram-link-secret";
+  return secretOrLocalFallback(
+    "TELEGRAM_LINK_SECRET",
+    "deeppilot-local-telegram-link-secret",
+    ["REVIEW_SEED_SECRET"]
+  );
 }
 
 export function telegramLinkSalt() {
-  return trimEnv("TELEGRAM_LINK_SALT") || "deeppilot-local-telegram-link-salt";
+  return secretOrLocalFallback("TELEGRAM_LINK_SALT", "deeppilot-local-telegram-link-salt");
 }
 
 export function reviewSeedSecret() {
-  return trimEnv("REVIEW_SEED_SECRET") || trimEnv("DEEPSEEK_API_KEY") || "deeppilot-local-review-seed-secret";
+  return secretOrLocalFallback("REVIEW_SEED_SECRET", "deeppilot-local-review-seed-secret");
 }
 
 export function planPriceMist() {
@@ -79,4 +83,40 @@ export function memWalConfig() {
 
 function trimEnv(key: string) {
   return process.env[key]?.trim() || "";
+}
+
+function secretOrLocalFallback(key: string, fallback: string, alternativeKeys: string[] = []) {
+  const direct = trimEnv(key);
+
+  if (direct) {
+    return direct;
+  }
+
+  for (const alternativeKey of alternativeKeys) {
+    const alternative = trimEnv(alternativeKey);
+
+    if (alternative) {
+      return alternative;
+    }
+  }
+
+  if (isLocalDevelopment()) {
+    return fallback;
+  }
+
+  throw new Error(`${key} must be configured outside local development.`);
+}
+
+function isLocalDevelopment() {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+
+  try {
+    const hostname = new URL(appBaseUrl()).hostname;
+
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
 }

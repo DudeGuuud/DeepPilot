@@ -13,6 +13,12 @@ export async function getTelegramSessionByWallet(walletAddress: string) {
   return telegramHash ? await getTelegramSession(telegramHash) : null;
 }
 
+export async function getTelegramSessionByProfile(profileId: string) {
+  const telegramHash = await redisGetJson<string>(profileSessionKey(profileId));
+
+  return telegramHash ? await getTelegramSession(telegramHash) : null;
+}
+
 export async function upsertTelegramSession(input: {
   telegramHash: string;
   chatId: string;
@@ -74,5 +80,5 @@ export function walletSessionKey(walletAddress: string) {
 }
 
 export function profileSessionKey(profileId: string) {
-  return `profile:telegram:${profileId}`;
+  return `profile:telegram:${profileId.toLowerCase()}`;
 }

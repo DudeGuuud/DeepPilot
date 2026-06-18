@@ -220,6 +220,10 @@ Telegram, Profile NFT, quota, and optional memory:
 
 Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` stays server-side unless you manually send it to the client.
 
+`TELEGRAM_LINK_SECRET`, `TELEGRAM_LINK_SALT`, and `REVIEW_SEED_SECRET` may fall back to local defaults only on localhost development. Set all three in Vercel before enabling Telegram or Web Review links; deployed functions now fail closed when these values are missing.
+
+Profile NFT transactions use `NEXT_PUBLIC_SUI_NETWORK`. Publish `deep_pilot_profile::profile` on the same network, then fill `DEEP_PILOT_PROFILE_PACKAGE_ID`, `DEEP_PILOT_PROFILE_REGISTRY_ID`, and `DEEP_PILOT_PROFILE_TREASURY_ID` from that deployment. The Telegram onboarding page blocks profile creation and plan subscription when the connected wallet is on a different network.
+
 
 `PREDICT_ENABLE_ONCHAIN_LOG=false` is the default gas-optimized mode. Set it to `true` only for demos that need an extra on-chain audit event.
 

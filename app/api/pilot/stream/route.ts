@@ -6,9 +6,8 @@ import { memoryContextText, readAgentMemory } from "@/src/lib/memory";
 import { classifyPilotInput } from "@/src/lib/pilot";
 import { createPredictClientPreview } from "@/src/lib/predict";
 import { buildRagContext, streamRagAnswer } from "@/src/lib/rag";
-import { consumeRequestQuota } from "@/src/lib/request-quota";
+import { authorizeRequestQuota } from "@/src/lib/request-quota";
 import { compileStrategy } from "@/src/lib/strategy";
-import { getTelegramSession } from "@/src/lib/telegram-session";
 import type { CompileStreamEvent, ConversationContext, PilotStreamEvent } from "@/src/lib/types";
 
 export const runtime = "nodejs";
@@ -60,11 +59,12 @@ export async function POST(request: Request) {
         };
 
         try {
-          const quota = await consumeRequestQuota({
+          const authorization = await authorizeRequestQuota({
             profileId: body.data.profileId,
             telegramHash: body.data.telegramHash,
             walletAddress: body.data.walletAddress
           });
+          const quota = authorization.quota;
 
           if (quota && !quota.allowed) {
             send({
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
           });
           const conversationContext = conversationContextFromBody(
             body.data,
-            await resolveMemoryContext(body.data)
+            await resolveMemoryContext(authorization.identity?.profileId ?? null)
           );
           const classification = await classifyPilotInput(message, {
             conversationContext
@@ -192,10 +192,7 @@ function conversationContextFromBody(
   };
 }
 
-async function resolveMemoryContext(body: z.infer<typeof bodySchema>) {
-  const profileId = body.profileId
-    ?? (body.telegramHash ? (await getTelegramSession(body.telegramHash))?.profileId ?? null : null);
-
+async function resolveMemoryContext(profileId: string | null) {
   if (!profileId) {
     return null;
   }

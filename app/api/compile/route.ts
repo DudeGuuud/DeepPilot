@@ -5,8 +5,7 @@ import { compileIntent } from "@/src/lib/compile";
 import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http";
 import { memoryContextText, readAgentMemory } from "@/src/lib/memory";
 import { createPredictClientPreview } from "@/src/lib/predict";
-import { consumeRequestQuota, isQuotaIdentityRequiredError } from "@/src/lib/request-quota";
-import { getTelegramSession } from "@/src/lib/telegram-session";
+import { authorizeRequestQuota, isQuotaIdentityRequiredError, quotaIdentityErrorStatus } from "@/src/lib/request-quota";
 import type { ConversationContext } from "@/src/lib/types";
 
 const bodySchema = z.object({
@@ -51,13 +50,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    const quota = body.data.refreshed
-      ? null
-      : await consumeRequestQuota({
-          profileId: body.data.profileId,
-          telegramHash: body.data.telegramHash,
-          walletAddress: body.data.walletAddress
-        });
+    const authorization = await authorizeRequestQuota({
+      profileId: body.data.profileId,
+      telegramHash: body.data.telegramHash,
+      walletAddress: body.data.walletAddress
+    }, {
+      consume: !body.data.refreshed
+    });
+    const quota = authorization.quota;
 
     if (quota && !quota.allowed) {
       return NextResponse.json({
@@ -73,14 +73,14 @@ export async function POST(request: Request) {
         refreshed: Boolean(body.data.refreshed),
         conversationContext: conversationContextFromBody(
           body.data,
-          await resolveMemoryContext(body.data)
+          await resolveMemoryContext(authorization.identity?.profileId ?? null)
         )
       })),
       predict: createPredictClientPreview()
     });
   } catch (error) {
     if (isQuotaIdentityRequiredError(error)) {
-      return NextResponse.json({ error: error.message }, { status: 401 });
+      return NextResponse.json({ error: error.message }, { status: quotaIdentityErrorStatus(error) });
     }
 
     return NextResponse.json({ error: "Intent compile failed" }, { status: 502 });
@@ -105,10 +105,7 @@ function conversationContextFromBody(
   };
 }
 
-async function resolveMemoryContext(body: z.infer<typeof bodySchema>) {
-  const profileId = body.profileId
-    ?? (body.telegramHash ? (await getTelegramSession(body.telegramHash))?.profileId ?? null : null);
-
+async function resolveMemoryContext(profileId: string | null) {
   if (!profileId) {
     return null;
   }

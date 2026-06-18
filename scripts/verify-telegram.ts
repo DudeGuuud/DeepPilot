@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { consumeQuota, getQuotaStatus } from "../src/lib/quota";
-import { consumeRequestQuota, isQuotaIdentityRequiredError } from "../src/lib/request-quota";
+import { authorizeRequestQuota, consumeRequestQuota, isQuotaIdentityRequiredError } from "../src/lib/request-quota";
 import { createReviewSeed, decodeReviewSeed, encodeReviewSeed } from "../src/lib/review-seed";
 import { createTelegramLoginToken, decodeTelegramLoginToken, telegramHashForUserId } from "../src/lib/telegram-auth";
 import { getTelegramSessionByWallet, upsertTelegramSession } from "../src/lib/telegram-session";
@@ -65,6 +65,26 @@ const walletSession = await getTelegramSessionByWallet(walletB);
 
 if (walletSession?.profileId !== profileId) {
   throw new Error("New wallet reverse session index was not written.");
+}
+
+try {
+  await consumeRequestQuota({ profileId });
+  throw new Error("Quota identity check trusted a bare profile id.");
+} catch (error) {
+  if (!isQuotaIdentityRequiredError(error)) {
+    throw error;
+  }
+}
+
+const authorized = await authorizeRequestQuota({
+  profileId,
+  walletAddress: walletB
+}, {
+  consume: false
+});
+
+if (authorized.identity?.profileId !== profileId || authorized.quota) {
+  throw new Error("Quota authorization did not resolve the wallet session without consuming quota.");
 }
 
 for (let index = 0; index < 50; index += 1) {

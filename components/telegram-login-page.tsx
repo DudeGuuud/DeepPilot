@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/components/ui/use-toast";
+import { clientNetwork } from "@/src/lib/client-config";
 import {
   buildCreateDeepPilotProfileTransaction,
   buildSubscribePlanTransaction,
@@ -53,7 +54,8 @@ export function TelegramLoginPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const targetNetwork = currentNetwork === "devnet" ? "devnet" : "testnet";
+  const targetNetwork = clientNetwork;
+  const networkMismatch = Boolean(currentNetwork && currentNetwork !== targetNetwork);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,6 +181,10 @@ export function TelegramLoginPage() {
       return;
     }
 
+    if (!ensureProfileNetwork()) {
+      return;
+    }
+
     setBusy("profile");
     setError(null);
 
@@ -235,6 +241,10 @@ export function TelegramLoginPage() {
       return;
     }
 
+    if (!ensureProfileNetwork()) {
+      return;
+    }
+
     setBusy(plan);
     setError(null);
 
@@ -274,6 +284,15 @@ export function TelegramLoginPage() {
     }
   }
 
+  function ensureProfileNetwork() {
+    if (currentNetwork && currentNetwork !== targetNetwork) {
+      setError(`Switch wallet network to ${targetNetwork} before signing Profile transactions.`);
+      return false;
+    }
+
+    return true;
+  }
+
   async function updateTelegramSession(input: {
     walletAddress?: string;
     profileId?: string;
@@ -300,7 +319,7 @@ export function TelegramLoginPage() {
     <AppShell
       title="Telegram wallet link"
       description="Bind Telegram to a wallet, create a Profile NFT, and manage AI quota plans."
-      meta={<Badge variant="outline">testnet</Badge>}
+      meta={<Badge variant="outline">{targetNetwork}</Badge>}
     >
       <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
         <Card className="glass-line">
@@ -320,6 +339,7 @@ export function TelegramLoginPage() {
             <div className="grid gap-2 text-sm">
               <StatusRow label="Telegram token" value={data?.token ? "valid" : "missing"} active={Boolean(data?.token)} />
               <StatusRow label="Wallet" value={account?.address ? shortAddress(account.address) : "connect wallet"} active={Boolean(account?.address)} />
+              <StatusRow label="Wallet network" value={currentNetwork ?? "connect wallet"} active={Boolean(currentNetwork && !networkMismatch)} />
               <StatusRow label="Linked wallet" value={data?.session?.walletAddress ? shortAddress(data.session.walletAddress) : "not linked"} active={Boolean(data?.session?.walletAddress)} />
               <StatusRow label="Profile NFT" value={data?.session?.profileId ? shortAddress(data.session.profileId) : "not created"} active={Boolean(data?.session?.profileId)} />
               <StatusRow label="Plan" value={data?.session?.plan ?? "standard"} active={Boolean(data?.session)} />
@@ -333,7 +353,7 @@ export function TelegramLoginPage() {
               <Button
                 variant="secondary"
                 onClick={createProfile}
-                disabled={!data?.session?.walletAddress || Boolean(data?.session?.profileId) || busy !== null}
+                disabled={!data?.session?.walletAddress || Boolean(data?.session?.profileId) || busy !== null || networkMismatch}
               >
                 <Sparkles className="mr-2 h-4 w-4" />
                 {busy === "profile" ? "Creating..." : "Create Profile NFT"}
@@ -364,7 +384,7 @@ export function TelegramLoginPage() {
                     className="mt-3 w-full"
                     variant="secondary"
                     onClick={() => subscribe(key)}
-                    disabled={!data.session?.profileId || busy !== null}
+                    disabled={!data.session?.profileId || busy !== null || networkMismatch}
                   >
                     {busy === key ? "Subscribing..." : `Subscribe ${plan.label} · 0.1 SUI`}
                   </Button>
