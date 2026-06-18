@@ -2,13 +2,19 @@
 
 [中文说明](./README.zh-CN.md)
 
-DeepPilot is an AI RiskOps cockpit for DeepBook Predict. It helps a user go from a plain-language idea such as "Bet 10 DUSDC that BTC will be down by tonight" to a live market review, risk checks, wallet-ready transaction preview, and final wallet signing path.
+DeepPilot is an AI-assisted review layer for safer natural-language prediction-market trading on DeepBook Predict. A user can ask about BTC markets and news, turn a plain-language sentence such as "Bet 1 DUSDC that BTC will be down at the nearest settlement" into a trade draft, review the quote and safety checks, and only then decide whether to sign with a wallet.
 
-It is built for people who are new to prediction markets as well as operators who need a safer review flow before signing. The product does not ask users to understand every Predict object, oracle window, quote expiry, Trading Balance rule, or gas condition upfront. It turns those protocol details into a guided review.
+It is built first for people who are new to prediction markets and on-chain wallets. DeepPilot does not ask users to understand Predict objects, oracle windows, quote freshness, Trading Balance, market keys, or gas rules upfront. It translates those protocol details into a readable review before any wallet prompt appears.
 
 ## Why DeepPilot Exists
 
-Prediction markets are powerful, but the first trade is hard. A new user has to answer several questions before they can act:
+Prediction markets are powerful, but the first trade is hard. A new user usually wants to ask simple questions first:
+
+- What is moving BTC today?
+- What news or market risks should I understand?
+- What would a BTC UP or BTC DOWN position actually mean?
+
+Before signing, the same user also has to answer protocol-specific questions:
 
 - Which BTC prediction market is active now?
 - Which expiry should I use?
@@ -18,30 +24,30 @@ Prediction markets are powerful, but the first trade is hard. A new user has to 
 - Will the wallet be on the right Sui network with enough gas?
 - Is this a single trade, a redeem action, or a multi-leg strategy?
 
-DeepPilot was created to remove that operational burden. The user can start with natural language in Web or Telegram, while DeepPilot converts the request into a constrained Predict review, fetches live market data, runs deterministic risk checks, and only then opens a wallet signing path when the review is still valid.
+DeepPilot was created to remove that operational burden without removing user control. The user can start with natural language in Web or Telegram. DeepPilot answers market questions, summarizes context, converts clear trade intent into a constrained Predict review, refreshes live market data, runs deterministic safety checks, and only then opens a wallet signing path.
 
 ## What It Solves
 
 DeepPilot solves three practical problems:
 
-- Onboarding friction: users can ask in natural language instead of manually assembling oracle ids, expiry choices, market keys, and transaction details.
-- Pre-sign risk: every trade or strategy is checked against live Predict server status, oracle freshness, vault utilization, quote availability, Trading Balance, wallet network, and gas readiness before signing.
-- Cross-channel handoff: a user can begin in Telegram, receive a Review & Sign link, and continue in the Web app where the quote and risk checks are refreshed before wallet confirmation.
+- Onboarding friction: users can ask AI about BTC markets and draft trades in natural language instead of manually assembling oracle ids, expiries, market keys, and transaction details.
+- Pre-sign clarity: every trade or strategy is presented as a review with outcome, amount, expiry, quote estimate, Guardian decision, Trading Balance, wallet network, and gas readiness.
+- Cross-channel handoff: a user can begin in Telegram, receive a Web Review link, and continue in the Web app where quote and safety checks are refreshed before wallet confirmation.
 
 ## What Users Can Do
 
+- Ask market questions in `/trade`; DeepPilot can answer with retrieved Predict, news, and project context instead of forcing every message into a transaction.
 - Discover live BTC Predict markets in `/markets`, with expiry filters, quick risk labels, vault context, and chart history.
-- Ask market questions in `/trade`; DeepPilot can answer with retrieved Predict/news/project context instead of forcing every message into a transaction.
-- Place single-trade intents in plain language, for example: `Buy 10 DUSDC BTC UP on the next active market`.
-- Draft multi-leg strategies in plain language, for example: `Split 20 DUSDC across the next 1h, 2h, and 3h BTC UP markets`.
-- Review Guardian results before signing: `allow`, `reduce`, or `block`, with the reason shown to the user.
+- Place single-trade intents in plain language, for example: `Bet 1 DUSDC on BTC DOWN at the nearest settlement`.
+- Draft multi-leg strategies in plain language, for example: `Build a 1 DUSDC hedge strategy mostly BTC UP at the nearest settlement`.
+- Review Guardian results before signing: `allow`, `reduce`, or `block`, with the reason shown in plain language.
 - Create or link a PredictManager, check Trading Balance, and sign wallet transactions for supported execution flows.
 - Use Telegram commands such as `/login`, `/markets`, `/news BTC`, `/trade ...`, and `/strategy ...` to start from chat and finish in Web review.
 - Track local receipts, manager state, Trading Balance, positions, PnL, settlement status, and redeem/funding actions in `/profile`.
 
 ## User Benefit
 
-For a first-time prediction-market user, DeepPilot changes the experience from "learn the protocol first" to "describe what you want, then review the generated plan." The user still makes the trading decision and still controls the wallet signature, but the confusing parts of the protocol are surfaced as readable checks.
+For a first-time prediction-market user, DeepPilot changes the experience from "learn the protocol first" to "ask a question, understand the context, then review the generated trade draft." The user still makes the trading decision and still controls the wallet signature, but the confusing parts of the protocol are surfaced as readable checks.
 
 For a more experienced user, DeepPilot reduces repeated operational work: market discovery, quote refresh, strategy leg construction, wallet preflight, and receipt tracking are all placed in one workflow.
 
@@ -50,8 +56,8 @@ For a more experienced user, DeepPilot reduces repeated operational work: market
 | Area | Implemented | Boundary |
 | --- | --- | --- |
 | Market discovery | Live BTC DeepBook Predict markets, expiry filters, chart/history, page-scoped risk labels | It does not expose a traditional CLOB order book. |
-| Natural-language trade | Web and Telegram input routed into `chat`, `trade`, or `strategy` modes | AI output is validated and may fall back to deterministic parsing. |
-| Trade review | Live Predict snapshot, Guardian result, quote preview, PTB preview, funding checks | Quote-only intents do not build a transaction. |
+| Natural-language trade | Web and Telegram input routed into `chat`, `trade`, or `strategy` modes | AI output is validated and may fall back to deterministic parsing. It is never treated as direct execution. |
+| Trade review | Live Predict snapshot, Guardian result, quote preview, PTB preview, funding checks | Quote-only intents do not build a transaction. Quote views are estimates, not guaranteed profit. |
 | Strategy review | Deterministic multi-leg strategy plan, per-leg compile, aggregate funding check, batch transaction preview | Strategy output is a candidate plan, not investment advice. |
 | Wallet execution | Create PredictManager, single binary mint, and selected strategy batch mint through the user's wallet | Wallet signing is user-controlled. |
 | Sponsor endpoint | Challenge + wallet authorization + server-side recompile + policy preview receipt | `/api/sponsor` is preview-only. It returns `submitted: false` and does not do dual-sign sponsor submission. |
@@ -62,7 +68,7 @@ For a more experienced user, DeepPilot reduces repeated operational work: market
 
 ```mermaid
 flowchart TD
-  User["User\nplain language or command"] --> Entry{"Entry point"}
+  User["User\nquestion, prompt, or command"] --> Entry{"Entry point"}
   Entry --> Web["Web app\n/markets /trade /profile"]
   Entry --> Tg["Telegram bot\n/login /markets /trade /strategy"]
 
@@ -70,9 +76,9 @@ flowchart TD
   Tg --> ReviewLink["Signed Web Review link"]
   ReviewLink --> Pilot
 
-  Pilot --> Chat["Chat answer\nPredict + news + project context"]
-  Pilot --> Trade["Trade compiler\nsingle Predict intent"]
-  Pilot --> Strategy["Strategy compiler\nmulti-leg plan"]
+  Pilot --> Chat["Market answer\nPredict + news + project context"]
+  Pilot --> Trade["Trade draft\nsingle Predict intent"]
+  Pilot --> Strategy["Strategy draft\nmulti-leg candidate"]
 
   Trade --> Intent["Intent parser\nDeepSeek JSON mode + deterministic fallback"]
   Strategy --> Legs["Strategy legs\nexpiry matching + budget allocation"]
@@ -82,11 +88,11 @@ flowchart TD
   Market --> Guardian["Guardian RiskOps\nfreshness + lag + vault + sizing"]
   Guardian --> Quote["Quote preview\ncost + payout + expiry"]
   Quote --> PTB["PTB preview\nMove targets + inputs + digest"]
-  PTB --> Review["User review\nrisk, funding, network, gas"]
+  PTB --> Review["User review\nquote, risk, funding, network, gas"]
 
   Review --> WalletGate{"Can sign now?"}
   WalletGate -->|"no"| Blocked["Explain missing field,\nstale quote, funding, or risk block"]
-  WalletGate -->|"yes"| Wallet["Sui wallet\nuser signs"]
+  WalletGate -->|"yes"| Wallet["Sui wallet\nuser chooses whether to sign"]
   Wallet --> Sui["Sui testnet\nmanager / mint / batch mint"]
   Sui --> Profile["Profile + receipts\npositions, PnL, settlement"]
 
@@ -96,14 +102,14 @@ flowchart TD
 
 ### Flow in Plain English
 
-1. The user starts in Web or Telegram with a question, trade request, or strategy request.
+1. The user starts in Web or Telegram with a market question, trade request, or strategy request.
 2. The pilot router classifies the input as chat, trade, or strategy.
-3. Trade and strategy requests are converted into constrained Predict intents. LLM output is treated as untrusted and validated; deterministic fallback keeps the demo usable without an LLM key.
+3. Chat requests return Predict/news context. Trade and strategy requests are converted into constrained Predict reviews. LLM output is treated as untrusted and validated; deterministic fallback keeps the demo usable without an LLM key.
 4. DeepPilot reads live DeepBook Predict status, active BTC oracles, oracle state, SVI data, and vault summary.
 5. Guardian checks whether the review is safe enough to continue, should be reduced, or must be blocked.
 6. If the action needs a position, DeepPilot requests a quote and builds a PTB preview with exact Move targets and inputs.
-7. Before signing, the Web app refreshes quote-sensitive details and checks wallet network, SUI gas, PredictManager, and Trading Balance.
-8. Supported actions can be signed by the user's wallet. Sponsor authorization remains a preview path only.
+7. Before signing, the Web app refreshes quote-sensitive details from the typed intent or strategy plan, checks wallet network, SUI gas, PredictManager, and Trading Balance, and avoids re-running AI parsing.
+8. Supported actions can be signed by the user's wallet. The user can reject the wallet prompt. Sponsor authorization remains a preview path only.
 9. `/profile` keeps manager state, receipts, positions, PnL, funding, withdrawal, redeem, and settlement context visible after review.
 
 ## Main Routes
@@ -117,7 +123,7 @@ flowchart TD
 ## API Surface
 
 - `POST /api/pilot/stream` - unified streaming endpoint for chat, trade, and strategy input.
-- `POST /api/compile` - compiles a single Predict intent into market, Guardian, quote, gas, and PTB review.
+- `POST /api/compile` - compiles a single Predict intent into market, Guardian, quote, gas, and PTB review; refreshed reviews may reuse typed intent to avoid re-running AI parsing.
 - `POST /api/compile/stream` - streaming version of the single-trade compile flow.
 - `POST /api/strategy/compile` - compiles a multi-leg strategy review.
 - `POST /api/strategy/stream` - streaming version of the strategy review flow.
@@ -135,7 +141,7 @@ flowchart TD
 - `src/lib/strategy.ts` builds strategy legs, compiles each leg, and prepares batch execution readiness.
 - `src/lib/predict.ts` is the only DeepBook Predict public API reader; responses are schema-validated and timeout-bound.
 - `src/lib/guardian.ts` turns live market state into an `allow`, `reduce`, or `block` decision.
-- `src/lib/compile.ts` orchestrates intent parsing, Predict reads, Guardian, quote, PTB, and gas checks.
+- `src/lib/compile.ts` orchestrates intent parsing, Predict reads, Guardian, quote, PTB, and gas checks. Refreshed reviews can reuse typed intent so signing is not blocked by a second AI parse.
 - `src/lib/ptb.ts` builds auditable PTB previews with exact Move targets, object ids, and command inputs.
 - `src/lib/predict-execution.ts` builds wallet-signable Sui transactions for supported manager, mint, batch mint, funding, withdrawal, and redeem actions.
 - `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and trade-size caps.
@@ -213,12 +219,13 @@ There is no `NEXT_PRIVATE_*` convention in Next.js. Anything without `NEXT_PUBLI
 ## Demo Intents
 
 ```text
-Buy 10 DUSDC BTC UP on the next active DeepBook Predict oracle
-Bet 5 DUSDC that BTC will be down by 18:00 tonight
-Split 20 DUSDC across the next 1h, 2h, and 3h BTC UP markets
+What is moving BTC today?
+Bet 1 DUSDC on BTC DOWN at the nearest settlement
+Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement
+Split 1 DUSDC BTC UP across nearest, 1h, and 2h expiries
 Redeem my settled BTC DOWN position
 ```
 
 ## Important Boundary
 
-DeepPilot helps users review and sign DeepBook Predict actions. It is not investment advice and it does not make trading decisions for the user.
+DeepPilot helps users understand, review, and sign DeepBook Predict actions. It is not investment advice, it does not guarantee profit, and it does not make trading decisions or sign transactions for the user.

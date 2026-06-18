@@ -21,88 +21,86 @@ import { cn } from "@/src/lib/utils";
 
 const capabilities = [
   {
-    title: "Find live BTC markets",
-    description: "See active BTC prediction markets, expiry, oracle freshness, and liquidity context before choosing where to act.",
+    title: "Ask AI about markets",
+    description: "Start with simple questions about BTC, market moves, news, and Predict risk without learning protocol objects first.",
     icon: BarChart3,
-    stat: "01 / discover"
+    stat: "01 / ask"
   },
   {
-    title: "Start from plain language",
-    description: "Ask in the Web terminal or Telegram, then let DeepPilot turn the prompt into a wallet-reviewed flow.",
+    title: "Turn a sentence into a trade draft",
+    description: "Describe a trade in plain language and DeepPilot prepares a constrained DeepBook Predict draft for review.",
     icon: Bot,
-    stat: "02 / ask"
+    stat: "02 / draft"
   },
   {
-    title: "Read the RiskOps result",
-    description: "Review stale oracle, indexer lag, vault utilization, trade size, and quote availability before the wallet opens.",
+    title: "Review before signing",
+    description: "Check the outcome, amount, expiry, quote estimate, Guardian result, and safety notes before a wallet opens.",
     icon: ShieldCheck,
     stat: "03 / review"
   },
   {
-    title: "Preflight balance and gas",
-    description: "DeepPilot checks Trading Balance funding, wallet network, and SUI gas readiness before asking for a signature.",
+    title: "Wallet stays in control",
+    description: "The user decides. DeepPilot only opens signing after market, quote, Trading Balance, network, and gas checks pass.",
     icon: ClipboardCheck,
     stat: "04 / sign"
   },
   {
-    title: "Track what happened",
-    description: "Profile keeps Trading Balance, positions, live or indexed PnL, settlement status, and local receipts visible after review.",
+    title: "Track positions and PnL",
+    description: "After signing, Profile shows Trading Balance, positions, current value, PnL, settlement state, and receipts.",
     icon: Wallet,
     stat: "05 / track"
   }
 ] as const;
 
 const tickerItems = [
-  "Live BTC markets",
-  "Telegram /login",
-  "Telegram /trade",
-  "RiskOps checks",
-  "Quote freshness",
-  "Trading Balance",
+  "Ask AI about BTC",
+  "News-aware context",
+  "Natural-language trade drafts",
+  "Guardian review",
+  "Quote estimate",
+  "Balance check",
   "Web Review links",
-  "SUI gas preflight",
-  "Wallet-confirmed",
+  "Wallet-confirmed signing",
   "PnL tracking",
-  "Settlement receipts",
-  "Receipts"
+  "Settlement receipts"
 ] as const;
 
 const reviewRows = [
-  ["source", "Telegram or web prompt", "accepted"],
-  ["oracle", "active BTC window + freshness", "live"],
-  ["quote", "cost and payout checked", "fresh"],
-  ["riskops", "stale / lag / vault checks", "clear"],
-  ["balance", "Trading Balance preflight", "ready"],
-  ["wallet", "user-confirmed signing", "gated"]
+  ["ask", "What is moving BTC today?", "ready"],
+  ["context", "news and market risk summarized", "clear"],
+  ["draft", "BTC DOWN · 1 DUSDC · nearest safe expiry", "prepared"],
+  ["review", "quote, amount, expiry, Guardian", "checked"],
+  ["balance", "Trading Balance and gas preflight", "ready"],
+  ["wallet", "user chooses whether to sign", "gated"]
 ] as const;
 
 const riskOpsSignals = [
-  ["Market health", "active oracle, expiry, indexer lag"],
-  ["Quote freshness", "cost, payout, and quote expiry"],
-  ["Balance preflight", "Trading Balance and SUI gas"],
+  ["Ask AI", "market questions, news, and risk context"],
+  ["Draft trade", "plain language into a Predict review"],
+  ["Review checks", "quote, Guardian, balance, and gas"],
   ["After signing", "positions, PnL, settlements, receipts"]
 ] as const;
 
 const workflow = [
   {
     title: "Ask",
-    description: "Start in the Web terminal or message the Telegram bot with market, news, trade, or strategy intent."
+    description: "Ask DeepPilot about BTC markets, news, or what a prediction-market trade would mean."
   },
   {
-    title: "Choose",
-    description: "Review the active market, time left, and estimated outcome."
+    title: "Understand",
+    description: "Read a plain-language summary of market context, risk, and available Predict opportunities."
   },
   {
-    title: "Check",
-    description: "Read RiskOps checks for market health, quote freshness, balance readiness, and wallet gas."
+    title: "Draft",
+    description: "Turn one sentence into a trade or strategy draft with outcome, amount, and expiry."
   },
   {
     title: "Review",
-    description: "Open the Web Review link from Telegram or continue in the Web app to verify refresh-sensitive details."
+    description: "Check quote estimate, Guardian result, Trading Balance, gas readiness, and transaction details."
   },
   {
     title: "Sign",
-    description: "Approve or reject from the connected Sui wallet."
+    description: "Approve or reject from the connected Sui wallet. DeepPilot never signs automatically."
   },
   {
     title: "Track",
@@ -111,20 +109,20 @@ const workflow = [
 ] as const;
 
 const guardRails = [
-  "AI helps organize the review; it does not make the user's trading decision.",
-  "RiskOps checks market state, quote freshness, Trading Balance, wallet gas, and receipt visibility.",
-  "Telegram starts review links and account binding, while execution still requires wallet confirmation in Web.",
-  "Secrets and deployment settings stay server-side and are not shown on this page.",
-  "DeepPilot is built for DeepBook Predict markets, not order matching.",
-  "Signing stays user-controlled and only appears after the required checks pass."
+  "DeepPilot does not give financial advice or trade automatically.",
+  "AI drafts a review; the user makes the trading decision.",
+  "Wallet signing only appears after market, quote, balance, gas, and Guardian checks.",
+  "Telegram can start the conversation, but execution still requires Web wallet confirmation.",
+  "Quote and payout views are estimates from current DeepBook Predict state, not guaranteed profit.",
+  "DeepPilot is built for DeepBook Predict markets, not traditional order matching."
 ] as const;
 
 const telegramCommands = [
-  ["/login", "bind Telegram to a wallet through a signed Web challenge"],
-  ["/markets", "scan live BTC Predict markets before choosing a review"],
-  ["/news BTC", "summarize market context before drafting an intent"],
-  ["/trade ...", "create a Web Review link for a single Predict action"],
-  ["/strategy ...", "create a Web Review link for a multi-leg strategy"]
+  ["What is moving BTC today?", "ask in natural language and get market context"],
+  ["/news BTC", "summarize BTC news and risk before drafting a trade"],
+  ["/markets", "see active BTC Predict markets from chat"],
+  ["/trade ...", "turn a plain-language trade into a Web Review link"],
+  ["/strategy ...", "prepare a multi-leg strategy candidate for Web review"]
 ] as const;
 
 export function LandingPage() {
@@ -151,20 +149,20 @@ function Hero() {
         <div className="landing-rise max-w-5xl">
           <p className="flex flex-wrap items-center gap-3 text-sm font-medium uppercase tracking-[0.26em] text-muted-foreground">
             <span className="landing-breathe" />
-            DeepPilot for prediction markets
-            <span className="text-sky-100">Web + Telegram handoff</span>
+            AI-assisted reviews for prediction markets
+            <span className="text-sky-100">Ask · Review · Sign</span>
           </p>
           <h1 className="mt-5 text-5xl font-semibold leading-none tracking-tight text-foreground sm:text-6xl lg:text-7xl 2xl:text-8xl">
-            Review before Predict.
+            Safer natural-language trading for prediction markets.
           </h1>
           <p className="mt-6 max-w-3xl text-lg leading-8 text-muted-foreground sm:text-xl sm:leading-9">
-            DeepPilot helps users discover live BTC markets, ask in plain language, continue from Telegram, run RiskOps checks, and sign only after wallet-ready checks pass.
+            DeepPilot helps new users ask about BTC markets, understand news and risk, turn one sentence into a DeepBook Predict trade draft, and review every check before wallet signing.
           </p>
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
             <Button asChild size="lg" className="h-12 px-6 text-base">
               <Link href={"/trade" as Route}>
-                Start a Review
+                Ask DeepPilot
                 <ArrowRight className="h-4 w-4" />
               </Link>
             </Button>
@@ -216,7 +214,7 @@ function HeroTerminal() {
     <div className="border-y border-border bg-background/82 py-5">
       <div className="flex items-center justify-between gap-4 border-b border-border px-1 pb-4">
         <SectionLabel icon={<Radar className="h-4 w-4" />} label="Review stream" />
-        <span className="font-mono text-xs text-emerald-100">live checks</span>
+            <span className="font-mono text-xs text-emerald-100">human review</span>
       </div>
 
       <div className="divide-y divide-border">
@@ -230,7 +228,7 @@ function HeroTerminal() {
       </div>
 
       <div className="mt-5 grid gap-4 border-t border-border pt-5 sm:grid-cols-3">
-        <Metric label="Risk" value="ALLOW" />
+        <Metric label="Guardian" value="ALLOW" />
         <Metric label="Review" value="READY" />
         <Metric label="Signing" value="WALLET" />
       </div>
@@ -257,12 +255,12 @@ function CapabilityStream() {
     <section className="border-b border-border">
       <div className="mx-auto grid w-full max-w-[1580px] gap-10 px-4 py-20 sm:px-6 lg:grid-cols-[minmax(280px,0.42fr)_minmax(0,1fr)] lg:px-8">
         <div className="lg:sticky lg:top-24 lg:self-start">
-          <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">what users can do</p>
+          <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">what new users can do</p>
           <h2 className="mt-4 text-3xl font-semibold tracking-tight text-foreground sm:text-4xl">
-            Decide with context.
+            From market question to reviewed trade.
           </h2>
           <p className="mt-5 text-sm leading-6 text-muted-foreground">
-            Find a market, ask for help, review risk, sign from wallet, and check outcomes later.
+            DeepPilot translates protocol details into a guided path: ask, understand, draft, review, sign, and track.
           </p>
         </div>
 
@@ -297,7 +295,7 @@ function TelegramSection() {
             Start in chat. Sign in Web.
           </h2>
           <p className="mt-5 text-sm leading-6 text-muted-foreground">
-            {TELEGRAM_BOT_HANDLE} lets users bind a wallet, check markets, read BTC context, and generate review links from plain-language commands.
+            {TELEGRAM_BOT_HANDLE} lets users chat freely, ask for BTC context, use simple commands, and generate Web Review links. Signing still happens in the browser wallet.
           </p>
           <Button asChild variant="outline" className="mt-7 h-11 border-border bg-background/70 px-5">
             <a href={TELEGRAM_BOT_URL} rel="noreferrer" target="_blank">
@@ -318,7 +316,7 @@ function TelegramSection() {
           <div className="grid gap-3 border-t border-border py-5 md:grid-cols-[150px_minmax(0,1fr)_56px] md:items-center">
             <span className="font-mono text-xs uppercase tracking-[0.16em] text-muted-foreground">Boundary</span>
             <span className="text-sm leading-6 text-foreground">
-              Telegram prepares the review. Wallet signing stays in the Web flow after fresh RiskOps and balance checks.
+              Telegram prepares the review link. Wallet signing stays in the Web flow after fresh quote, Guardian, balance, and gas checks.
             </span>
             <span className="h-px w-14 justify-self-end bg-emerald-300" />
           </div>
@@ -334,21 +332,21 @@ function ReviewStream() {
       <div className="absolute inset-y-0 left-1/2 hidden w-px bg-border lg:block" />
       <div className="mx-auto grid min-h-screen w-full max-w-[1580px] gap-8 px-4 py-20 sm:px-6 lg:grid-cols-2 lg:px-8">
         <div className="flex flex-col justify-center">
-          <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">before signing</p>
+          <p className="font-mono text-xs uppercase tracking-[0.22em] text-muted-foreground">before the wallet opens</p>
           <h2 className="mt-4 text-3xl font-semibold tracking-tight text-foreground sm:text-5xl">
-            Review before signing.
+            A trade draft is not a signature.
           </h2>
           <p className="mt-5 max-w-xl text-sm leading-6 text-muted-foreground">
-            DeepPilot does not rush users into a wallet prompt. It turns a request into a review, explains the state, then lets the user decide.
+            DeepPilot does not jump from chat to wallet. It turns a request into a readable review, explains what will happen, and lets the user decide.
           </p>
         </div>
 
         <div className="flex flex-col justify-center border-y border-border">
-          <StreamLine label="Prompt" value="plain-language request" tone="sky" />
-          <StreamLine label="Market" value="active BTC market selected" tone="default" />
-          <StreamLine label="Estimate" value="payout view prepared" tone="default" />
-          <StreamLine label="Risk" value="allow / reduce / block explained" tone="emerald" />
-          <StreamLine label="Wallet" value="confirm after checks" tone="emerald" />
+          <StreamLine label="Question" value="market or news prompt" tone="sky" />
+          <StreamLine label="Draft" value="trade details generated" tone="default" />
+          <StreamLine label="Review" value="amount, expiry, quote, Guardian" tone="default" />
+          <StreamLine label="Decision" value="user accepts or edits" tone="emerald" />
+          <StreamLine label="Wallet" value="sign only after checks" tone="emerald" />
         </div>
       </div>
     </section>
@@ -388,7 +386,7 @@ function SafetyBoundary() {
             What DeepPilot will and will not do
           </div>
           <h2 className="mt-5 text-3xl font-semibold tracking-tight text-foreground sm:text-5xl">
-            Wallet control.
+            The user stays in control.
           </h2>
         </div>
 
