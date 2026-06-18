@@ -24,6 +24,14 @@ const MARKET_MATCH_TOLERANCE_MS = 45 * 60_000;
 export type CompileStrategyOptions = Pick<CompileOptions, "walletAddress" | "managerId" | "refreshed" | "onEvent"> & {
   conversationContext?: ConversationContext | null;
   activeMarketContext?: ActiveMarketContext | null;
+  lockedLegs?: LockedStrategyLeg[];
+};
+
+export type LockedStrategyLeg = {
+  id: string;
+  oracleId?: string | null;
+  direction?: "up" | "down" | null;
+  strike?: number | null;
 };
 
 export async function compileStrategy(input: string, options: CompileStrategyOptions = {}): Promise<StrategyReview> {
@@ -45,7 +53,7 @@ export async function compileStrategy(input: string, options: CompileStrategyOpt
     label: "Planning strategy legs",
     state: "pending"
   });
-  const plan = buildStrategyPlan(input, activeMarketContext, options.conversationContext ?? null);
+  const plan = buildStrategyPlan(input, activeMarketContext, options.conversationContext ?? null, options.lockedLegs ?? []);
   options.onEvent?.({
     type: "stage",
     label: "Planning strategy legs",
@@ -90,9 +98,10 @@ export async function compileStrategy(input: string, options: CompileStrategyOpt
         refreshed: options.refreshed
       });
       const status = legStatus(result);
+      const quotedLeg = freezeQuotedStrike(leg, result);
       compiledLegs.push({
-        id: leg.id,
-        leg,
+        id: quotedLeg.id,
+        leg: quotedLeg,
         intentText,
         result: adapter.buildPreview(result),
         status,
@@ -154,7 +163,8 @@ export async function compileStrategy(input: string, options: CompileStrategyOpt
 export function buildStrategyPlan(
   input: string,
   activeMarketContext: ActiveMarketContext,
-  conversationContext: ConversationContext | null = null
+  conversationContext: ConversationContext | null = null,
+  lockedLegs: LockedStrategyLeg[] = []
 ): StrategyPlan {
   const raw = input.trim();
   const direction = detectDirection(raw, conversationContext);
@@ -167,6 +177,7 @@ export function buildStrategyPlan(
   const legAmounts = allocateStrategyBudget(amount, strategyLegWeights(raw, isHedge, legDirections));
   const nowMs = Date.parse(activeMarketContext.nowIso);
   const signableMarkets = activeMarketContext.markets.filter((market) => market.expiry - nowMs >= MIN_SIGNABLE_TIME_TO_EXPIRY_MS);
+  const lockById = new Map(lockedLegs.map((leg) => [leg.id, leg]));
   const legs: StrategyLeg[] = targetDurations.map((minutes, index) => {
     const legDirection = legDirections[index] ?? direction;
     const market = minutes > 0
@@ -180,7 +191,7 @@ export function buildStrategyPlan(
           ? "three_hour"
           : minutes > 0 ? "custom" : "next_active";
 
-    return {
+    const leg: StrategyLeg = {
       id: `leg-${index + 1}`,
       method: "predict_binary_mint",
       action: legDirection === "down" ? "buy_down" : "buy_up",
@@ -196,6 +207,8 @@ export function buildStrategyPlan(
         ? `${legDirection.toUpperCase()} near ${expiryPreferenceLabel(expiryPreference)}`
         : `No active oracle with enough signing time near ${minutes} minutes`
     };
+
+    return applyLockedStrike(leg, lockById.get(leg.id));
   });
 
   return {
@@ -213,6 +226,28 @@ export function buildStrategyPlan(
     source: "deterministic",
     raw
   };
+}
+
+function freezeQuotedStrike(leg: StrategyLeg, result: CompileResult): StrategyLeg {
+  const strike = result.quote?.strike;
+
+  return typeof strike === "number" && Number.isFinite(strike)
+    ? { ...leg, strike }
+    : leg;
+}
+
+function applyLockedStrike(leg: StrategyLeg, lock: LockedStrategyLeg | undefined): StrategyLeg {
+  if (
+    !lock ||
+    typeof lock.strike !== "number" ||
+    !Number.isFinite(lock.strike) ||
+    (lock.oracleId && lock.oracleId !== leg.oracleId) ||
+    (lock.direction && lock.direction !== leg.direction)
+  ) {
+    return leg;
+  }
+
+  return { ...leg, strike: lock.strike };
 }
 
 function buildAggregateReadiness(compiledLegs: CompiledTradeLeg[]): AggregateExecutionReadiness {

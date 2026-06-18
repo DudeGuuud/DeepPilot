@@ -3,7 +3,7 @@ import { strict as assert } from "node:assert";
 import { compileIntent } from "../src/lib/compile";
 import { classifyPilotInput } from "../src/lib/pilot";
 import { buildRagContext, streamRagAnswer } from "../src/lib/rag";
-import { compileStrategy } from "../src/lib/strategy";
+import { buildStrategyPlan, compileStrategy } from "../src/lib/strategy";
 
 const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
 const TRADE_SMOKE_INTENT = "Bet 10 DUSDC on BTC DOWN at the fastest settlement";
@@ -33,6 +33,36 @@ assert.equal(trade.mode, "trade", "explicit Predict order should route to trade 
 
 const strategy = await classifyPilotInput("BTC split 9 DUSDC long across 1h 2h 3h expiries");
 assert.equal(strategy.mode, "strategy", "multi-leg strategy request should route to strategy mode");
+
+const nowMs = Date.now();
+const lockedPlan = buildStrategyPlan(
+  "Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
+  {
+    asset: "BTC",
+    nowIso: new Date(nowMs).toISOString(),
+    earliestActiveOracleId: "0x1",
+    markets: [
+      {
+        oracleId: "0x1",
+        expiry: nowMs + 10 * 60_000,
+        expiryIso: new Date(nowMs + 10 * 60_000).toISOString(),
+        status: "active",
+        isEarliestActive: true
+      }
+    ]
+  },
+  { messages: [], memoryContext: "last trade shape: DOWN 1 DUSDC next_active" },
+  [
+    {
+      id: "leg-1",
+      oracleId: "0x1",
+      direction: "up",
+      strike: 64_321
+    }
+  ]
+);
+assert.equal(lockedPlan.legs[0]?.direction, "up", "current strategy direction should override memory direction");
+assert.equal(lockedPlan.legs[0]?.strike, 64_321, "strategy refresh should preserve locked leg strike");
 
 const followUpTrade = await classifyPilotInput("那就买跌 10u 最快结算", {
   conversationContext: {

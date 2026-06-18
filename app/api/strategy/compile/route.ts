@@ -21,6 +21,12 @@ const bodySchema = z.object({
     content: z.string().trim().min(1).max(900),
     mode: z.enum(["chat", "trade", "strategy"]).optional(),
     sourceTitles: z.array(z.string().trim().min(1).max(160)).max(4).optional()
+  })).max(8).optional(),
+  lockedLegs: z.array(z.object({
+    id: z.string().trim().min(1).max(64),
+    oracleId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).nullable().optional(),
+    direction: z.enum(["up", "down"]).nullable().optional(),
+    strike: z.number().finite().positive().nullable().optional()
   })).max(8).optional()
 });
 
@@ -66,6 +72,7 @@ export async function POST(request: Request) {
         walletAddress: body.data.walletAddress,
         managerId: body.data.managerId,
         refreshed: Boolean(body.data.refreshed),
+        lockedLegs: body.data.lockedLegs ?? [],
         conversationContext: conversationContextFromBody(
           body.data,
           await resolveMemoryContext(authorization.identity?.profileId ?? null)

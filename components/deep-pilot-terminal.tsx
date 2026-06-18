@@ -1200,6 +1200,7 @@ function TerminalExperience() {
         walletAddress: account?.address,
         managerId: current.aggregateReadiness.managerId ?? managerId ?? undefined,
         refreshed: true,
+        lockedLegs: strategyLockedLegs(current),
         conversation: buildConversationForPilot(messages),
         lastMarketThesis: latestMarketThesis(messages)
       })
@@ -3210,6 +3211,15 @@ function strategyExecutableFingerprint(review: StrategyApiReview) {
       })),
     managerId: review.aggregateReadiness.managerId
   });
+}
+
+function strategyLockedLegs(review: StrategyApiReview) {
+  return review.compiledLegs.map((leg) => ({
+    id: leg.id,
+    oracleId: leg.result?.ptb?.transactionData.oracleId ?? leg.leg.oracleId ?? null,
+    direction: leg.result?.ptb?.transactionData.key.direction ?? leg.leg.direction ?? null,
+    strike: leg.leg.strike ?? leg.result?.quote?.strike ?? null
+  }));
 }
 
 function isReviewActive(compiled: CompileApiResult) {
