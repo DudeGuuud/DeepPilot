@@ -224,7 +224,17 @@ export function TelegramLoginPage() {
         description: shortAddress(profileId)
       });
     } catch (profileError) {
-      setError(explainWalletExecutionError(profileError));
+      const refreshed = await refreshSession().catch(() => null);
+
+      if (refreshed?.session?.profileId) {
+        toast({
+          variant: "success",
+          title: "Profile NFT recovered",
+          description: shortAddress(refreshed.session.profileId)
+        });
+      } else {
+        setError(explainWalletExecutionError(profileError));
+      }
     } finally {
       setBusy(null);
     }

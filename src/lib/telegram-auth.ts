@@ -4,6 +4,7 @@ import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
 
 import { appBaseUrl, telegramLinkSalt, telegramLinkSecret } from "./deep-pilot-config";
 import { redisGet, redisSet } from "./redis-store";
+import { createSuiVerifyClient } from "./sui-verify-client";
 
 const LOGIN_TOKEN_TTL_MS = 10 * 60_000;
 
@@ -102,7 +103,9 @@ export async function verifyTelegramWalletLink(input: {
   });
 
   await verifyPersonalMessageSignature(new TextEncoder().encode(message), input.signature, {
-    address: input.walletAddress
+    address: input.walletAddress,
+    // zkLogin signatures need a Sui client so the SDK can verify issuer/JWK state.
+    client: createSuiVerifyClient()
   });
 
   await redisSet(nonceKey, "used", Math.max(60, Math.ceil((Date.parse(token.expiresAt) - Date.now()) / 1_000)));

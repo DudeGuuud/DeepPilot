@@ -76,6 +76,13 @@ type VerifyPlanChangedInput = {
   network?: ClientNetwork;
 };
 
+type FindProfileInRegistryInput = {
+  registryId: string;
+  telegramHash: string | Uint8Array | number[];
+  walletAddress?: string | null;
+  network?: ClientNetwork;
+};
+
 export function buildCreateDeepPilotProfileTransaction({
   packageId,
   registryId,
@@ -313,6 +320,44 @@ export async function verifyDeepPilotPlanChanged({
   };
 }
 
+export async function findDeepPilotProfileInRegistry({
+  registryId,
+  telegramHash,
+  walletAddress,
+  network = clientNetwork
+}: FindProfileInRegistryInput) {
+  assertObjectId(registryId, "Profile registry object");
+
+  if (walletAddress) {
+    assertObjectId(walletAddress, "Profile owner");
+  }
+
+  const client = new SuiGrpcClient({
+    network,
+    baseUrl: clientGrpcUrls[network]
+  });
+  const registry = await client.getObject({
+    objectId: registryId,
+    include: {
+      json: true
+    }
+  });
+  const json = isRecord(registry.object.json) ? registry.object.json : null;
+  const byTelegram = findVecMapValue(
+    json?.telegram_profiles,
+    bytesToBase64(normalizeTelegramHashBytes(telegramHash))
+  );
+  const byWallet = walletAddress
+    ? findVecMapValue(json?.wallet_profiles, walletAddress.toLowerCase())
+    : null;
+
+  if (byTelegram && byWallet && byTelegram.toLowerCase() !== byWallet.toLowerCase()) {
+    throw new Error("Profile registry has inconsistent Telegram and wallet mappings.");
+  }
+
+  return byTelegram ?? byWallet;
+}
+
 function extractProfileFromEvents(events: unknown) {
   if (!Array.isArray(events)) {
     return null;
@@ -439,6 +484,30 @@ function bytesFromJson(value: unknown) {
 
 function sameBytes(left: number[] | null, right: number[]) {
   return Boolean(left && left.length === right.length && left.every((item, index) => item === right[index]));
+}
+
+function findVecMapValue(value: unknown, expectedKey: string) {
+  if (!isRecord(value) || !Array.isArray(value.contents)) {
+    return null;
+  }
+
+  const normalizedKey = expectedKey.toLowerCase();
+
+  for (const entry of value.contents) {
+    if (!isRecord(entry) || typeof entry.key !== "string" || typeof entry.value !== "string") {
+      continue;
+    }
+
+    if (entry.key.toLowerCase() === normalizedKey && SUI_OBJECT_ID.test(entry.value)) {
+      return entry.value;
+    }
+  }
+
+  return null;
+}
+
+function bytesToBase64(bytes: number[]) {
+  return Buffer.from(bytes).toString("base64");
 }
 
 function planNameToCode(plan: DeepPilotPlanName): DeepPilotPlan {

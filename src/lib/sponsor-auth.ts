@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
 
+import { createSuiVerifyClient } from "./sui-verify-client";
+
 const CHALLENGE_TTL_MS = 120_000;
 
 type SponsorChallenge = {
@@ -57,7 +59,9 @@ export async function verifySponsorAuthorization(input: SponsorChallenge & { sig
 
   try {
     await verifyPersonalMessageSignature(new TextEncoder().encode(buildSponsorMessage(challenge)), input.signature, {
-      address: input.walletAddress
+      address: input.walletAddress,
+      // zkLogin signatures need a Sui client so the SDK can verify issuer/JWK state.
+      client: createSuiVerifyClient(challenge.network)
     });
     return true;
   } catch {

@@ -3,7 +3,11 @@ import { z } from "zod";
 
 import { appBaseUrl, getPlanConfig, profilePackageConfig } from "@/src/lib/deep-pilot-config";
 import { parseJsonBody } from "@/src/lib/http";
-import { verifyDeepPilotPlanChanged, verifyDeepPilotProfileCreated } from "@/src/lib/profile-execution";
+import {
+  findDeepPilotProfileInRegistry,
+  verifyDeepPilotPlanChanged,
+  verifyDeepPilotProfileCreated
+} from "@/src/lib/profile-execution";
 import { decodeTelegramLoginToken } from "@/src/lib/telegram-auth";
 import { getTelegramSession, upsertTelegramSession } from "@/src/lib/telegram-session";
 
@@ -27,7 +31,7 @@ export async function GET(request: Request) {
 
   try {
     const payload = decodeTelegramLoginToken(token);
-    const session = await getTelegramSession(payload.telegramHash);
+    const session = await recoverProfileSession(payload.telegramHash, payload.chatId);
 
     return NextResponse.json({
       token: payload,
@@ -45,6 +49,40 @@ export async function GET(request: Request) {
       error: error instanceof Error ? error.message : "Invalid Telegram login token."
     }, { status: 400 });
   }
+}
+
+async function recoverProfileSession(telegramHash: string, chatId: string) {
+  const session = await getTelegramSession(telegramHash);
+
+  if (!session?.walletAddress || session.profileId) {
+    return session;
+  }
+
+  const profileConfig = profilePackageConfig();
+
+  if (!profileConfig.registryId) {
+    return session;
+  }
+
+  const profileId = await findDeepPilotProfileInRegistry({
+    registryId: profileConfig.registryId,
+    telegramHash,
+    walletAddress: session.walletAddress
+  });
+
+  if (!profileId) {
+    return session;
+  }
+
+  return await upsertTelegramSession({
+    telegramHash,
+    chatId,
+    walletAddress: session.walletAddress,
+    profileId,
+    plan: session.plan,
+    managerId: session.managerId,
+    memoryNamespace: session.memoryNamespace
+  });
 }
 
 export async function POST(request: Request) {
