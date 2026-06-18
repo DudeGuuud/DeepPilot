@@ -27,6 +27,7 @@ const PRICE_SCALE = 1_000_000_000;
 const DUSDC_SCALE = 1_000_000;
 const PREDICT_TIMEOUT_MS = 5_000;
 const QUOTE_EXPIRY_MS = 15_000;
+export const MIN_SIGNABLE_TIME_TO_EXPIRY_MS = 2 * 60_000;
 const QUOTE_PREVIEW_SENDER = "0x0000000000000000000000000000000000000000000000000000000000000a11";
 const DEFAULT_MARKET_PAGE_SIZE = 4;
 const MAX_MARKET_PAGE_SIZE = 12;
@@ -956,15 +957,16 @@ function selectOracle(
     .filter((oracle) => oracle.status === "active")
     .filter((oracle) => oracle.expiry > nowMs)
     .sort((left, right) => left.expiry - right.expiry);
+  const signable = active.filter((oracle) => oracle.expiry - nowMs >= MIN_SIGNABLE_TIME_TO_EXPIRY_MS);
 
-  if (active.length === 0) {
-    throw new Error("No active BTC Predict oracle is available.");
+  if (signable.length === 0) {
+    throw new Error("No active BTC Predict oracle has enough time left for wallet signing.");
   }
 
   if (intent.expiryPreference === "specific_time" && intent.requestedExpiryMs) {
     const requested = normalizeRequestedExpiry(intent.requestedExpiryMs, nowMs);
 
-    return [...active].sort((left, right) => {
+    return [...signable].sort((left, right) => {
       const leftDistance = Math.abs(left.expiry - requested);
       const rightDistance = Math.abs(right.expiry - requested);
 
@@ -972,7 +974,7 @@ function selectOracle(
     })[0];
   }
 
-  return active[0];
+  return signable[0];
 }
 
 function normalizeRequestedExpiry(requestedExpiryMs: number, nowMs: number) {

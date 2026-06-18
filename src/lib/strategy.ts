@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { CompileOptions } from "./compile";
-import { getActivePredictMarketContext } from "./predict";
+import { MIN_SIGNABLE_TIME_TO_EXPIRY_MS, getActivePredictMarketContext } from "./predict";
 import { tradeMethodAdapters, strategyLegToIntent } from "./trade-methods";
 import type {
   ActiveMarketContext,
@@ -165,11 +165,12 @@ export function buildStrategyPlan(
   const legDirections = targetLegDirections(targetDurations.length, direction, isHedge);
   const legAmounts = allocateStrategyBudget(amount, strategyLegWeights(raw, isHedge, legDirections));
   const nowMs = Date.parse(activeMarketContext.nowIso);
+  const signableMarkets = activeMarketContext.markets.filter((market) => market.expiry - nowMs >= MIN_SIGNABLE_TIME_TO_EXPIRY_MS);
   const legs: StrategyLeg[] = targetDurations.map((minutes, index) => {
     const legDirection = legDirections[index] ?? direction;
     const market = minutes > 0
-      ? nearestMarketByDuration(activeMarketContext, nowMs, minutes)
-      : activeMarketContext.markets[0] ?? null;
+      ? nearestMarketByDuration(signableMarkets, nowMs, minutes)
+      : signableMarkets[0] ?? null;
     const expiryPreference = minutes === 60
       ? "one_hour"
       : minutes === 120
@@ -192,7 +193,7 @@ export function buildStrategyPlan(
       selected: true,
       note: market
         ? `${legDirection.toUpperCase()} near ${expiryPreferenceLabel(expiryPreference)}`
-        : `No active oracle near ${minutes} minutes`
+        : `No active oracle with enough signing time near ${minutes} minutes`
     };
   });
 
@@ -326,7 +327,9 @@ function buildStrategyFreshness(compiledLegs: CompiledTradeLeg[], refreshed: boo
   const inactive = selected.find((leg) => {
     const market = leg.result?.market;
 
-    return market ? market.oracle.status !== "active" || market.oracle.expiry <= market.status.current_time_ms : true;
+    return market
+      ? market.oracle.status !== "active" || market.oracle.expiry - market.status.current_time_ms < MIN_SIGNABLE_TIME_TO_EXPIRY_MS
+      : true;
   });
 
   if (stale || inactive) {
@@ -334,7 +337,7 @@ function buildStrategyFreshness(compiledLegs: CompiledTradeLeg[], refreshed: boo
       checkedAt,
       active: false,
       refreshed,
-      reason: stale?.result?.reviewFreshness?.reason ?? "One selected strategy leg is no longer active."
+      reason: stale?.result?.reviewFreshness?.reason ?? "One selected strategy leg is too close to expiry. Refresh review to choose the next active market."
     };
   }
 
@@ -509,12 +512,12 @@ function detectDurations(raw: string) {
   return [...durations].sort((left, right) => left - right);
 }
 
-function nearestMarketByDuration(context: ActiveMarketContext, nowMs: number, minutes: number) {
+function nearestMarketByDuration(markets: ActiveMarketContext["markets"], nowMs: number, minutes: number) {
   const target = nowMs + minutes * 60_000;
   let best: ActiveMarketContext["markets"][number] | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
 
-  for (const market of context.markets) {
+  for (const market of markets) {
     const distance = Math.abs(market.expiry - target);
 
     if (distance < bestDistance) {

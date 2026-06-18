@@ -1,6 +1,8 @@
 "use client";
 
 import { useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
+import type { Transaction } from "@mysten/sui/transactions";
+import { fromBase64 } from "@mysten/sui/utils";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   AlertTriangle,
@@ -732,17 +734,8 @@ function TerminalExperience() {
     const transaction = buildCreatePredictManagerTransaction({
       packageId: current.ptb!.transactionData.packageId
     });
-    const signed = await dAppKit.signAndExecuteTransaction({ transaction });
-    const digest = getExecutedDigest(signed);
-    const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
-      digest,
-      include: {
-        effects: true,
-        events: true,
-        objectTypes: true
-      }
-    });
-    assertExecuted(confirmed);
+    const confirmed = await signAndSubmitTransaction(transaction, executionNetwork);
+    const digest = getExecutedDigest(confirmed);
     const createdManagerId = extractPredictManagerId(confirmed, current.ptb!.transactionData.packageId);
 
     if (!createdManagerId) {
@@ -850,17 +843,8 @@ function TerminalExperience() {
     });
     setConfirmedReviewFingerprint(null);
     setTradeModalStatus("signing");
-    const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
-    const digest = getExecutedDigest(signed);
-    const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
-      digest,
-      include: {
-        effects: true,
-        events: true,
-        objectTypes: true
-      }
-    });
-    assertExecuted(confirmed);
+    const confirmed = await signAndSubmitTransaction(built.transaction, executionNetwork);
+    const digest = getExecutedDigest(confirmed);
 
     const executionReceipt: ExecutionReceipt = {
       digest,
@@ -1007,17 +991,8 @@ function TerminalExperience() {
     });
     setConfirmedReviewFingerprint(null);
     setTradeModalStatus("signing");
-    const signed = await dAppKit.signAndExecuteTransaction({ transaction: built.transaction });
-    const digest = getExecutedDigest(signed);
-    const confirmed = await dAppKit.getClient(executionNetwork).waitForTransaction({
-      digest,
-      include: {
-        effects: true,
-        events: true,
-        objectTypes: true
-      }
-    });
-    assertExecuted(confirmed);
+    const confirmed = await signAndSubmitTransaction(built.transaction, executionNetwork);
+    const digest = getExecutedDigest(confirmed);
 
     const executionReceipt: ExecutionReceipt = {
       digest,
@@ -1070,6 +1045,24 @@ function TerminalExperience() {
       setTradeModalStatus("preflight_failed");
       throw preflightError;
     }
+  }
+
+  async function signAndSubmitTransaction(transaction: Transaction, executionNetwork: "devnet" | "testnet") {
+    dAppKit.switchNetwork(executionNetwork);
+
+    const signed = await dAppKit.signTransaction({ transaction });
+    const submitted = await dAppKit.getClient(executionNetwork).executeTransaction({
+      transaction: fromBase64(signed.bytes),
+      signatures: [signed.signature],
+      include: {
+        effects: true,
+        events: true,
+        objectTypes: true
+      }
+    });
+
+    assertExecuted(submitted);
+    return submitted;
   }
 
   async function preflightMintExecution({

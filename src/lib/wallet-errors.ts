@@ -9,6 +9,10 @@ export function explainWalletExecutionError(error: unknown) {
     return "Need testnet SUI for gas. Keep some SUI in the connected wallet so Sui can auto-select gas coins and estimate the transaction budget.";
   }
 
+  if (/Package object does not exist|does not support the chain|chain.*unsupported/i.test(message)) {
+    return "Switch Slush and the connected wallet account to Sui testnet, then retry. This Predict package exists on testnet but not on mainnet.";
+  }
+
   if (/InsufficientCoinBalance|insufficient.*coin|not enough.*DUSDC|balance/i.test(message) && /DUSDC|coin|balance/i.test(message)) {
     return "Trading Balance is insufficient. Add DUSDC to your PredictManager in Profile before opening this position.";
   }

@@ -10,7 +10,13 @@ import type {
 } from "./types";
 import { runGuardian } from "./guardian";
 import { parseIntent } from "./intent";
-import { getActivePredictMarketContext, getPredictMarketSnapshot, getPredictQuotePreview, toDusdcBaseUnits } from "./predict";
+import {
+  MIN_SIGNABLE_TIME_TO_EXPIRY_MS,
+  getActivePredictMarketContext,
+  getPredictMarketSnapshot,
+  getPredictQuotePreview,
+  toDusdcBaseUnits
+} from "./predict";
 import { getProfileSummary } from "./profile";
 import { buildPtbPlan } from "./ptb";
 import { decideGasMode, validateSponsorPlan } from "./sponsor";
@@ -354,6 +360,7 @@ function buildReviewFreshness(
 
   const marketNow = market.status.current_time_ms;
   const marketActive = market.oracle.status === "active" && market.oracle.expiry > marketNow;
+  const timeToExpiryMs = market.oracle.expiry - marketNow;
 
   if (!marketActive) {
     return {
@@ -361,6 +368,15 @@ function buildReviewFreshness(
       active: false,
       refreshed: options.refreshed,
       reason: "Market expired, refresh review"
+    };
+  }
+
+  if (timeToExpiryMs < MIN_SIGNABLE_TIME_TO_EXPIRY_MS) {
+    return {
+      checkedAt,
+      active: false,
+      refreshed: options.refreshed,
+      reason: "Market is too close to expiry for safe wallet signing. Refresh review to choose the next active market."
     };
   }
 
