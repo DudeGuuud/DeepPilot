@@ -75,6 +75,7 @@ const EXAMPLE_INTENTS = [
 const AI_DISCLOSURE =
   "This answer is AI-generated for information organization and risk explanation only. It is not investment advice; verify original sources and the wallet confirmation screen.";
 const MARKET_PREVIEW_REFRESH_MS = 2_500;
+const REVIEW_AUTO_REFRESH_MS = 18_000;
 const MIN_SUI_GAS_BALANCE_MIST = 20_000_000n;
 const MIST_PER_SUI = 1_000_000_000n;
 const DUSDC_BASE_UNITS = 1_000_000n;
@@ -173,7 +174,7 @@ function TerminalExperience() {
   const [activeRouteOracleId, setActiveRouteOracleId] = useState<string | null>(null);
   const routeOracleIsActive = Boolean(urlOracleId && activeRouteOracleId === urlOracleId);
   const routeIntent = DEFAULT_INTENT;
-  const routeStateKey = `${urlOracleId ?? ""}:${urlStrike ?? ""}:${urlManagerId ?? ""}`;
+  const routeStateKey = `${urlOracleId ?? ""}:${urlStrike ?? ""}`;
   const [intent, setIntent] = useState(routeIntent);
   const [managerId, setManagerId] = useState<string | null>(urlManagerId);
   const [messages, setMessages] = useState<PilotMessage[]>([]);
@@ -197,6 +198,7 @@ function TerminalExperience() {
   const [activeReviewMessageId, setActiveReviewMessageId] = useState<string | null>(null);
   const executionRef = useRef(false);
   const pilotAbortRef = useRef<AbortController | null>(null);
+  const loadedReviewTokenRef = useRef<string | null>(null);
   const runPilotRef = useRef<(nextIntent?: string, managerOverride?: string | null, options?: RunPilotOptions) => Promise<void>>(async () => {});
   runPilotRef.current = runPilot;
   const resetPilotRuntime = useCallback((nextIntent = DEFAULT_INTENT) => {
@@ -233,11 +235,17 @@ function TerminalExperience() {
     }
 
     const token = reviewToken;
+    const walletAddress = account?.address ?? null;
+
+    if (loadedReviewTokenRef.current === `${token}:${walletAddress ?? "no-wallet"}`) {
+      return;
+    }
+
     let cancelled = false;
 
     async function loadReviewSeed() {
       try {
-        const walletQuery = account?.address ? `&wallet=${encodeURIComponent(account.address)}` : "";
+        const walletQuery = walletAddress ? `&wallet=${encodeURIComponent(walletAddress)}` : "";
         const response = await fetch(`/api/review-seed?token=${encodeURIComponent(token)}${walletQuery}`, {
           cache: "no-store"
         });
@@ -250,6 +258,7 @@ function TerminalExperience() {
         const message = payload.seed?.message?.trim();
 
         if (!cancelled && message) {
+          loadedReviewTokenRef.current = `${token}:${walletAddress ?? "no-wallet"}`;
           await runPilotRef.current(message, managerId, { openTradeModal: true, clearComposer: false });
         }
       } catch (seedError) {
@@ -276,23 +285,14 @@ function TerminalExperience() {
 
     const onPageHide = () => {
       stopPendingPilot();
-      setTradeModalStatus("idle");
-    };
-
-    const onPageShow = (event: PageTransitionEvent) => {
-      if (event.persisted) {
-        resetPilotRuntime(routeIntent);
-      }
     };
 
     window.addEventListener("pagehide", onPageHide);
-    window.addEventListener("pageshow", onPageShow);
 
     return () => {
       window.removeEventListener("pagehide", onPageHide);
-      window.removeEventListener("pageshow", onPageShow);
     };
-  }, [resetPilotRuntime, routeIntent]);
+  }, []);
 
   useEffect(() => {
     setManagerId(urlManagerId);
@@ -304,18 +304,102 @@ function TerminalExperience() {
 
   useEffect(() => {
     setConfirmedReviewFingerprint(null);
-    setTradeModalStatus("idle");
-    setTradeModalOpen(false);
     setPreflightSnapshot(null);
-    setStrategyReview(null);
-    setSelectedStrategyLegIds([]);
-    setActiveReviewMessageId(null);
   }, [account?.address]);
 
   const effectiveStrategyReview = useMemo(
     () => strategyReview ? applyStrategySelection(strategyReview, selectedStrategyLegIds) : null,
     [selectedStrategyLegIds, strategyReview]
   );
+
+  useEffect(() => {
+    if (
+      !tradeModalOpen ||
+      busy ||
+      tradeModalStatus === "compiling" ||
+      tradeModalStatus === "signing" ||
+      tradeModalStatus === "executed" ||
+      (!compiled && !effectiveStrategyReview)
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    async function refreshOpenReview() {
+      if (cancelled || inFlight || !pageIsVisible()) {
+        return;
+      }
+
+      inFlight = true;
+
+      try {
+        if (effectiveStrategyReview) {
+          const currentFingerprint = strategyExecutableFingerprint(effectiveStrategyReview);
+          const refreshed = applyStrategySelection(
+            await refreshStrategyBeforeSigning(effectiveStrategyReview),
+            selectedStrategyLegIds
+          );
+
+          if (cancelled) {
+            return;
+          }
+
+          setStrategyReview(refreshed);
+
+          if (!isStrategyReviewActive(refreshed)) {
+            setConfirmedReviewFingerprint(null);
+            setTradeModalStatus("failed");
+            setError(refreshed.reviewFreshness.reason);
+            return;
+          }
+
+          if (currentFingerprint !== strategyExecutableFingerprint(refreshed)) {
+            setConfirmedReviewFingerprint(strategyExecutableFingerprint(refreshed));
+            setTradeModalStatus("review_changed");
+          }
+          return;
+        }
+
+        if (compiled) {
+          const currentFingerprint = executableFingerprint(compiled);
+          const refreshed = await refreshReviewBeforeSigning(compiled);
+
+          if (cancelled) {
+            return;
+          }
+
+          setCompiled(refreshed);
+
+          if (!isReviewActive(refreshed)) {
+            setConfirmedReviewFingerprint(null);
+            setTradeModalStatus("failed");
+            setError(refreshed.reviewFreshness?.reason ?? "Market expired, refresh review.");
+            return;
+          }
+
+          if (currentFingerprint !== executableFingerprint(refreshed)) {
+            setConfirmedReviewFingerprint(executableFingerprint(refreshed));
+            setTradeModalStatus("review_changed");
+          }
+        }
+      } catch {
+        // Background refresh should not interrupt a readable review. Explicit signing still runs a hard refresh.
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void refreshOpenReview();
+    }, REVIEW_AUTO_REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [busy, compiled, effectiveStrategyReview, selectedStrategyLegIds, tradeModalOpen, tradeModalStatus]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1095,6 +1179,7 @@ function TerminalExperience() {
         intent: current.intent.raw || intent.trim(),
         walletAddress: account?.address,
         managerId: current.ptb?.execution.managerId ?? managerId ?? undefined,
+        parsedIntent: current.intent,
         refreshed: true
       })
     });
@@ -2012,10 +2097,10 @@ function OutcomeQuoteCard({
               <MarketMetric label="Ask Price" value={formatUnitPrice(quote.askPrice)} />
               <MarketMetric label="Bid Price" value={formatUnitPrice(quote.bidPrice)} />
               <MarketMetric label="Quantity" value={formatDusdc(quote.quantityDusdc)} />
-              <MarketMetric label="Quote Expires" value={formatQuoteExpiry(quote.expiresAt)} />
+              <MarketMetric label="Quote Age" value={formatQuoteAge(quote.fetchedAt)} />
             </div>
             <p className="rounded-md border border-border bg-background/40 p-3 text-xs leading-5 text-muted-foreground">
-              {quote.warning}
+              {quote.warning} Estimate may drift before signing; DeepPilot refreshes this review before opening the wallet.
             </p>
           </>
         )}
@@ -2553,9 +2638,9 @@ function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
   const readiness = compiled?.ptb?.execution;
   const quoteOnly = isQuoteOnlyResult(compiled);
   const canCreateManager = Boolean(compiled?.ptb && !readiness?.managerId && readiness?.walletAddress && !blocked);
-  const quoteFresh = Boolean(compiled?.quote?.status === "available" && new Date(compiled.quote.expiresAt).getTime() > Date.now());
+  const quoteAvailable = Boolean(compiled?.quote?.status === "available");
   const fundingRequired = readiness?.fundingStatus === "insufficient" || (readiness?.fundingStatus === "unknown" && Boolean(readiness.managerId));
-  const canMint = Boolean(compiled?.ptb && readiness?.canSign && !blocked && compiled.gas.approved && quoteFresh);
+  const canMint = Boolean(compiled?.ptb && readiness?.canSign && !blocked && compiled.gas.approved && quoteAvailable);
   const fundingHref = fundingRequired ? profileFundingHref(compiled) : null;
   const canConfirm = canCreateManager || canMint || Boolean(fundingHref);
   const label = blocked
@@ -2572,9 +2657,7 @@ function executionAction(compiled: CompileApiResult | null, blocked: boolean) {
           ? "No wallet action"
         : !readiness?.walletAddress
           ? "Connect wallet"
-          : compiled?.quote?.status === "available" && !quoteFresh
-            ? "Refresh quote"
-            : "Review locked";
+          : "Review locked";
 
   return { canConfirm, label, href: fundingHref };
 }
@@ -3123,10 +3206,8 @@ function strategyExecutableFingerprint(review: StrategyApiReview) {
         id: leg.id,
         oracleId: leg.result?.ptb?.transactionData.oracleId ?? null,
         key: leg.result?.ptb?.transactionData.key ?? null,
-        mint: leg.result?.ptb?.transactionData.mint ?? null,
-        estimatedCostRaw: leg.result?.quote?.estimatedCostRaw ?? null
+        mintTarget: leg.result?.ptb?.transactionData.mint.target ?? null
       })),
-    aggregatePaymentRaw: review.aggregateReadiness.estimatedPaymentRaw,
     managerId: review.aggregateReadiness.managerId
   });
 }
@@ -3166,10 +3247,8 @@ function executableFingerprint(compiled: CompileApiResult) {
     manager: compiled.ptb?.execution.managerId ?? transaction?.manager ?? null,
     oracleId: transaction?.oracleId ?? null,
     key: transaction?.key ?? null,
-    mint: transaction?.mint ?? null,
+    mintTarget: transaction?.mint.target ?? null,
     commandTargets: transaction?.commands.map((command) => command.target) ?? [],
-    quantityRaw: compiled.quote?.quantityRaw ?? transaction?.mint.quantityRaw ?? null,
-    estimatedCostRaw: compiled.quote?.estimatedCostRaw ?? transaction?.quote?.estimatedCostRaw ?? null,
     quoteBudgetRaw: compiled.quote?.quoteBudgetRaw ?? null
   });
 }
@@ -3470,16 +3549,16 @@ function formatSignedPercent(value: number | null) {
   return `${sign}${value.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
 }
 
-function formatQuoteExpiry(value: string) {
+function formatQuoteAge(value: string) {
   const time = new Date(value).getTime();
 
   if (!Number.isFinite(time)) {
     return "--";
   }
 
-  const seconds = Math.max(0, Math.round((time - Date.now()) / 1_000));
+  const seconds = Math.max(0, Math.round((Date.now() - time) / 1_000));
 
-  return seconds <= 0 ? "expired" : `${seconds}s`;
+  return seconds < 60 ? `${seconds}s ago` : `${Math.floor(seconds / 60)}m ago`;
 }
 
 function formatExpiry(valueMs: number | null) {

@@ -6,7 +6,7 @@ import { checkRateLimit, parseJsonBody, rateLimitHeaders } from "@/src/lib/http"
 import { memoryContextText, readAgentMemory } from "@/src/lib/memory";
 import { createPredictClientPreview } from "@/src/lib/predict";
 import { authorizeRequestQuota, isQuotaIdentityRequiredError, quotaIdentityErrorStatus } from "@/src/lib/request-quota";
-import type { ConversationContext } from "@/src/lib/types";
+import type { ConversationContext, ParsedIntent } from "@/src/lib/types";
 
 const bodySchema = z.object({
   intent: z.string().trim().min(1).max(500),
@@ -14,6 +14,12 @@ const bodySchema = z.object({
   managerId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
   profileId: z.string().trim().regex(/^0x[a-fA-F0-9]{1,64}$/).optional(),
   telegramHash: z.string().trim().regex(/^[a-fA-F0-9]{64}$/).optional(),
+  parsedIntent: z.custom<ParsedIntent>((value) =>
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    (value.status === "ready" || value.status === "needs_clarification")
+  ).optional(),
   refreshed: z.boolean().optional(),
   lastMarketThesis: z.string().trim().max(1500).optional(),
   conversation: z.array(z.object({
@@ -70,6 +76,7 @@ export async function POST(request: Request) {
       ...(await compileIntent(body.data.intent, {
         walletAddress: body.data.walletAddress,
         managerId: body.data.managerId,
+        parsedIntent: body.data.parsedIntent,
         refreshed: Boolean(body.data.refreshed),
         conversationContext: conversationContextFromBody(
           body.data,

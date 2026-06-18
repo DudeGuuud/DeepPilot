@@ -4,6 +4,7 @@ import type {
   CompileStreamEvent,
   ConversationContext,
   GuardianResult,
+  ParsedIntent,
   PredictQuotePreview,
   ProfileSummary,
   PtbPlan
@@ -26,6 +27,7 @@ export type CompileOptions = {
   managerId?: string | null;
   activeMarketContext?: ActiveMarketContext | null;
   conversationContext?: ConversationContext | null;
+  parsedIntent?: ParsedIntent | null;
   refreshed?: boolean;
   onEvent?: (event: CompileStreamEvent) => void;
 };
@@ -57,23 +59,25 @@ export async function compileIntent(input: string, options: CompileOptions = {})
     }
   }
 
+  const isStructuredRefresh = Boolean(options.parsedIntent);
   options.onEvent?.({
     type: "stage",
-    label: "Parsing intent with DeepSeek",
+    label: isStructuredRefresh ? "Using typed intent" : "Parsing intent with DeepSeek",
     state: "pending"
   });
-  const intent = await parseIntent(input, {
+  const parsedIntent = options.parsedIntent ?? await parseIntent(input, {
     onEvent: options.onEvent,
     activeMarketContext,
     conversationContext: options.conversationContext ?? null
   });
+  const intent = normalizeRefreshIntent(parsedIntent);
   let market = null;
   let marketError: Error | null = null;
   let profile: ProfileSummary | null = null;
 
   options.onEvent?.({
     type: "stage",
-    label: "Parsing intent with DeepSeek",
+    label: isStructuredRefresh ? "Using typed intent" : "Parsing intent with DeepSeek",
     state: intent.status === "ready" ? "complete" : "blocked",
     detail: intent.status === "ready" ? intent.action : intent.reason
   });
@@ -260,7 +264,7 @@ export async function compileIntent(input: string, options: CompileOptions = {})
         state: activeMarketContext?.markets.length ? "complete" : "blocked"
       },
       {
-        label: "Parsing intent",
+        label: isStructuredRefresh ? "Using typed intent" : "Parsing intent",
         state: intent.status === "ready" ? "complete" : "blocked"
       },
       {
@@ -401,6 +405,20 @@ function buildReviewFreshness(
 
 function needsQuote(intent: CompileResult["intent"]) {
   return intent.status === "ready" && intent.action === "predict_binary_mint";
+}
+
+function normalizeRefreshIntent(intent: ParsedIntent): ParsedIntent {
+  if (intent.status !== "ready" || intent.expiryPreference !== "next_active" || !intent.oracleId) {
+    return intent;
+  }
+
+  // "next active" is a moving target. Do not pin a stale oracle id returned by
+  // the first AI parse; every compile/refresh should choose the earliest market
+  // that still has enough wallet-signing time.
+  return {
+    ...intent,
+    oracleId: undefined
+  };
 }
 
 function quoteUnavailableGuardian(previous: GuardianResult, quote: PredictQuotePreview): GuardianResult {

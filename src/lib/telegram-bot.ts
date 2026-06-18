@@ -45,23 +45,43 @@ type TelegramButtonRows = TelegramInlineButton[] | TelegramInlineButton[][];
 const TELEGRAM_SUGGESTIONS = [
   {
     id: "news_btc",
-    label: "News: BTC risks",
+    label: "News BTC",
     command: "/news BTC market news and risk context"
   },
   {
+    id: "markets",
+    label: "Active markets",
+    command: "/markets"
+  },
+  {
+    id: "trade_up",
+    label: "Trade UP 1 DUSDC",
+    command: "/trade Bet 1 DUSDC on BTC UP at the nearest settlement"
+  },
+  {
     id: "trade_down",
-    label: "Trade: BTC DOWN 1 DUSDC",
+    label: "Trade DOWN 1 DUSDC",
     command: "/trade Bet 1 DUSDC on BTC DOWN at the nearest settlement"
   },
   {
     id: "hedge_up",
-    label: "Strategy: hedge mostly UP",
+    label: "Hedge mostly UP",
     command: "/strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement"
   },
   {
-    id: "markets",
-    label: "Markets: active Predict",
-    command: "/markets"
+    id: "hedge_down",
+    label: "Hedge mostly DOWN",
+    command: "/strategy Build a 1 DUSDC hedge strategy, mostly BTC DOWN, nearest settlement"
+  },
+  {
+    id: "split_up",
+    label: "Split UP ladder",
+    command: "/strategy Split 1 DUSDC BTC UP across nearest, 1h, and 2h expiries"
+  },
+  {
+    id: "split_down",
+    label: "Split DOWN ladder",
+    command: "/strategy Split 1 DUSDC BTC DOWN across nearest, 1h, and 2h expiries"
   }
 ] as const;
 
@@ -106,6 +126,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
 
   if (text === "/help") {
     await sendHelp(chatId);
+    return;
+  }
+
+  if (text === "/ideas" || text === "/examples") {
+    await sendIdeas(chatId);
     return;
   }
 
@@ -297,7 +322,7 @@ async function runStrategy(
   shouldConsumeQuota = true
 ) {
   if (!intent) {
-    await sendMessage(chatId, "Usage: /strategy hedge BTC nearest settlement 1 DUSDC mostly UP");
+    await sendStrategyGuide(chatId);
     return;
   }
 
@@ -331,6 +356,14 @@ async function sendLogin(chatId: number | string, userId: number | string, prefi
 
   await sendMessage(chatId, [
     prefix,
+    "You can use DeepPilot as a chat-first Predict assistant after wallet setup.",
+    "",
+    "Try these after connecting:",
+    "- /news BTC",
+    "- /markets",
+    "- /trade Bet 1 DUSDC on BTC DOWN at the nearest settlement",
+    "- /strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
+    "",
     "Account setup",
     "1. Tap Connect wallet.",
     "2. Open the Web page and connect your Sui wallet on testnet.",
@@ -361,16 +394,21 @@ async function sendWelcome(chatId: number | string, session: TelegramSession) {
   const quota = await getQuotaStatus(session.profileId!);
 
   await sendMessage(chatId, [
-    "DeepPilot is ready.",
+    "DeepPilot is ready. Feel free to chat with the bot.",
     `Wallet: ${shortAddress(session.walletAddress)}`,
     `Profile NFT: ${shortAddress(session.profileId)}`,
     `Quota: ${quota.remaining}/${quota.limit} left today`,
     "",
-    "Tap a shortcut or send natural language.",
-    "Examples:",
-    "- summarize BTC news",
-    "- buy 1 DUSDC BTC DOWN nearest settlement",
-    "- build a 1 DUSDC hedge strategy mostly BTC UP"
+    "What you can do now:",
+    "1. Ask for BTC news or risk context.",
+    "2. Ask for active DeepBook Predict markets.",
+    "3. Ask DeepPilot to prepare a trade review.",
+    "4. Ask for a multi-leg strategy candidate.",
+    "",
+    "Trading never signs inside Telegram. The bot sends a Web Review link, then you confirm with your Sui wallet.",
+    "",
+    "Tap a shortcut below or send natural language like:",
+    "buy 1 DUSDC BTC DOWN nearest settlement"
   ].join("\n"), suggestionButtons());
 }
 
@@ -391,6 +429,40 @@ async function sendPlans(chatId: number | string, userId: number | string) {
 
 async function sendHelp(chatId: number | string) {
   await sendMessage(chatId, helpText(), suggestionButtons());
+}
+
+async function sendIdeas(chatId: number | string) {
+  await sendMessage(chatId, [
+    "DeepPilot ideas",
+    "",
+    "Market context:",
+    "- /news BTC",
+    "- What changed in BTC today?",
+    "",
+    "Single trade reviews:",
+    "- /trade Bet 1 DUSDC on BTC UP at the nearest settlement",
+    "- /trade Bet 1 DUSDC on BTC DOWN at the nearest settlement",
+    "",
+    "Strategy candidates:",
+    "- /strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
+    "- /strategy Split 1 DUSDC BTC DOWN across nearest, 1h, and 2h expiries",
+    "",
+    "You can also type these as normal chat messages. Clear trade or strategy intent returns a Web Review link."
+  ].join("\n"), suggestionButtons());
+}
+
+async function sendStrategyGuide(chatId: number | string) {
+  await sendMessage(chatId, [
+    "Strategy mode prepares a candidate plan, not investment advice.",
+    "",
+    "Good examples:",
+    "- /strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
+    "- /strategy Build a 1 DUSDC hedge strategy, mostly BTC DOWN, nearest settlement",
+    "- /strategy Split 1 DUSDC BTC UP across nearest, 1h, and 2h expiries",
+    "- /strategy Split 1 DUSDC BTC DOWN across nearest, 1h, and 2h expiries",
+    "",
+    "DeepPilot will return a Web Review link. Wallet signing happens only after live quote, Guardian, Trading Balance, and gas checks."
+  ].join("\n"), strategySuggestionButtons());
 }
 
 async function sendProfile(chatId: number | string, session: TelegramSession) {
@@ -516,6 +588,7 @@ function helpText() {
     "Setup",
     "/login - connect wallet",
     "/start - show shortcuts and account state",
+    "/ideas - prompt examples and shortcuts",
     "/profile - profile and quota",
     "/plans - Standard / Pro / Max",
     "/quota - remaining daily AI quota",
@@ -533,12 +606,29 @@ function helpText() {
 }
 
 function suggestionButtons(): TelegramInlineButton[][] {
-  return TELEGRAM_SUGGESTIONS.map((suggestion) => [
-    {
+  return chunkButtons(TELEGRAM_SUGGESTIONS.map((suggestion) => ({
+    text: suggestion.label,
+    callback_data: `suggest:${suggestion.id}`
+  })), 2);
+}
+
+function strategySuggestionButtons(): TelegramInlineButton[][] {
+  return chunkButtons(TELEGRAM_SUGGESTIONS
+    .filter((suggestion) => suggestion.id.startsWith("hedge_") || suggestion.id.startsWith("split_") || suggestion.id.startsWith("trade_") || suggestion.id === "news_btc" || suggestion.id === "markets")
+    .map((suggestion) => ({
       text: suggestion.label,
       callback_data: `suggest:${suggestion.id}`
-    }
-  ]);
+    })), 2);
+}
+
+function chunkButtons(buttons: TelegramInlineButton[], size: number): TelegramInlineButton[][] {
+  const rows: TelegramInlineButton[][] = [];
+
+  for (let index = 0; index < buttons.length; index += size) {
+    rows.push(buttons.slice(index, index + size));
+  }
+
+  return rows;
 }
 
 async function sendMessage(chatId: number | string, text: string, buttons: TelegramButtonRows = []) {
