@@ -142,7 +142,7 @@ function Hero() {
             <span className="text-sky-100">Web + Telegram handoff</span>
           </p>
           <h1 className="mt-5 text-5xl font-semibold leading-none tracking-tight text-foreground sm:text-6xl lg:text-7xl 2xl:text-8xl">
-            Review before signing.
+            Review before Predict.
           </h1>
           <p className="mt-6 max-w-3xl text-lg leading-8 text-muted-foreground sm:text-xl sm:leading-9">
             DeepPilot helps users discover live BTC markets, ask in plain language, continue from Telegram, run RiskOps checks, and sign only after wallet-ready checks pass.

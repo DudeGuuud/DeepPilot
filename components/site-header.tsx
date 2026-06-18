@@ -1,8 +1,8 @@
 import Link from "next/link";
 import type { Route } from "next";
 import type { ReactNode } from "react";
-import { Circle } from "lucide-react";
 
+import { DeepPilotLogoMark } from "@/components/deeppilot-logo-mark";
 import { cn } from "@/src/lib/utils";
 
 const navItems = [
@@ -29,9 +29,7 @@ export function SiteHeader({ activePath, rightSlot, fixed = false }: SiteHeaderP
       <div className="mx-auto flex w-full max-w-[1580px] flex-col gap-3 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
         <div className="flex min-w-0 items-center justify-between gap-4">
           <Link href={"/landing" as Route} className="flex min-w-0 items-center gap-3">
-            <div className="grid h-9 w-9 shrink-0 place-items-center border border-border bg-background">
-              <Circle className="h-3 w-3 fill-white text-white" />
-            </div>
+            <DeepPilotLogoMark className="h-9 w-9 shrink-0" />
             <div className="min-w-0">
               <p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">DeepPilot</p>
               <p className="truncate text-sm font-semibold text-foreground">Prediction market reviews</p>
