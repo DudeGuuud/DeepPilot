@@ -1,160 +1,154 @@
-# DeepPilot RiskOps
+# DeepPilot
 
-DeepPilot is a DeepBook Predict execution and risk cockpit for Sui Overflow 2026.
+[中文说明](./README.zh-CN.md)
 
-The app turns a constrained trading intent into:
+DeepPilot is an AI RiskOps cockpit for DeepBook Predict. It helps a user go from a plain-language idea such as "Bet 10 DUSDC that BTC will be down by tonight" to a live market review, risk checks, wallet-ready transaction preview, and final wallet signing path.
 
-- a live DeepBook Predict market snapshot from `predict-server.testnet.mystenlabs.com`
-- a deterministic Guardian decision (`allow`, `reduce`, or `block`)
-- an auditable Predict PTB preview
-- a sponsor-policy preview for testnet demo flows
+It is built for people who are new to prediction markets as well as operators who need a safer review flow before signing. The product does not ask users to understand every Predict object, oracle window, quote expiry, Trading Balance rule, or gas condition upfront. It turns those protocol details into a guided review.
 
-## Current Progress (2026-06-17)
+## Why DeepPilot Exists
 
-- Completed
-  - `/api/markets` + `/api/oracles/:id/history` for live discovery and chart/history.
-  - `/api/compile` + `/api/compile/stream` for intent compilation and stream events.
-  - `/api/pilot/stream` mode routing (`chat / trade / strategy`).
-  - `/api/strategy/compile` + `/api/strategy/stream` for strategy planning.
-  - `/api/review-seed` replay decode and terminal receipt persistence.
-  - `/api/telegram/webhook`, `/api/telegram/session`, and `/api/telegram/link` for Telegram login and Web Review handoff.
-  - `deep_pilot_profile::profile` Move module for Profile NFT, plan, quota snapshot, and memory pointer state.
-  - Wallet-signed execution path in terminal for PredictManager create, single mint, and strategy batch mint.
-- In progress
-  - `/api/sponsor` remains preview-only (`preview_authorized`) without dual-sign sponsor submit.
-  - Keeper remains UI-level guidance/status for now; no dedicated background keeper daemon yet.
-  - Walrus Memory writes are optional through a MemWal-compatible relayer; without `MEMWAL_*`, the app uses Upstash fallback memory and does not claim Walrus upload.
+Prediction markets are powerful, but the first trade is hard. A new user has to answer several questions before they can act:
 
-## Current Scope
+- Which BTC prediction market is active now?
+- Which expiry should I use?
+- Is the oracle fresh, or is the market already stale?
+- How much DUSDC will the position cost?
+- Is there enough Trading Balance in the PredictManager?
+- Will the wallet be on the right Sui network with enough gas?
+- Is this a single trade, a redeem action, or a multi-leg strategy?
 
-This repository targets DeepBook Predict testnet. It does not pretend to expose a traditional CLOB order book. The risk model uses official Predict primitives:
+DeepPilot was created to remove that operational burden. The user can start with natural language in Web or Telegram, while DeepPilot converts the request into a constrained Predict review, fetches live market data, runs deterministic risk checks, and only then opens a wallet signing path when the review is still valid.
 
-- Predict server health and pipeline lag
-- active BTC oracle state
-- latest spot, forward, and SVI data
-- oracle freshness and expiry
-- vault liquidity, utilization, and max-payout utilization
-- ask-bounds when available, with an explicit fallback when the endpoint returns `null`
+## What It Solves
 
-## Product Routes
+DeepPilot solves three practical problems:
 
-- `/markets` discovers live BTC Predict oracles, filters by status, expiry, and Guardian quick risk, paginates the result set, caches discovery in client context, and only prefetches full oracle state for the current page plus the selected market.
-- `/trade` is the operational terminal: chat/trade/strategy routing, Guardian review, and execution review/sign path.
-- `/profile` shows wallet status, PredictManager linkage, and browser-local execution/preview receipts. It does not invent positions or PnL when a manager is not linked.
+- Onboarding friction: users can ask in natural language instead of manually assembling oracle ids, expiry choices, market keys, and transaction details.
+- Pre-sign risk: every trade or strategy is checked against live Predict server status, oracle freshness, vault utilization, quote availability, Trading Balance, wallet network, and gas readiness before signing.
+- Cross-channel handoff: a user can begin in Telegram, receive a Review & Sign link, and continue in the Web app where the quote and risk checks are refreshed before wallet confirmation.
 
-## How It Works
+## What Users Can Do
+
+- Discover live BTC Predict markets in `/markets`, with expiry filters, quick risk labels, vault context, and chart history.
+- Ask market questions in `/trade`; DeepPilot can answer with retrieved Predict/news/project context instead of forcing every message into a transaction.
+- Place single-trade intents in plain language, for example: `Buy 10 DUSDC BTC UP on the next active market`.
+- Draft multi-leg strategies in plain language, for example: `Split 20 DUSDC across the next 1h, 2h, and 3h BTC UP markets`.
+- Review Guardian results before signing: `allow`, `reduce`, or `block`, with the reason shown to the user.
+- Create or link a PredictManager, check Trading Balance, and sign wallet transactions for supported execution flows.
+- Use Telegram commands such as `/login`, `/markets`, `/news BTC`, `/trade ...`, and `/strategy ...` to start from chat and finish in Web review.
+- Track local receipts, manager state, Trading Balance, positions, PnL, settlement status, and redeem/funding actions in `/profile`.
+
+## User Benefit
+
+For a first-time prediction-market user, DeepPilot changes the experience from "learn the protocol first" to "describe what you want, then review the generated plan." The user still makes the trading decision and still controls the wallet signature, but the confusing parts of the protocol are surfaced as readable checks.
+
+For a more experienced user, DeepPilot reduces repeated operational work: market discovery, quote refresh, strategy leg construction, wallet preflight, and receipt tracking are all placed in one workflow.
+
+## Current Product Scope
+
+| Area | Implemented | Boundary |
+| --- | --- | --- |
+| Market discovery | Live BTC DeepBook Predict markets, expiry filters, chart/history, page-scoped risk labels | It does not expose a traditional CLOB order book. |
+| Natural-language trade | Web and Telegram input routed into `chat`, `trade`, or `strategy` modes | AI output is validated and may fall back to deterministic parsing. |
+| Trade review | Live Predict snapshot, Guardian result, quote preview, PTB preview, funding checks | Quote-only intents do not build a transaction. |
+| Strategy review | Deterministic multi-leg strategy plan, per-leg compile, aggregate funding check, batch transaction preview | Strategy output is a candidate plan, not investment advice. |
+| Wallet execution | Create PredictManager, single binary mint, and selected strategy batch mint through the user's wallet | Wallet signing is user-controlled. |
+| Sponsor endpoint | Challenge + wallet authorization + server-side recompile + policy preview receipt | `/api/sponsor` is preview-only. It returns `submitted: false` and does not do dual-sign sponsor submission. |
+| Telegram handoff | Login/link flow, quota checks, market/news/trade/strategy commands, signed Web Review links | Execution still happens in Web with wallet confirmation. |
+| Profile | Manager linkage, Trading Balance, positions, PnL, settlement/redeem/funding UI, local receipts | Missing manager data stays empty instead of inventing positions or PnL. |
+
+## Technical Flow
 
 ```mermaid
 flowchart TD
-  User["User / demo operator"] --> UI["Next.js UI\n/markets /trade /profile"]
-  UI --> AppShell["AppShell + TopNav\ncomponents/app-shell.tsx"]
-  AppShell --> MarketContext["MarketDataProvider\n20s discovery TTL\nmanual refresh"]
-  UI --> Wallet["DApp Kit wallet provider\nsrc/lib/dapp-kit.ts"]
-  Wallet --> SuiGrpc["Sui gRPC fullnode\nNEXT_PUBLIC_SUI_*"]
+  User["User\nplain language or command"] --> Entry{"Entry point"}
+  Entry --> Web["Web app\n/markets /trade /profile"]
+  Entry --> Tg["Telegram bot\n/login /markets /trade /strategy"]
 
-  MarketContext --> MarketsApi["GET /api/markets\nmarket discovery"]
-  UI --> HistoryApi["GET /api/oracles/:id/history\nchart data"]
-  UI --> ProfileApi["GET /api/profile\nmanager/linkage state"]
-  UI --> CompileApi["POST /api/compile\napp/api/compile/route.ts"]
-  UI --> CompileStreamApi["POST /api/compile/stream\napp/api/compile/stream/route.ts"]
-  UI --> PilotApi["POST /api/pilot/stream\napp/api/pilot/stream/route.ts"]
-  UI --> StrategyApiCompile["POST /api/strategy/compile\napp/api/strategy/compile/route.ts"]
-  UI --> StrategyApiStream["POST /api/strategy/stream\napp/api/strategy/stream/route.ts"]
-  UI --> SponsorApi["POST /api/sponsor\napp/api/sponsor/route.ts"]
-  UI --> HealthApi["GET /api/health\napp/api/health/route.ts"]
-  UI --> ReviewSeedApi["GET /api/review-seed\napp/api/review-seed/route.ts"]
+  Web --> Pilot["Pilot router\nchat / trade / strategy"]
+  Tg --> ReviewLink["Signed Web Review link"]
+  ReviewLink --> Pilot
 
-  CompileApi --> BodyGuard["parseJsonBody + zod\nsrc/lib/http.ts"]
-  SponsorApi --> BodyGuard
-  BodyGuard --> Compiler["compileIntent\nsrc/lib/compile.ts"]
+  Pilot --> Chat["Chat answer\nPredict + news + project context"]
+  Pilot --> Trade["Trade compiler\nsingle Predict intent"]
+  Pilot --> Strategy["Strategy compiler\nmulti-leg plan"]
 
-  Compiler --> Intent["parseIntent\nsrc/lib/intent.ts"]
-  Intent --> IntentGate{"Intent type"}
-  IntentGate -->|"stablecoin_transfer"| NoPredictRead["Skip Predict API reads"]
-  IntentGate -->|"quote / mint / range / redeem"| PredictRead["getPredictMarketSnapshot\nsrc/lib/predict.ts"]
+  Trade --> Intent["Intent parser\nDeepSeek JSON mode + deterministic fallback"]
+  Strategy --> Legs["Strategy legs\nexpiry matching + budget allocation"]
+  Legs --> Trade
 
-  MarketsApi --> MarketBatch["Promise.all\n/status\n/predicts/:id/oracles\n/predicts/:id/vault/summary"]
-  MarketBatch --> PageSlice["Server pagination\npage/pageSize, max 12"]
-  PageSlice --> TopNState["Current-page + selected oracle state prefetch\navoids list N+1"]
-  HistoryApi --> HistoryBatch["Promise.all\n/oracles/:id/state\n/oracles/:id/prices\n/oracles/:id/svi"]
-  ProfileApi --> ProfileState["PredictManager summary when managerId exists\notherwise honest not-linked state"]
+  Intent --> Market["DeepBook Predict reads\nstatus + oracle + SVI + vault"]
+  Market --> Guardian["Guardian RiskOps\nfreshness + lag + vault + sizing"]
+  Guardian --> Quote["Quote preview\ncost + payout + expiry"]
+  Quote --> PTB["PTB preview\nMove targets + inputs + digest"]
+  PTB --> Review["User review\nrisk, funding, network, gas"]
 
-  PredictRead --> OracleMode{"Oracle id supplied?"}
-  OracleMode -->|"no"| BatchA["Promise.all\n/status\n/predicts/:id/oracles\n/predicts/:id/vault/summary"]
-  BatchA --> SelectOracle["Select next active BTC oracle"]
-  SelectOracle --> OracleStateA["GET /oracles/:oracle_id/state"]
+  Review --> WalletGate{"Can sign now?"}
+  WalletGate -->|"no"| Blocked["Explain missing field,\nstale quote, funding, or risk block"]
+  WalletGate -->|"yes"| Wallet["Sui wallet\nuser signs"]
+  Wallet --> Sui["Sui testnet\nmanager / mint / batch mint"]
+  Sui --> Profile["Profile + receipts\npositions, PnL, settlement"]
 
-  OracleMode -->|"yes"| BatchB["Promise.all\n/status\n/predicts/:id/vault/summary\n/oracles/:oracle_id/state"]
-  BatchB --> Consistency["Validate oracle + vault\nmatch configured Predict object"]
-  OracleStateA --> Consistency
-
-  Consistency --> Snapshot["PredictMarketSnapshot\nstatus + oracle + SVI + vault + metrics"]
-  NoPredictRead --> Guardian["Guardian risk engine\nsrc/lib/guardian.ts"]
-  Snapshot --> Guardian
-
-  Guardian --> GasPreview["decideGasMode\nsrc/lib/sponsor.ts"]
-  GasPreview --> PTB["buildPtbPlan\nsrc/lib/ptb.ts"]
-  PTB --> PTBGate{"PTB result"}
-  PTBGate -->|"quote-only / blocked"| NoPTB["No PTB, no sponsor approval"]
-  PTBGate -->|"valid preview"| SponsorPolicy["validateSponsorPlan\nMove target allowlist + gas cap"]
-
-  SponsorPolicy --> CompileResponse["Compile response\nGuardian + gas checks + PTB preview"]
-  NoPTB --> CompileResponse
-  CompileResponse --> UI
-
-  SponsorApi --> Recompile["Recompile on server\nnever trust browser PTB"]
-  Recompile --> SponsorPolicy
-  SponsorPolicy --> SponsorReceipt["preview_authorized receipt\nsubmitted=false"]
-  SponsorReceipt --> UI
-
-  PTB --> AuditGate{"PREDICT_ENABLE_ONCHAIN_LOG"}
-  AuditGate -->|"false"| OffchainAudit["Off-chain audit only\nsaves one Move call"]
-  AuditGate -->|"true"| AuditPackage["Require DEEP_PILOT_LOG_PACKAGE_ID\npublished 0x package id"]
-  AuditPackage --> MoveLog["Optional Move event\nmove/sources/deep_pilot_log.move"]
-
-  Env["Server env\nsrc/lib/predict-config.ts\nsrc/lib/execution-config.ts"] --> PredictRead
-  Env --> GasPreview
-  Env --> PTB
-  Env --> HealthApi
-
-  Smoke["bun run predict:smoke\nscripts/verify-predict.ts"] --> Compiler
-  MoveBuild["bun run move:build\nsui move build --path move"] --> MoveLog
+  PTB --> Sponsor["Sponsor preview endpoint\nserver recompile + policy checks"]
+  Sponsor --> PreviewReceipt["preview_authorized\nsubmitted=false"]
 ```
 
-Key boundaries:
+### Flow in Plain English
 
-- `/api/compile` is the read and planning path. It returns a live Predict snapshot, Guardian result, sponsor-policy decision, and PTB preview.
-- `/api/compile/stream` is the fast stream path. It returns compiler stage events and the same compiled review payload.
-- `/api/pilot/stream` routes user input into `chat`, `trade`, or `strategy` mode and returns either strategy/trade compilation or chat answers.
-- `/api/strategy/compile` and `/api/strategy/stream` are the strategy planning endpoints and stream equivalents.
-- `/api/review-seed` decodes signed review replay tokens.
-- `/api/markets` is the discovery path. It returns one page at a time and does not fetch full state for every oracle; it prefetches current-page rows plus the selected oracle only.
-- `/api/oracles/:id/history` returns bounded, normalized chart data so browser components do not query Predict history directly.
-- `/api/profile` returns honest manager linkage state. Missing manager data stays empty instead of fabricating PnL.
-- `/api/sponsor` recompiles on the server before producing a preview receipt. It does not trust a PTB returned to the browser.
-- `MarketDataProvider` keeps `/markets` results in a short-lived client cache. It avoids per-render polling and leaves fast price ticks to explicit refresh or selected-oracle history reads.
-- `quote-only` intents stop after market and Guardian review. They never build a mint PTB and never receive sponsor approval.
-- `Buy` maps to Predict mint preview. `Sell` maps to redeem/close preview because this demo does not pretend to have a secondary market or order book.
-- Real submission path is split:
-  - Wallet execution is implemented in UI for supported actions (`create manager`, single mint, strategy batch mint) and returns on-chain receipts.
-  - `/api/sponsor` remains preview-only and does not perform a full dual-sign sponsor submit flow.
+1. The user starts in Web or Telegram with a question, trade request, or strategy request.
+2. The pilot router classifies the input as chat, trade, or strategy.
+3. Trade and strategy requests are converted into constrained Predict intents. LLM output is treated as untrusted and validated; deterministic fallback keeps the demo usable without an LLM key.
+4. DeepPilot reads live DeepBook Predict status, active BTC oracles, oracle state, SVI data, and vault summary.
+5. Guardian checks whether the review is safe enough to continue, should be reduced, or must be blocked.
+6. If the action needs a position, DeepPilot requests a quote and builds a PTB preview with exact Move targets and inputs.
+7. Before signing, the Web app refreshes quote-sensitive details and checks wallet network, SUI gas, PredictManager, and Trading Balance.
+8. Supported actions can be signed by the user's wallet. Sponsor authorization remains a preview path only.
+9. `/profile` keeps manager state, receipts, positions, PnL, funding, withdrawal, redeem, and settlement context visible after review.
 
-The frontend is a three-page product surface rather than a generic chat app. `/markets` is for discovery, `/trade` is the execution workbench, and `/profile` is wallet/receipt/manager state. `components/deep-pilot-terminal.tsx` owns the ticket, intent textarea, market cards, Guardian panel, PTB preview, gas policy checks, and execution receipt panel. It calls `/api/compile` when the user edits or runs an intent, and calls `/api/sponsor` only after a PTB exists and Guardian has not blocked it. Wallet state is browser-only through DApp Kit; the public RPC URLs use `NEXT_PUBLIC_*` because they are safe to ship to the client.
+## Main Routes
 
-The backend is deliberately split into small modules. `src/lib/intent.ts` calls DeepSeek `deepseek-v4-flash` from the server only, streams JSON-mode output, validates it with zod, and falls back to a local constrained parser if DeepSeek is unavailable. `src/lib/predict.ts` is the only DeepBook Predict public API reader. `src/lib/guardian.ts` turns live market state into `allow`, `reduce`, or `block`. `src/lib/pilot.ts` handles chat/trade/strategy intent routing. `src/lib/strategy.ts` builds strategy plans. `src/lib/ptb.ts` builds an auditable PTB preview with exact Move targets, while `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and gas budget. `src/lib/compile.ts` is the orchestrator that wires these pieces together.
+- `/landing` - public product page for judges and users.
+- `/markets` - live BTC Predict market discovery and chart inspection.
+- `/trade` - natural-language chat, trade review, strategy review, and wallet signing workspace.
+- `/profile` - wallet profile, PredictManager state, Trading Balance, positions, receipts, and settlement actions.
+- `/telegram/login` - wallet-link and Profile NFT onboarding for Telegram users.
 
-Request flow is kept tight. A normal "next active oracle" trade needs three parallel Predict reads first, then one selected oracle-state read. If the user already supplies an oracle id, the app skips the full oracle-list read and performs the remaining three reads in parallel. Market discovery uses a 20 second client TTL plus manual refresh, not a high-frequency ticker. After direct oracle lookup, the app still checks that the oracle and vault belong to the configured Predict object, so the optimization does not weaken protocol safety.
+## API Surface
 
-Environment configuration is split by exposure. `NEXT_PUBLIC_*` values are only for wallet/network client config. Predict package ids, Predict object ids, preview accounts, sponsor limits, and audit-log package ids use normal server-side env names because they are read by API routes and server-side scripts. There is no `NEXT_PRIVATE_*` convention in Next.js; the rule is simply that anything without `NEXT_PUBLIC_` is not bundled into the browser unless the app sends it there.
+- `POST /api/pilot/stream` - unified streaming endpoint for chat, trade, and strategy input.
+- `POST /api/compile` - compiles a single Predict intent into market, Guardian, quote, gas, and PTB review.
+- `POST /api/compile/stream` - streaming version of the single-trade compile flow.
+- `POST /api/strategy/compile` - compiles a multi-leg strategy review.
+- `POST /api/strategy/stream` - streaming version of the strategy review flow.
+- `GET /api/markets` - paginated market discovery.
+- `GET /api/oracles/:id/history` - bounded chart/history data for a selected oracle.
+- `GET /api/profile` - wallet and PredictManager summary.
+- `GET /api/review-seed` - decodes Telegram/Web Review replay tokens.
+- `GET /api/sponsor` and `POST /api/sponsor` - sponsor challenge and preview authorization.
+- `GET /api/health` - runtime health check.
 
-Gas usage is intentionally conservative. By default `PREDICT_ENABLE_ONCHAIN_LOG=false`, so PTB previews do not add the extra `deep_pilot_log` Move call. If on-chain audit is enabled, `DEEP_PILOT_LOG_PACKAGE_ID` must be a published `0x...` package id; otherwise compile returns a Guardian `CONFIG_ERROR` block instead of creating a misleading PTB.
+## Implementation Notes
 
-The current product boundary is also explicit: the product has wallet-signable execution paths, while `/api/sponsor` remains a preview/validation path without server-side sponsor dual-sign submit.
+- `src/lib/pilot.ts` classifies user input into `chat`, `trade`, or `strategy`.
+- `src/lib/intent.ts` parses single-trade Predict intent with DeepSeek JSON mode and deterministic fallback.
+- `src/lib/strategy.ts` builds strategy legs, compiles each leg, and prepares batch execution readiness.
+- `src/lib/predict.ts` is the only DeepBook Predict public API reader; responses are schema-validated and timeout-bound.
+- `src/lib/guardian.ts` turns live market state into an `allow`, `reduce`, or `block` decision.
+- `src/lib/compile.ts` orchestrates intent parsing, Predict reads, Guardian, quote, PTB, and gas checks.
+- `src/lib/ptb.ts` builds auditable PTB previews with exact Move targets, object ids, and command inputs.
+- `src/lib/predict-execution.ts` builds wallet-signable Sui transactions for supported manager, mint, batch mint, funding, withdrawal, and redeem actions.
+- `src/lib/sponsor.ts` validates gas policy, package allowlists, Move call allowlists, and trade-size caps.
+- `src/lib/telegram-bot.ts` handles Telegram commands, quota, memory context, review links, trade review, and strategy review.
+- `components/deep-pilot-terminal.tsx` owns the main review and signing workspace.
+- `components/markets-page.tsx` and `components/market-data-provider.tsx` own market discovery and short-lived client caching.
+- `components/profile-page.tsx` owns manager, Trading Balance, positions, receipts, and settlement UX.
 
 ## Commands
 
 ```bash
 bun install
+bun run dev
 bun run typecheck
 bun run lint
 bun run build
@@ -163,7 +157,6 @@ bun run predict:smoke
 bun run telegram:smoke
 bun run move:build
 bun run telegram:set-webhook
-bun run dev
 bun run sui:testnet-key
 ```
 
@@ -173,13 +166,13 @@ Use `bun run telegram:set-webhook` only after `APP_BASE_URL`, `TELEGRAM_BOT_TOKE
 
 Copy `.env.example` to `.env.local` for local development. In Vercel, add the same keys in Project Settings -> Environment Variables.
 
-Use `NEXT_PUBLIC_` only for browser-side wallet/RPC config:
+Browser-safe wallet/RPC config uses `NEXT_PUBLIC_*`:
 
 - `NEXT_PUBLIC_SUI_NETWORK`
 - `NEXT_PUBLIC_SUI_TESTNET_GRPC_URL`
 - `NEXT_PUBLIC_SUI_DEVNET_GRPC_URL`
 
-Use normal server-side env names for DeepBook Predict deployment IDs and package IDs:
+Server-side Predict, execution, sponsor, Telegram, quota, profile, and optional memory settings use normal env names:
 
 - `PREDICT_SERVER_URL`
 - `PREDICT_NETWORK`
@@ -198,9 +191,6 @@ Use normal server-side env names for DeepBook Predict deployment IDs and package
 - `SPONSOR_MAX_TRADE_SIZE_DUSDC`
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_MODEL`
-
-Telegram, Profile NFT, quota, and optional memory:
-
 - `APP_BASE_URL`
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_WEBHOOK_SECRET`
@@ -218,72 +208,17 @@ Telegram, Profile NFT, quota, and optional memory:
 - `MEMWAL_DELEGATE_KEY`
 - `MEMWAL_SERVER_URL`
 
-Next.js does not need a `NEXT_PRIVATE_` prefix. Anything without `NEXT_PUBLIC_` stays server-side unless you manually send it to the client.
+There is no `NEXT_PRIVATE_*` convention in Next.js. Anything without `NEXT_PUBLIC_` stays server-side unless the app explicitly sends it to the browser.
 
-`TELEGRAM_LINK_SECRET`, `TELEGRAM_LINK_SALT`, and `REVIEW_SEED_SECRET` may fall back to local defaults only on localhost development. Set all three in Vercel before enabling Telegram or Web Review links; deployed functions now fail closed when these values are missing.
-
-Profile NFT transactions use `NEXT_PUBLIC_SUI_NETWORK`. Publish `deep_pilot_profile::profile` on the same network, then fill `DEEP_PILOT_PROFILE_PACKAGE_ID`, `DEEP_PILOT_PROFILE_REGISTRY_ID`, and `DEEP_PILOT_PROFILE_TREASURY_ID` from that deployment. The Telegram onboarding page blocks profile creation and plan subscription when the connected wallet is on a different network.
-
-
-`PREDICT_ENABLE_ONCHAIN_LOG=false` is the default gas-optimized mode. Set it to `true` only for demos that need an extra on-chain audit event.
-
-## Telegram Handoff
-
-Telegram is an entry and preview surface only. The bot accepts commands such as `/login`, `/profile`, `/plans`, `/quota`, `/markets`, `/news BTC`, `/trade ...`, and `/strategy ...`. Trade and strategy commands return a signed `Review & Sign` link to `/trade?review=...`. The Web page decodes the seed, verifies the linked wallet when available, then recompiles the latest market, quote, Guardian, funding, and PTB state before any wallet prompt.
-
-Daily AI quota is enforced in Upstash Redis when `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are configured. v1 uses `QUOTA_V1_DAILY_LIMIT=50` for every plan; the Profile NFT stores plan and quota snapshot fields so Standard/Pro/Max limits can diverge later without changing the Telegram/Web flow.
-
-Profile NFT creation is user-signed through `/telegram/login`. The NFT stores a hashed Telegram identifier, plan, expiry, quota snapshot fields, and memory pointer fields. It does not store raw Telegram IDs, private keys, full chat history, or wallet signatures.
-
-## Request Strategy
-
-`/api/compile` batches independent Predict reads with `Promise.all`. A free-form "next active oracle" intent needs `/status`, `/oracles`, `/vault/summary`, then one selected `/oracles/:id/state` read. If the intent already includes an oracle id, DeepPilot skips the full oracle list and reads `/status`, `/vault/summary`, and `/oracles/:id/state` in parallel, then validates that the oracle and vault belong to the configured Predict object.
-
-`/api/markets` is optimized for discovery, not tick-by-tick trading. It reads `/status`, `/predicts/:id/oracles`, and `/vault/summary` in parallel, applies status/expiry pagination, then fetches state only for the selected oracle plus the visible page. `pageSize` defaults to 4 and is capped at 12. `components/market-data-provider.tsx` caches each market query for 20 seconds and exposes manual refresh. This rejects the obvious N+1 trap without pretending the market list is a streaming index. Quick risk filtering is page-scoped for the same reason: full risk filtering across every oracle would require a full state scan.
-
-## Important Files
-
-- `.env.example` - Vercel/local deployment configuration template
-- `src/lib/predict.ts` - DeepBook Predict public API client and snapshot builder
-- `src/lib/profile.ts` - PredictManager linkage/profile summary reader
-- `src/lib/profile-execution.ts` - Profile NFT transaction builders
-- `src/lib/telegram-bot.ts` - Telegram command and natural-language handler
-- `src/lib/telegram-auth.ts` - Telegram login token and wallet signature verification
-- `src/lib/telegram-session.ts` - Redis-backed Telegram session storage
-- `src/lib/quota.ts` - Upstash/in-memory daily quota enforcement
-- `src/lib/memory.ts` - MemWal-compatible best-effort memory write plus Upstash fallback
-- `src/lib/predict-config.ts` - server-side Predict deployment config
-- `src/lib/client-config.ts` - browser-safe wallet/RPC config
-- `src/lib/intent.ts` - deterministic Predict intent parser
-- `src/lib/guardian.ts` - pre-sign risk policy
-- `src/lib/ptb.ts` - auditable Predict PTB preview
-- `src/lib/sponsor.ts` - sponsor gas policy, Move target allowlist, gas budget guard
-- `components/markets-page.tsx` - market discovery UI
-- `components/market-data-provider.tsx` - client market discovery cache and refresh cadence
-- `components/deep-pilot-terminal.tsx` - trade workspace UI
-- `components/profile-page.tsx` - profile and receipt UI
-- `src/lib/pilot.ts` - chat/trade/strategy intent router
-- `src/lib/strategy.ts` - strategy plan builder
-- `src/lib/compile.ts` - compile orchestration pipeline
-- `src/lib/receipts.ts` - browser-local preview/receipt persistence
-- `app/api/compile/route.ts` - intent compile entry
-- `app/api/compile/stream/route.ts` - compile stream entry
-- `app/api/pilot/stream/route.ts` - unified pilot route for chat/trade/strategy
-- `app/api/strategy/compile/route.ts` - strategy compile entry
-- `app/api/strategy/stream/route.ts` - strategy stream entry
-- `app/api/review-seed/route.ts` - review-seed replay decoding endpoint
-- `app/api/sponsor/route.ts` - sponsor preview/authorization endpoint
-- `app/api/markets/route.ts` - market discovery endpoint
-- `app/api/oracles/[oracleId]/history/route.ts` - oracle history endpoint
-- `app/api/profile/route.ts` - wallet linkage/profile endpoint
-- `app/api/health/route.ts` - runtime health endpoint
-- `final_proposal.md` - final track proposal and risk review
-- `docs/archive/` - original research drafts kept for traceability
-
-## Demo Intent
+## Demo Intents
 
 ```text
-Buy 10 DUSDC BTC UP near 62500 on the next active DeepBook Predict oracle
+Buy 10 DUSDC BTC UP on the next active DeepBook Predict oracle
+Bet 5 DUSDC that BTC will be down by 18:00 tonight
+Split 20 DUSDC across the next 1h, 2h, and 3h BTC UP markets
+Redeem my settled BTC DOWN position
 ```
 
-Wallet-signed execution is supported for configured manager/mint flows. The sponsor endpoint still only provides preview authorization and does not perform dual-sign sponsor submission.
+## Important Boundary
+
+DeepPilot helps users review and sign DeepBook Predict actions. It is not investment advice and it does not make trading decisions for the user.
