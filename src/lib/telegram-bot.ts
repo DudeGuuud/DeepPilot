@@ -14,6 +14,7 @@ import type { CompileResult, StrategyReview, TelegramSession } from "./types";
 type TelegramInlineButton = {
   text: string;
   url?: string;
+  callback_data?: string;
 };
 
 type TelegramMessage = {
@@ -29,9 +30,47 @@ type TelegramMessage = {
 
 type TelegramUpdate = {
   message?: TelegramMessage;
+  callback_query?: {
+    id?: string;
+    data?: string;
+    message?: TelegramMessage;
+    from?: {
+      id?: number | string;
+    };
+  };
 };
 
+type TelegramButtonRows = TelegramInlineButton[] | TelegramInlineButton[][];
+
+const TELEGRAM_SUGGESTIONS = [
+  {
+    id: "news_btc",
+    label: "News: BTC risks",
+    command: "/news BTC market news and risk context"
+  },
+  {
+    id: "trade_down",
+    label: "Trade: BTC DOWN 1 DUSDC",
+    command: "/trade Bet 1 DUSDC on BTC DOWN at the nearest settlement"
+  },
+  {
+    id: "hedge_up",
+    label: "Strategy: hedge mostly UP",
+    command: "/strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement"
+  },
+  {
+    id: "markets",
+    label: "Markets: active Predict",
+    command: "/markets"
+  }
+] as const;
+
 export async function handleTelegramUpdate(update: TelegramUpdate) {
+  if (update.callback_query) {
+    await handleTelegramCallback(update.callback_query);
+    return;
+  }
+
   const message = update.message;
   const chatId = message?.chat?.id;
   const userId = message?.from?.id;
@@ -47,17 +86,28 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
     chatId: String(chatId)
   });
 
-  if (text === "/start" || text === "/login") {
+  if (text === "/login") {
     await sendLogin(chatId, userId);
     return;
   }
 
-  if (text === "/help") {
-    await sendMessage(chatId, helpText());
+  const session = await getTelegramSession(telegramHash);
+
+  if (text === "/start") {
+    if (session?.walletAddress && session.profileId) {
+      await sendWelcome(chatId, session);
+    } else if (session?.walletAddress) {
+      await sendCreateProfile(chatId, userId);
+    } else {
+      await sendLogin(chatId, userId, "Welcome to DeepPilot Telegram.");
+    }
     return;
   }
 
-  const session = await getTelegramSession(telegramHash);
+  if (text === "/help") {
+    await sendHelp(chatId);
+    return;
+  }
 
   if (text === "/plans") {
     await sendPlans(chatId, userId);
@@ -116,6 +166,34 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
   }
 
   await runNaturalLanguage(chatId, session, text);
+}
+
+async function handleTelegramCallback(query: NonNullable<TelegramUpdate["callback_query"]>) {
+  const chatId = query.message?.chat?.id;
+  const userId = query.from?.id;
+  const data = query.data ?? "";
+
+  if (query.id) {
+    await answerCallbackQuery(query.id).catch(() => {});
+  }
+
+  if (!chatId || !userId || !data.startsWith("suggest:")) {
+    return;
+  }
+
+  const command = TELEGRAM_SUGGESTIONS.find((suggestion) => suggestion.id === data.slice("suggest:".length))?.command;
+
+  if (!command) {
+    return;
+  }
+
+  await handleTelegramUpdate({
+    message: {
+      chat: { id: chatId },
+      from: { id: userId },
+      text: command
+    }
+  });
 }
 
 async function runNaturalLanguage(chatId: number | string, session: TelegramSession, text: string) {
@@ -253,7 +331,12 @@ async function sendLogin(chatId: number | string, userId: number | string, prefi
 
   await sendMessage(chatId, [
     prefix,
-    "Open DeepPilot and sign the wallet link challenge. Telegram never receives your private key."
+    "Account setup",
+    "1. Tap Connect wallet.",
+    "2. Open the Web page and connect your Sui wallet on testnet.",
+    "3. Sign the wallet-link message. This proves wallet ownership; Telegram never receives your private key.",
+    "4. If prompted, create your DeepPilot Profile NFT.",
+    "5. Return here and tap /start to use news, trade, and strategy shortcuts."
   ].filter(Boolean).join("\n"), [
     { text: "Connect wallet", url: telegramLoginUrl(token) }
   ]);
@@ -262,9 +345,33 @@ async function sendLogin(chatId: number | string, userId: number | string, prefi
 async function sendCreateProfile(chatId: number | string, userId: number | string) {
   const token = createTelegramLoginToken({ telegramUserId: userId, chatId });
 
-  await sendMessage(chatId, "Wallet linked. Create your DeepPilot Profile NFT before using AI quota or Telegram trade review.", [
+  await sendMessage(chatId, [
+    "Wallet linked.",
+    "",
+    "Next step: create your DeepPilot Profile NFT.",
+    "The Profile stores your plan, quota snapshot, Telegram binding hash, and memory namespace. It does not store your private key or raw Telegram ID.",
+    "",
+    "After creation, Telegram can generate news summaries, trade reviews, and strategy review links. Wallet signing still happens only in the Web Review page."
+  ].join("\n"), [
     { text: "Create Profile", url: telegramLoginUrl(token) }
   ]);
+}
+
+async function sendWelcome(chatId: number | string, session: TelegramSession) {
+  const quota = await getQuotaStatus(session.profileId!);
+
+  await sendMessage(chatId, [
+    "DeepPilot is ready.",
+    `Wallet: ${shortAddress(session.walletAddress)}`,
+    `Profile NFT: ${shortAddress(session.profileId)}`,
+    `Quota: ${quota.remaining}/${quota.limit} left today`,
+    "",
+    "Tap a shortcut or send natural language.",
+    "Examples:",
+    "- summarize BTC news",
+    "- buy 1 DUSDC BTC DOWN nearest settlement",
+    "- build a 1 DUSDC hedge strategy mostly BTC UP"
+  ].join("\n"), suggestionButtons());
 }
 
 async function sendPlans(chatId: number | string, userId: number | string) {
@@ -280,6 +387,10 @@ async function sendPlans(chatId: number | string, userId: number | string) {
   ].join("\n"), [
     { text: "Open Plans", url: `${telegramLoginUrl(token)}&plans=1` }
   ]);
+}
+
+async function sendHelp(chatId: number | string) {
+  await sendMessage(chatId, helpText(), suggestionButtons());
 }
 
 async function sendProfile(chatId: number | string, session: TelegramSession) {
@@ -401,28 +512,62 @@ function sourceLine(titles: string[]) {
 function helpText() {
   return [
     "DeepPilot commands",
+    "",
+    "Setup",
     "/login - connect wallet",
+    "/start - show shortcuts and account state",
     "/profile - profile and quota",
     "/plans - Standard / Pro / Max",
     "/quota - remaining daily AI quota",
+    "",
+    "Market and execution",
     "/markets - active BTC Predict markets",
     "/news BTC - market news and risk context",
     "/trade <intent> - create Web Review link",
     "/strategy <intent> - create multi-leg Web Review link",
     "/memory - show fallback memory",
-    "/forget - clear fallback memory"
+    "/forget - clear fallback memory",
+    "",
+    "Natural language also works. If your message is a clear buy/bet/open-position intent, the bot compiles a fresh Predict review and returns a Web Review & Sign link."
   ].join("\n");
 }
 
-async function sendMessage(chatId: number | string, text: string, buttons: TelegramInlineButton[] = []) {
+function suggestionButtons(): TelegramInlineButton[][] {
+  return TELEGRAM_SUGGESTIONS.map((suggestion) => [
+    {
+      text: suggestion.label,
+      callback_data: `suggest:${suggestion.id}`
+    }
+  ]);
+}
+
+async function sendMessage(chatId: number | string, text: string, buttons: TelegramButtonRows = []) {
+  const inlineKeyboard = normalizeButtonRows(buttons);
+
   await telegramApi("sendMessage", {
     chat_id: chatId,
     text: truncate(text, 3900),
     disable_web_page_preview: true,
-    reply_markup: buttons.length
-      ? { inline_keyboard: [buttons] }
+    reply_markup: inlineKeyboard.length
+      ? { inline_keyboard: inlineKeyboard }
       : undefined
   });
+}
+
+async function answerCallbackQuery(callbackQueryId: string) {
+  await telegramApi("answerCallbackQuery", {
+    callback_query_id: callbackQueryId
+  });
+}
+
+function normalizeButtonRows(buttons: TelegramButtonRows): TelegramInlineButton[][] {
+  if (!buttons.length) {
+    return [];
+  }
+
+  return Array.isArray(buttons[0])
+    ? buttons as TelegramInlineButton[][]
+    : [buttons as TelegramInlineButton[]];
 }
 
 async function telegramApi(method: string, payload: Record<string, unknown>) {

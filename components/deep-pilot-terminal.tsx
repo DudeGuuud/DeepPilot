@@ -64,12 +64,13 @@ import type {
 
 const DEFAULT_INTENT = "";
 const COMPOSER_HINT = "Ask market context or draft a Predict transaction";
-const SAMPLE_INTENT = "Bet 10 DUSDC that BTC will be down by 18:00 tonight";
+const SAMPLE_INTENT = "Bet 1 DUSDC on BTC DOWN at the nearest settlement";
 const EXAMPLE_INTENTS = [
-  "Why is BTC moving?",
-  "Summarize BTC news",
+  "Summarize BTC news and market risks",
+  "Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
+  "Split 1 DUSDC BTC UP across nearest, 1h, and 2h expiries",
   SAMPLE_INTENT,
-  "Check PLP vault risk"
+  "Check active Predict markets and vault risk"
 ];
 const AI_DISCLOSURE =
   "This answer is AI-generated for information organization and risk explanation only. It is not investment advice; verify original sources and the wallet confirmation screen.";

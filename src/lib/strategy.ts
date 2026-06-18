@@ -160,8 +160,9 @@ export function buildStrategyPlan(
   const direction = detectDirection(raw, conversationContext);
   const amount = detectAmount(raw);
   const durations = detectDurations(raw);
-  const isHedge = /hedge|对冲/i.test(raw);
-  const targetDurations = targetStrategyDurations(durations, isHedge);
+  const isHedge = /hedge|straddle|双向|对冲/i.test(raw);
+  const isLadder = /ladder|split|scale|stagger|分批|阶梯|分散/i.test(raw);
+  const targetDurations = targetStrategyDurations(durations, isHedge, isLadder);
   const legDirections = targetLegDirections(targetDurations.length, direction, isHedge);
   const legAmounts = allocateStrategyBudget(amount, strategyLegWeights(raw, isHedge, legDirections));
   const nowMs = Date.parse(activeMarketContext.nowIso);
@@ -390,13 +391,25 @@ function blockedLeg(leg: StrategyLeg, intentText: string, reason: string): Compi
 }
 
 function detectDirection(raw: string, conversationContext?: ConversationContext | null): "up" | "down" {
-  const text = `${raw}\n${conversationContext?.memoryContext ?? ""}`;
+  const explicitDirection = detectDirectionFromText(raw);
 
+  if (explicitDirection) {
+    return explicitDirection;
+  }
+
+  return detectDirectionFromText(conversationContext?.memoryContext ?? "") ?? "up";
+}
+
+function detectDirectionFromText(text: string): "up" | "down" | null {
   if (/\b(down|put|short|lower)\b|跌|做空|看跌/i.test(text)) {
     return "down";
   }
 
-  return "up";
+  if (/\b(up|call|long|higher)\b|涨|做多|看涨/i.test(text)) {
+    return "up";
+  }
+
+  return null;
 }
 
 function oppositeDirection(direction: "up" | "down") {
@@ -419,7 +432,7 @@ function normalizeCurrencyText(raw: string) {
   return raw.replace(/([a-z])\s+(?=[a-z])/gi, "$1");
 }
 
-function targetStrategyDurations(durations: number[], isHedge: boolean) {
+function targetStrategyDurations(durations: number[], isHedge: boolean, isLadder: boolean) {
   if (durations.length) {
     return durations;
   }
@@ -427,7 +440,13 @@ function targetStrategyDurations(durations: number[], isHedge: boolean) {
   // A hedge without explicit ladder durations belongs on the same earliest active
   // expiry. Splitting it across later expiries makes "nearest settlement" hard
   // to review and can produce a misleading hedge.
-  return isHedge ? [0, 0] : [0];
+  if (isHedge) {
+    return [0, 0];
+  }
+
+  // A ladder/split request without explicit expiries should still produce a
+  // real multi-leg candidate instead of silently degrading to one leg.
+  return isLadder ? [0, 60, 120] : [0];
 }
 
 function targetLegDirections(count: number, primaryDirection: "up" | "down", isHedge: boolean) {
