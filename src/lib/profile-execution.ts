@@ -83,6 +83,13 @@ type FindProfileInRegistryInput = {
   network?: ClientNetwork;
 };
 
+export type DeepPilotProfileMemoryPointer = {
+  accountId: string | null;
+  namespace: string | null;
+  rootBlobId: string | null;
+  updatedAt: string | null;
+};
+
 export function buildCreateDeepPilotProfileTransaction({
   packageId,
   registryId,
@@ -358,6 +365,32 @@ export async function findDeepPilotProfileInRegistry({
   return byTelegram ?? byWallet;
 }
 
+export async function readDeepPilotProfileMemoryPointer(
+  profileId: string,
+  network: ClientNetwork = clientNetwork
+): Promise<DeepPilotProfileMemoryPointer> {
+  assertObjectId(profileId, "Profile object");
+
+  const client = new SuiGrpcClient({
+    network,
+    baseUrl: clientGrpcUrls[network]
+  });
+  const object = await client.getObject({
+    objectId: profileId,
+    include: {
+      json: true
+    }
+  });
+  const json = isRecord(object.object.json) ? object.object.json : null;
+
+  return {
+    accountId: stringFromJson(json?.memory_account_id),
+    namespace: stringFromJson(json?.memory_namespace),
+    rootBlobId: stringFromJson(json?.memory_root_blob_id),
+    updatedAt: timestampMsToIso(numberFromJson(json?.updated_at_ms))
+  };
+}
+
 function extractProfileFromEvents(events: unknown) {
   if (!Array.isArray(events)) {
     return null;
@@ -520,6 +553,10 @@ function planNameToCode(plan: DeepPilotPlanName): DeepPilotPlan {
   }
 
   return DEEP_PILOT_PLAN_STANDARD;
+}
+
+function timestampMsToIso(value: number | null) {
+  return value && value > 0 ? new Date(value).toISOString() : null;
 }
 
 function normalizeTelegramHashBytes(value: string | Uint8Array | number[]) {

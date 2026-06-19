@@ -166,7 +166,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
 
   if (text === "/forget") {
     await clearTelegramMemoryFallback(session.profileId);
-    await sendMessage(chatId, "Local fallback memory cleared. Walrus Memory deletion requires Web authorization.");
+    await sendMessage(chatId, "Redis fallback memory cleared. Walrus Memory uses the Profile-authorized namespace; disable or revoke it from the Web authorization flow when available.");
     return;
   }
 
@@ -269,7 +269,7 @@ async function runNews(
   });
 
   await writeAgentMemory(session.profileId!, {
-    lastMarketThesis: answer.slice(0, 600)
+    lastMarketThesis: summarizeMarketThesis(answer)
   });
 
   await sendMessage(chatId, [
@@ -486,10 +486,11 @@ async function sendQuota(chatId: number | string, session: TelegramSession) {
 
 async function sendMemory(chatId: number | string, session: TelegramSession) {
   const memory = await readAgentMemory(session.profileId!);
+  const source = memory?.source === "memwal" ? "Walrus Memory" : "Redis fallback";
 
   await sendMessage(chatId, memory
-    ? `Memory fallback:\n${memoryContextText(memory)}`
-    : "No local fallback memory yet. Walrus Memory is used only when configured and authorized.");
+    ? `Memory source: ${source}\n${memoryContextText(memory)}`
+    : "No memory yet. Enable Walrus Memory in Profile for portable agent context, or keep using Redis fallback.");
 }
 
 async function sendMarkets(chatId: number | string) {
@@ -573,6 +574,14 @@ function summarizeStrategyShape(review: StrategyReview) {
   ).join(" | ");
 }
 
+function summarizeMarketThesis(answer: string) {
+  return answer
+    .replace(/\[[^\]]+\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 500);
+}
+
 function reviewUrl(token: string) {
   return `${appBaseUrl().replace(/\/$/, "")}/trade?review=${encodeURIComponent(token)}`;
 }
@@ -598,8 +607,8 @@ function helpText() {
     "/news BTC - market news and risk context",
     "/trade <intent> - create Web Review link",
     "/strategy <intent> - create multi-leg Web Review link",
-    "/memory - show fallback memory",
-    "/forget - clear fallback memory",
+    "/memory - show Walrus or fallback memory",
+    "/forget - clear Redis fallback memory",
     "",
     "Natural language also works. If your message is a clear buy/bet/open-position intent, the bot compiles a fresh Predict review and returns a Web Review & Sign link."
   ].join("\n");

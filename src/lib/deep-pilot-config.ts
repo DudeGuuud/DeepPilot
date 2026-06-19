@@ -74,10 +74,14 @@ export function profilePackageConfig() {
 }
 
 export function memWalConfig() {
+  const timeoutMs = Number.parseInt(trimEnv("MEMWAL_TIMEOUT_MS") || "1500", 10);
+
   return {
+    enabled: trimEnv("MEMWAL_ENABLED") !== "false",
     accountId: trimEnv("MEMWAL_ACCOUNT_ID"),
     delegateKey: trimEnv("MEMWAL_DELEGATE_KEY"),
-    serverUrl: trimEnv("MEMWAL_SERVER_URL")
+    serverUrl: trimEnv("MEMWAL_SERVER_URL"),
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 1500
   };
 }
 

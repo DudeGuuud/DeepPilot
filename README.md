@@ -210,11 +210,21 @@ Server-side Predict, execution, sponsor, Telegram, quota, profile, and optional 
 - `PLAN_PRICE_MIST`
 - `PLAN_DURATION_DAYS`
 - `QUOTA_V1_DAILY_LIMIT`
+- `MEMWAL_ENABLED`
 - `MEMWAL_ACCOUNT_ID`
 - `MEMWAL_DELEGATE_KEY`
 - `MEMWAL_SERVER_URL`
+- `MEMWAL_TIMEOUT_MS`
 
 There is no `NEXT_PRIVATE_*` convention in Next.js. Anything without `NEXT_PUBLIC_` stays server-side unless the app explicitly sends it to the browser.
+
+## Walrus Memory
+
+DeepPilot uses Walrus Memory as an optional long-term agent context layer. The user-owned DeepPilot Profile NFT stores only a memory pointer (`memory_account_id`, `memory_namespace`, `memory_root_blob_id`). The server uses an app delegate key to read and write approved summaries inside that namespace for Web and Telegram continuity.
+
+The memory layer stores compressed facts such as risk preference, last market thesis, last trade shape, expiry preference, keeper history, and language preference. It must not store wallet private keys, signatures, raw Telegram ids, full chat transcripts, or raw assistant reasoning. If MemWal is not configured or times out, DeepPilot falls back to Upstash Redis memory and must not claim a Walrus upload.
+
+Walrus Memory is not trading authorization. All Predict trades still require fresh quote, Guardian checks, Trading Balance checks, and explicit wallet signing in the Web Review flow.
 
 ## Demo Intents
 

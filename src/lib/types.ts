@@ -665,7 +665,7 @@ export interface PredictOracleHistory {
 export interface ProfileActivityItem {
   id: string;
   time: string;
-  type: "compile" | "sponsor_preview" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper";
+  type: "compile" | "sponsor_preview" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper" | "memory_pointer";
   oracleId?: string;
   digest?: string;
   guardianDecision?: GuardianResult["decision"];
@@ -745,14 +745,20 @@ export interface ProfileMemoryStatus {
   };
   longTermMemory: {
     provider: "Walrus Memory / MemWal";
-    status: "not_configured" | "ready";
+    status: "disabled" | "fallback" | "enabled" | "error";
+    accountId: string | null;
     namespace: string | null;
+    rootBlobId: string | null;
+    delegateMode: "app_delegate";
+    lastSyncedAt: string | null;
     stores: string[];
   };
 }
 
 export interface ProfileSummary {
   wallet: string | null;
+  deepPilotProfileId: string | null;
+  deepPilotProfilePackageId: string | null;
   network: PredictDeployment["network"];
   predictPackageId: string;
   predictObjectId: string;

@@ -18,6 +18,7 @@ import {
   buildWithdrawFromManagerTransaction,
   getExecutedDigest
 } from "@/src/lib/predict-execution";
+import { buildSetProfileMemoryPointerTransaction } from "@/src/lib/profile-execution";
 import { readPreviewReceipts, storePreviewReceipt } from "@/src/lib/receipts";
 import { readCoinBalanceRaw, readSuiBalanceRaw } from "@/src/lib/sui-balances";
 import type { ProfileActivityItem, ProfilePosition, ProfileSummary } from "@/src/lib/types";
@@ -61,6 +62,7 @@ export function ProfilePage() {
   const [lastProfileRefresh, setLastProfileRefresh] = useState<Date | null>(null);
   const [settlingPositionId, setSettlingPositionId] = useState<string | null>(null);
   const [settleError, setSettleError] = useState<string | null>(null);
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const profileLoadedRef = useRef(false);
   const effectiveManagerId = localManagerId ?? urlManagerId;
 
@@ -424,6 +426,97 @@ export function ProfilePage() {
     }
   }
 
+  async function handleEnableWalrusMemory() {
+    if (memoryBusy) {
+      return;
+    }
+
+    setMemoryBusy(true);
+
+    try {
+      if (!account?.address) {
+        throw new Error("Connect wallet before enabling Walrus Memory.");
+      }
+
+      if (!profile?.deepPilotProfileId || !profile.deepPilotProfilePackageId) {
+        throw new Error("Create a DeepPilot Profile NFT before enabling Walrus Memory.");
+      }
+
+      const memory = profile.memory.longTermMemory;
+
+      if (!memory.accountId || !memory.namespace) {
+        throw new Error("Walrus Memory is not configured for this deployment.");
+      }
+
+      const targetNetwork = profile.network === "devnet" ? "devnet" : "testnet";
+
+      if (network && network !== targetNetwork) {
+        throw new Error(`Switch wallet network to ${targetNetwork} before enabling Walrus Memory.`);
+      }
+
+      const client = dAppKit.getClient(targetNetwork);
+      const suiBalance = await readSuiBalanceRaw(client, account.address);
+
+      if (suiBalance < MIN_SUI_GAS_BALANCE_MIST) {
+        throw new Error(`Need testnet SUI for gas. Wallet ${shortAddress(account.address)} has ${formatRawSui(suiBalance)} SUI on ${targetNetwork}; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available.`);
+      }
+
+      const transaction = buildSetProfileMemoryPointerTransaction({
+        packageId: profile.deepPilotProfilePackageId,
+        profileId: profile.deepPilotProfileId,
+        memoryAccountId: memory.accountId,
+        memoryNamespace: memory.namespace,
+        memoryRootBlobId: memory.rootBlobId
+      });
+      const signed = await dAppKit.signAndExecuteTransaction({ transaction });
+      const digest = getExecutedDigest(signed);
+      const confirmed = await client.waitForTransaction({
+        digest,
+        include: {
+          effects: true,
+          events: true,
+          objectTypes: true
+        }
+      });
+      assertExecuted(confirmed);
+
+      const receipt: ProfileActivityItem & {
+        walletAddress: string;
+        network: "devnet" | "testnet";
+        status: string;
+        note: string;
+      } = {
+        id: digest,
+        time: new Date().toISOString(),
+        type: "memory_pointer",
+        digest,
+        summary: "Enabled Walrus Memory pointer",
+        walletAddress: account.address,
+        network: targetNetwork,
+        status: "success",
+        note: "Profile NFT now points to the DeepPilot Walrus Memory namespace. This does not grant trading permission."
+      };
+
+      storePreviewReceipt(receipt);
+      setReceipts(readPreviewReceipts(account.address));
+      setReloadNonce((current) => current + 1);
+      toast({
+        variant: "success",
+        title: "Walrus Memory enabled",
+        description: digest
+      });
+    } catch (memoryIssue) {
+      const message = explainWalletExecutionError(memoryIssue);
+      toast({
+        variant: "destructive",
+        title: "Memory setup failed",
+        description: message
+      });
+    } finally {
+      setMemoryBusy(false);
+    }
+  }
+
   async function buildDepositFundingTransaction(amountRaw: bigint) {
     if (!profile || !account?.address) {
       throw new Error("Profile is not loaded.");
@@ -570,6 +663,8 @@ export function ProfilePage() {
                 profile={profile}
                 settlingPositionId={settlingPositionId}
                 onSettlePosition={handleSettlePosition}
+                memoryBusy={memoryBusy}
+                onEnableWalrusMemory={handleEnableWalrusMemory}
               />
             </CardContent>
           </Card>
@@ -605,7 +700,7 @@ export function ProfilePage() {
               <StatusRow label="Wallet connected" active={Boolean(account)} />
               <StatusRow label="PredictManager linked" active={Boolean(profile?.managerId)} />
               <StatusRow label="Local receipts" active={receipts.length > 0} />
-              <StatusRow label="Memory preview" active={profile?.memory.preview.status === "preview_only"} />
+              <StatusRow label="Walrus Memory" active={profile?.memory.longTermMemory.status === "enabled"} />
               <div className="rounded-md border border-border bg-background/60 p-3 text-sm leading-6 text-muted-foreground">
                 {profile?.message ?? "Loading profile state."}
               </div>
@@ -757,7 +852,9 @@ function TabContent({
   managerLinked,
   profile,
   settlingPositionId,
-  onSettlePosition
+  onSettlePosition,
+  memoryBusy,
+  onEnableWalrusMemory
 }: {
   tab: ProfileTab;
   activity: ProfileActivityItem[];
@@ -766,6 +863,8 @@ function TabContent({
   profile: ProfileSummary | null;
   settlingPositionId: string | null;
   onSettlePosition: (position: ProfilePosition) => void;
+  memoryBusy: boolean;
+  onEnableWalrusMemory: () => void;
 }) {
   if (loading) {
     return (
@@ -778,7 +877,7 @@ function TabContent({
 
   if (tab === "activity" || tab === "receipts") {
     const items = tab === "receipts"
-      ? activity.filter((item) => item.type === "sponsor_preview" || item.type === "manager_create" || item.type === "manager_funding" || item.type === "predict_mint" || item.type === "redeem")
+      ? activity.filter((item) => item.type === "sponsor_preview" || item.type === "manager_create" || item.type === "manager_funding" || item.type === "predict_mint" || item.type === "redeem" || item.type === "memory_pointer")
       : activity;
 
     return items.length ? (
@@ -844,7 +943,7 @@ function TabContent({
         <PolicyBox title="Public index" items={profile.indexPolicy.publicValues} />
         <PolicyBox title="Consent required" items={profile.indexPolicy.consentRequiredValues} />
         <PolicyBox title="Private memory" items={profile.indexPolicy.privateValues} />
-        <MemoryPreviewPanel profile={profile} />
+        <MemoryPreviewPanel profile={profile} busy={memoryBusy} onEnable={onEnableWalrusMemory} />
       </div>
     ) : (
       <EmptyState text="Guardian risk logs start from local preview receipts and future on-chain audit events." />
@@ -875,15 +974,46 @@ function TabContent({
   );
 }
 
-function MemoryPreviewPanel({ profile }: { profile: ProfileSummary }) {
+function MemoryPreviewPanel({
+  profile,
+  busy,
+  onEnable
+}: {
+  profile: ProfileSummary;
+  busy: boolean;
+  onEnable: () => void;
+}) {
+  const memory = profile.memory.longTermMemory;
+  const canEnable = memory.status === "fallback" && Boolean(profile.deepPilotProfileId && profile.deepPilotProfilePackageId && memory.accountId && memory.namespace);
+
   return (
     <div className="rounded-md border border-border bg-background/60 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-foreground">Encrypted memory preview</p>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">{profile.memory.preview.policy}</p>
+          <p className="text-sm font-medium text-foreground">Walrus Memory</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">
+            App delegate memory for Telegram and Web context. It stores approved summaries, not raw chats, signatures, or wallet keys.
+          </p>
         </div>
         <LockKeyhole className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </div>
+      <div className="mt-3 grid gap-2 rounded-md border border-border bg-background/50 p-3 text-xs">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Status</span>
+          <Badge variant="outline" className="border-border text-muted-foreground">{memory.status}</Badge>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Namespace</span>
+          <span className="truncate font-mono text-foreground">{memory.namespace ?? "not linked"}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Account</span>
+          <span className="truncate font-mono text-foreground">{memory.accountId ? shortAddress(memory.accountId) : "not configured"}</span>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-muted-foreground">Mode</span>
+          <span className="font-mono text-foreground">{memory.delegateMode}</span>
+        </div>
       </div>
       <div className="mt-3 grid gap-2">
         {profile.memory.preview.keys.map((item) => (
@@ -893,8 +1023,17 @@ function MemoryPreviewPanel({ profile }: { profile: ProfileSummary }) {
           </div>
         ))}
       </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" onClick={onEnable} disabled={!canEnable || busy}>
+          <LockKeyhole className="mr-2 h-4 w-4" />
+          {memory.status === "enabled" ? "Enabled" : busy ? "Enabling..." : "Enable Walrus Memory"}
+        </Button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-muted-foreground">
+        Disable/revoke is intentionally not simulated here. Until a revoke flow is added, clearing Telegram fallback does not delete Walrus Memory blobs.
+      </p>
       <p className="mt-3 text-xs text-muted-foreground">
-        {profile.memory.longTermMemory.provider} · {profile.memory.longTermMemory.namespace ?? "wallet required"}
+        {profile.memory.longTermMemory.provider} · {profile.memory.longTermMemory.lastSyncedAt ? `synced ${profile.memory.longTermMemory.lastSyncedAt}` : "Profile pointer required"}
       </p>
     </div>
   );

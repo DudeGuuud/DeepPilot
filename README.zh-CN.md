@@ -210,11 +210,21 @@ Predict、执行、sponsor、Telegram、quota、profile 和可选 memory 配置�
 - `PLAN_PRICE_MIST`
 - `PLAN_DURATION_DAYS`
 - `QUOTA_V1_DAILY_LIMIT`
+- `MEMWAL_ENABLED`
 - `MEMWAL_ACCOUNT_ID`
 - `MEMWAL_DELEGATE_KEY`
 - `MEMWAL_SERVER_URL`
+- `MEMWAL_TIMEOUT_MS`
 
 Next.js 没有 `NEXT_PRIVATE_*` 约定。没有 `NEXT_PUBLIC_` 前缀的变量默认留在服务端，除非应用主动把它发给浏览器。
+
+## Walrus Memory
+
+DeepPilot 把 Walrus Memory 作为可选的长期 agent context。用户持有的 DeepPilot Profile NFT 只保存 memory 指针：`memory_account_id`、`memory_namespace`、`memory_root_blob_id`。服务端使用 App Delegate key，在用户授权的 namespace 里为 Web 和 Telegram 读取/写入经过压缩的 memory 摘要。
+
+Memory 只保存安全摘要，例如 risk preference、last market thesis、last trade shape、preferred expiry style、keeper history 和 language preference。不要保存钱包私钥、签名、Telegram 原始 ID、完整聊天记录或原始推理链。如果 MemWal 没有配置或超时，DeepPilot 会回退到 Upstash Redis fallback memory，不能声称已经上传 Walrus。
+
+Walrus Memory 不是交易授权。所有 Predict 交易仍然必须经过 fresh quote、Guardian、Trading Balance 检查，并由用户在 Web Review 里手动签名。
 
 ## Demo Intents
 

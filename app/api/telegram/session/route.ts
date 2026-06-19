@@ -81,7 +81,7 @@ async function recoverProfileSession(telegramHash: string, chatId: string) {
     profileId,
     plan: session.plan,
     managerId: session.managerId,
-    memoryNamespace: session.memoryNamespace
+    memoryNamespace: `deeppilot:${profileId.toLowerCase()}`
   });
 }
 
@@ -151,7 +151,9 @@ export async function POST(request: Request) {
       walletAddress: sessionWallet,
       profileId: nextSession.profileId,
       plan: nextSession.plan,
-      memoryNamespace: `telegram:${payload.telegramHash.slice(0, 16)}`
+      memoryNamespace: nextSession.profileId
+        ? `deeppilot:${nextSession.profileId.toLowerCase()}`
+        : existing.memoryNamespace
     });
 
     return NextResponse.json({ session });

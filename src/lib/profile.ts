@@ -1,5 +1,8 @@
+import { memWalConfig, profilePackageConfig } from "./deep-pilot-config";
 import { predictDeployment } from "./predict-config";
 import { getPredictBinaryTradeAmounts, normalizeDusdc, normalizePrice } from "./predict";
+import { readDeepPilotProfileMemoryPointer } from "./profile-execution";
+import { getTelegramSessionByWallet } from "./telegram-session";
 import type {
   KeeperSnapshot,
   ProfileIndexPolicy,
@@ -20,13 +23,21 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
   const normalizedWallet = normalizeObjectId(wallet);
   const discoveredManager = await discoverManager(normalizedWallet, managerId);
   const normalizedManager = discoveredManager.managerId;
+  const deepPilotProfileId = normalizedWallet
+    ? (await getTelegramSessionByWallet(normalizedWallet).catch(() => null))?.profileId ?? null
+    : null;
+  const deepPilotProfilePackageId = profilePackageConfig().packageId || null;
+  const memory = await resolveProfileMemoryStatus(normalizedWallet, normalizedManager, deepPilotProfileId);
 
   if (!normalizedManager) {
     return emptyProfile(
       normalizedWallet,
+      deepPilotProfileId,
+      deepPilotProfilePackageId,
       null,
       "No PredictManager is linked yet. DeepPilot will not invent PnL or positions without a manager object.",
-      Boolean(normalizedWallet)
+      Boolean(normalizedWallet),
+      memory
     );
   }
 
@@ -39,8 +50,12 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
   if (!manager && !positions && !pnl) {
     return emptyProfile(
       normalizedWallet,
+      deepPilotProfileId,
+      deepPilotProfilePackageId,
       normalizedManager,
-      "Manager created, waiting for Predict indexer. Refresh after the public Predict server indexes the manager."
+      "Manager created, waiting for Predict indexer. Refresh after the public Predict server indexes the manager.",
+      false,
+      memory
     );
   }
 
@@ -51,6 +66,8 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
 
   return {
     wallet: managerSummary.owner ?? normalizedWallet ?? discoveredManager.owner,
+    deepPilotProfileId,
+    deepPilotProfilePackageId,
     managerId: normalizedManager,
     managerLinked: true,
     managerNeedsCreation: false,
@@ -70,7 +87,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
     activity: [],
     keeper,
     indexPolicy: defaultIndexPolicy(),
-    memory: defaultMemoryStatus(normalizedWallet, normalizedManager),
+    memory,
     message: managerSummary.tradingBalanceDusdc === null
       ? "Manager endpoints responded. DeepPilot keeps unknown values empty instead of fabricating PnL."
       : `Manager linked with ${managerSummary.tradingBalanceDusdc.toLocaleString(undefined, { maximumFractionDigits: 2 })} DUSDC trading balance.`,
@@ -82,12 +99,17 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
 
 function emptyProfile(
   wallet: string | null,
+  deepPilotProfileId: string | null,
+  deepPilotProfilePackageId: string | null,
   managerId: string | null,
   message: string,
-  managerNeedsCreation = false
+  managerNeedsCreation = false,
+  memory = defaultMemoryStatus(wallet, managerId)
 ): ProfileSummary {
   return {
     wallet,
+    deepPilotProfileId,
+    deepPilotProfilePackageId,
     managerId,
     managerLinked: false,
     managerNeedsCreation,
@@ -107,7 +129,7 @@ function emptyProfile(
     activity: [],
     keeper: emptyKeeperSnapshot(),
     indexPolicy: defaultIndexPolicy(),
-    memory: defaultMemoryStatus(wallet, managerId),
+    memory,
     message
   };
 }
@@ -361,6 +383,44 @@ function defaultIndexPolicy(): ProfileIndexPolicy {
   };
 }
 
+async function resolveProfileMemoryStatus(
+  wallet: string | null,
+  managerId: string | null,
+  profileId: string | null
+): Promise<ProfileMemoryStatus> {
+  const fallback = defaultMemoryStatus(wallet, managerId);
+
+  if (!wallet) {
+    return fallback;
+  }
+
+  const config = memWalConfig();
+  const pointer = profileId ? await readDeepPilotProfileMemoryPointer(profileId).catch(() => null) : null;
+  const expectedNamespace = profileId ? memoryNamespace(profileId) : fallback.longTermMemory.namespace;
+  const configured = Boolean(config.enabled && config.accountId && config.delegateKey);
+  const pointerConfigured = Boolean(pointer?.accountId);
+  const pointerMatches = Boolean(
+    pointer?.accountId &&
+    config.accountId &&
+    pointer.accountId.toLowerCase() === config.accountId.toLowerCase() &&
+    pointer.namespace === expectedNamespace
+  );
+  const enabledPointer = pointerMatches ? pointer : null;
+
+  return {
+    ...fallback,
+    longTermMemory: {
+      ...fallback.longTermMemory,
+      status: pointerMatches && configured ? "enabled" : pointerConfigured ? "error" : configured ? "fallback" : "disabled",
+      accountId: enabledPointer?.accountId ?? (config.accountId || pointer?.accountId || null),
+      namespace: enabledPointer?.namespace ?? expectedNamespace,
+      rootBlobId: enabledPointer?.rootBlobId ?? null,
+      delegateMode: "app_delegate",
+      lastSyncedAt: enabledPointer?.updatedAt ?? null
+    }
+  };
+}
+
 function defaultMemoryStatus(wallet: string | null, managerId: string | null): ProfileMemoryStatus {
   return {
     sealedReceipts: {
@@ -397,11 +457,19 @@ function defaultMemoryStatus(wallet: string | null, managerId: string | null): P
     },
     longTermMemory: {
       provider: "Walrus Memory / MemWal",
-      status: "not_configured",
+      status: "disabled",
+      accountId: null,
       namespace: wallet ?? managerId,
+      rootBlobId: null,
+      delegateMode: "app_delegate",
+      lastSyncedAt: null,
       stores: ["portable risk profile", "keeper history", "audit summaries", "user-approved preferences"]
     }
   };
+}
+
+function memoryNamespace(profileId: string) {
+  return `deeppilot:${profileId.toLowerCase()}`;
 }
 
 function readString(value: unknown, key: string) {

@@ -20,12 +20,16 @@
     "sui:testnet-key": "bun run scripts/generate-testnet-key.ts"
   },
   "dependencies": {
+    "@mysten-incubation/memwal": "^0.0.7",
     "@mysten/dapp-kit-core": "1.3.2",
     "@mysten/dapp-kit-react": "2.0.3",
+    "@mysten/seal": "^1.2.1",
     "@mysten/sui": "2.17.0",
+    "@mysten/walrus": "^1.2.1",
     "@radix-ui/react-slot": "1.2.5",
     "@radix-ui/react-toast": "1.2.16",
     "@tailwindcss/postcss": "4.3.0",
+    "ai": "^6.0.208",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "framer-motion": "12.40.0",
