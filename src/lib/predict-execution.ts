@@ -54,6 +54,23 @@ export type BuildRedeemPermissionlessInput = {
   quantityRaw: string;
 };
 
+export type BuildVaultLpSupplyInput = {
+  packageId: string;
+  predictObject: string;
+  quoteAssetType: string;
+  amountRaw: string;
+  recipient: string;
+};
+
+export type BuildVaultLpWithdrawInput = {
+  packageId: string;
+  predictObject: string;
+  quoteAssetType: string;
+  plpCoinType: string;
+  plpSharesRaw: string;
+  recipient: string;
+};
+
 type ExecutedTransactionLike = {
   digest: string;
   status?: {
@@ -306,6 +323,71 @@ export function buildRedeemPermissionlessTransaction({
       tx.object("0x6")
     ]
   });
+
+  return tx;
+}
+
+export function buildVaultLpSupplyTransaction({
+  packageId,
+  predictObject,
+  quoteAssetType,
+  amountRaw,
+  recipient
+}: BuildVaultLpSupplyInput) {
+  assertObjectId(packageId, "Predict package id");
+  assertObjectId(predictObject, "Predict object");
+  assertObjectId(recipient, "Recipient address");
+  assertU64String(amountRaw, "Vault LP supply amount");
+
+  const tx = new Transaction();
+  const payment = tx.coin({
+    type: quoteAssetType,
+    balance: BigInt(amountRaw)
+  });
+  const plpCoin = tx.moveCall({
+    target: `${packageId}::predict::supply`,
+    typeArguments: [quoteAssetType],
+    arguments: [
+      tx.object(predictObject),
+      payment,
+      tx.object("0x6")
+    ]
+  });
+
+  tx.transferObjects([plpCoin], tx.pure.address(recipient));
+
+  return tx;
+}
+
+export function buildVaultLpWithdrawTransaction({
+  packageId,
+  predictObject,
+  quoteAssetType,
+  plpCoinType,
+  plpSharesRaw,
+  recipient
+}: BuildVaultLpWithdrawInput) {
+  assertObjectId(packageId, "Predict package id");
+  assertObjectId(predictObject, "Predict object");
+  assertObjectId(recipient, "Recipient address");
+  assertU64String(plpSharesRaw, "Vault LP withdraw shares");
+
+  const tx = new Transaction();
+  const lpCoin = tx.coin({
+    type: plpCoinType,
+    balance: BigInt(plpSharesRaw)
+  });
+  const dusdcCoin = tx.moveCall({
+    target: `${packageId}::predict::withdraw`,
+    typeArguments: [quoteAssetType],
+    arguments: [
+      tx.object(predictObject),
+      lpCoin,
+      tx.object("0x6")
+    ]
+  });
+
+  tx.transferObjects([dusdcCoin], tx.pure.address(recipient));
 
   return tx;
 }

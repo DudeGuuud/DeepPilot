@@ -4,6 +4,7 @@ import { compileIntent } from "../src/lib/compile";
 import { classifyPilotInput } from "../src/lib/pilot";
 import { buildRagContext, streamRagAnswer } from "../src/lib/rag";
 import { buildStrategyPlan, compileStrategy } from "../src/lib/strategy";
+import { compileVaultLpIntent } from "../src/lib/vault-lp";
 
 const originalDeepSeekKey = process.env.DEEPSEEK_API_KEY;
 const TRADE_SMOKE_INTENT = "Bet 10 DUSDC on BTC DOWN at the fastest settlement";
@@ -33,6 +34,18 @@ assert.equal(trade.mode, "trade", "explicit Predict order should route to trade 
 
 const strategy = await classifyPilotInput("BTC split 9 DUSDC long across 1h 2h 3h expiries");
 assert.equal(strategy.mode, "strategy", "multi-leg strategy request should route to strategy mode");
+
+const vaultLpDeposit = await classifyPilotInput("Deposit 1 DUSDC to Vault LP");
+assert.equal(vaultLpDeposit.mode, "vault_lp", "Vault LP deposit should route to vault_lp mode");
+
+const vaultLpChinese = await classifyPilotInput("把 1 DUSDC 存进 LP vault");
+assert.equal(vaultLpChinese.mode, "vault_lp", "Chinese Vault LP wording should route to vault_lp mode");
+
+const vaultLpWithdraw = await classifyPilotInput("Withdraw 1 DUSDC from Vault LP");
+assert.equal(vaultLpWithdraw.mode, "vault_lp", "Vault LP withdraw should route to vault_lp mode");
+
+const tradingBalanceDeposit = await classifyPilotInput("Deposit 1 DUSDC to Trading Balance");
+assert.notEqual(tradingBalanceDeposit.mode, "vault_lp", "Trading Balance deposit must not be misrouted to Vault LP");
 
 const nowMs = Date.now();
 const lockedPlan = buildStrategyPlan(
@@ -138,6 +151,10 @@ assert(
   "strategy legs should be independently compiled"
 );
 
+const vaultLpReview = await compileVaultLpIntent("Deposit 1 DUSDC to Vault LP");
+assert.equal(vaultLpReview.intent.action, "deposit", "Vault LP compiler should parse deposit action");
+assert.equal(vaultLpReview.transactionData?.action, "deposit", "Vault LP review should include deposit transaction data");
+
 const naturalHedge = await classifyPilotInput("帮我在最近可以结算的地方开一个对冲 大头是涨 玩 1du sd c");
 assert.equal(naturalHedge.mode, "strategy", "Chinese hedge request should route to strategy");
 assert(!naturalHedge.missing.includes("amount"), "spaced DUSDC text should still count as an amount");
@@ -174,6 +191,7 @@ console.log("pilot smoke ok", {
   chatSources: context.sources.length,
   tradeMode: trade.mode,
   strategyMode: strategy.mode,
+  vaultLpMode: vaultLpDeposit.mode,
   followUpMode: followUpTrade.mode,
   quote: quote.status,
   guardian: compiled.guardian.decision,

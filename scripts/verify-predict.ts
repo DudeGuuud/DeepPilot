@@ -8,10 +8,13 @@ import {
   buildCreatePredictManagerTransaction,
   buildDepositToManagerTransaction,
   buildRedeemPermissionlessTransaction,
+  buildVaultLpSupplyTransaction,
+  buildVaultLpWithdrawTransaction,
   buildWithdrawFromManagerTransaction
 } from "../src/lib/predict-execution";
 import { getPredictMarkets, getPredictOracleHistory, predictDeployment, toPredictPrice } from "../src/lib/predict";
 import { enrichProfilePositionsWithLiveQuotes, getProfileSummary, normalizeProfilePnl, normalizeProfilePositions } from "../src/lib/profile";
+import { compileVaultLpIntent } from "../src/lib/vault-lp";
 
 process.env.DEEPSEEK_API_KEY = "";
 
@@ -122,12 +125,29 @@ const redeemPermissionlessTx = buildRedeemPermissionlessTransaction({
   direction: "up",
   quantityRaw: "1000000"
 });
+const vaultLpSupplyTx = buildVaultLpSupplyTransaction({
+  packageId: predictDeployment.packageId,
+  predictObject: predictDeployment.predictId,
+  quoteAssetType: predictDeployment.quoteAssetType,
+  amountRaw: "1000000",
+  recipient: fakeManagerId
+});
+const vaultLpWithdrawTx = buildVaultLpWithdrawTransaction({
+  packageId: predictDeployment.packageId,
+  predictObject: predictDeployment.predictId,
+  quoteAssetType: predictDeployment.quoteAssetType,
+  plpCoinType: predictDeployment.plpCoinType,
+  plpSharesRaw: "1000000",
+  recipient: fakeManagerId
+});
 assert(createManagerTx, "create manager transaction should be buildable");
 assert(mintTx.estimatedCostRaw === result.quote.estimatedCostRaw, "mint builder should keep the estimated raw DUSDC cost");
 assert(batchMintTx.legCount === 2, "batch mint builder should keep selected leg count");
 assert(depositTx, "deposit transaction should be buildable");
 assert(withdrawTx, "withdraw transaction should be buildable");
 assert(redeemPermissionlessTx, "settle-to-balance transaction should be buildable");
+assert(vaultLpSupplyTx, "Vault LP supply transaction should be buildable");
+assert(vaultLpWithdrawTx, "Vault LP withdraw transaction should be buildable");
 assert(result.ptb?.execution.fundingStatus !== "sufficient", "unfunded smoke profile should not be signable");
 assert(
   !result.ptb?.commands.some((command) => command.target.endsWith("::log::record_intent")),
@@ -233,6 +253,8 @@ const invalidJson = await parseJsonBody(
   new Request("http://deeppilot.local", { method: "POST", body: "not-json" }),
   z.object({ intent: z.string() })
 );
+const vaultLpDepositReview = await compileVaultLpIntent("Deposit 1 DUSDC to Vault LP");
+const vaultLpWithdrawReview = await compileVaultLpIntent("Withdraw 1 DUSDC from Vault LP");
 
 assert(transfer.intent.status === "ready", "transfer intent should parse");
 assert(Boolean(transfer.ptb), "transfer PTB should be built");
@@ -301,6 +323,10 @@ assert(fixturePnl?.source === "predict_server", "profile PnL should be labeled a
 assert(fixturePnl.unrealizedPnlDusdc === -0.12, "profile PnL should scale unrealized PnL");
 assert(fixturePnl.realizedPnlDusdc === 4.414672, "profile PnL should use manager summary realized PnL when endpoint omits it");
 assert(!invalidJson.success, "invalid JSON body should be rejected without throwing");
+assert(vaultLpDepositReview.transactionData?.target === `${predictDeployment.packageId}::predict::supply`, "Vault LP deposit review should target predict::supply");
+assert(vaultLpDepositReview.transactionData.action === "deposit", "Vault LP deposit review should compile deposit action");
+assert(vaultLpWithdrawReview.transactionData?.target === `${predictDeployment.packageId}::predict::withdraw`, "Vault LP withdraw review should target predict::withdraw");
+assert(vaultLpWithdrawReview.transactionData.plpSharesRaw, "Vault LP withdraw review should estimate PLP shares to burn");
 
 console.log(
   JSON.stringify(

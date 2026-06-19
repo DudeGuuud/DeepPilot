@@ -37,11 +37,13 @@ import {
   buildBatchPredictMintTransaction,
   buildBinaryMintTransaction,
   buildCreatePredictManagerTransaction,
+  buildVaultLpSupplyTransaction,
+  buildVaultLpWithdrawTransaction,
   extractPredictManagerId,
   getExecutedDigest
 } from "@/src/lib/predict-execution";
 import { storePreviewReceipt } from "@/src/lib/receipts";
-import { readSuiBalanceRaw } from "@/src/lib/sui-balances";
+import { readCoinBalanceRaw, readSuiBalanceRaw } from "@/src/lib/sui-balances";
 import { cn } from "@/src/lib/utils";
 import { explainWalletExecutionError } from "@/src/lib/wallet-errors";
 import type {
@@ -59,6 +61,7 @@ import type {
   RagSource,
   RiskLevel,
   StrategyReview,
+  VaultLpReview,
   VaultSummary
 } from "@/src/lib/types";
 
@@ -69,6 +72,8 @@ const EXAMPLE_INTENTS = [
   "Summarize BTC news and market risks",
   "Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
   "Split 1 DUSDC BTC UP across nearest, 1h, and 2h expiries",
+  "Deposit 1 DUSDC to Vault LP",
+  "Show Vault LP performance",
   SAMPLE_INTENT,
   "Check active Predict markets and vault risk"
 ];
@@ -137,7 +142,7 @@ type ExecutionReceipt = {
   status: "success" | "failed";
   walletAddress: string;
   network: "devnet" | "testnet";
-  action: "manager_create" | "predict_mint" | "strategy_batch_mint";
+  action: "manager_create" | "predict_mint" | "strategy_batch_mint" | "vault_lp_supply" | "vault_lp_withdraw";
   managerId?: string | null;
   note: string;
 };
@@ -148,7 +153,7 @@ type PilotMessage = {
   content: string;
   mode?: PilotMode;
   reviewAction?: {
-    kind: "trade" | "strategy";
+    kind: "trade" | "strategy" | "vault_lp";
     label: string;
     description: string;
   };
@@ -184,6 +189,9 @@ function TerminalExperience() {
   const [marketPreview, setMarketPreview] = useState<MarketDiscoveryResult | null>(null);
   const [compiled, setCompiled] = useState<CompileApiResult | null>(null);
   const [strategyReview, setStrategyReview] = useState<StrategyApiReview | null>(null);
+  const [vaultLpReview, setVaultLpReview] = useState<VaultLpReview | null>(null);
+  const [vaultLpModalOpen, setVaultLpModalOpen] = useState(false);
+  const [vaultLpDetailsExpanded, setVaultLpDetailsExpanded] = useState(false);
   const [selectedStrategyLegIds, setSelectedStrategyLegIds] = useState<string[]>([]);
   const [streamTimeline, setStreamTimeline] = useState<CompileResult["timeline"]>([]);
   const [receipt, setReceipt] = useState<ExecutionReceipt | null>(null);
@@ -209,6 +217,9 @@ function TerminalExperience() {
     setSourcesExpanded(false);
     setCompiled(null);
     setStrategyReview(null);
+    setVaultLpReview(null);
+    setVaultLpModalOpen(false);
+    setVaultLpDetailsExpanded(false);
     setSelectedStrategyLegIds([]);
     setStreamTimeline([]);
     setReceipt(null);
@@ -474,6 +485,9 @@ function TerminalExperience() {
     setReceipt(null);
     setCompiled(null);
     setStrategyReview(null);
+    setVaultLpReview(null);
+    setVaultLpModalOpen(false);
+    setVaultLpDetailsExpanded(false);
     setSelectedStrategyLegIds([]);
     setConfirmedReviewFingerprint(null);
     setPreflightSnapshot(null);
@@ -592,6 +606,8 @@ function TerminalExperience() {
       if (event.mode === "trade" || event.mode === "strategy") {
         setTradeModalOpen(true);
         setTradeModalStatus("compiling");
+      } else if (event.mode === "vault_lp") {
+        setVaultLpModalOpen(true);
       }
       updateAssistantMessage(assistantId, {
         mode: event.mode
@@ -636,6 +652,8 @@ function TerminalExperience() {
 
       setCompiled(result);
       setStrategyReview(null);
+      setVaultLpReview(null);
+      setVaultLpModalOpen(false);
       setSelectedStrategyLegIds([]);
       setPilotMode("trade");
       setTradeModalOpen(true);
@@ -666,6 +684,8 @@ function TerminalExperience() {
 
       setCompiled(null);
       setStrategyReview(review);
+      setVaultLpReview(null);
+      setVaultLpModalOpen(false);
       setSelectedStrategyLegIds(defaultSelectedStrategyLegIds(review));
       setPilotMode("strategy");
       setTradeModalOpen(true);
@@ -680,6 +700,29 @@ function TerminalExperience() {
           kind: "strategy",
           label: "Open Strategy Review",
           description: "Resume the prepared multi-leg review."
+        }
+      });
+      return;
+    }
+
+    if (event.type === "vault_lp_compiled") {
+      setCompiled(null);
+      setStrategyReview(null);
+      setSelectedStrategyLegIds([]);
+      setVaultLpReview(event.review);
+      setPilotMode("vault_lp");
+      setTradeModalOpen(false);
+      setVaultLpModalOpen(true);
+      setVaultLpDetailsExpanded(false);
+      setActiveReviewMessageId(assistantId);
+      updateAssistantMessage(assistantId, {
+        mode: "vault_lp",
+        pending: false,
+        content: vaultLpAssistantCopy(event.review),
+        reviewAction: {
+          kind: "vault_lp",
+          label: "Open Vault LP Review",
+          description: "Resume the prepared Vault LP review."
         }
       });
       return;
@@ -714,12 +757,18 @@ function TerminalExperience() {
   }
 
   function openActiveReviewFromChat(messageId: string) {
-    if (messageId !== activeReviewMessageId || (!compiled && !effectiveStrategyReview)) {
+    if (messageId !== activeReviewMessageId || (!compiled && !effectiveStrategyReview && !vaultLpReview)) {
       toast({
         variant: "destructive",
         title: "Review unavailable",
         description: "This chat message no longer has the active review. Generate a fresh review before signing."
       });
+      return;
+    }
+
+    if (vaultLpReview) {
+      setPilotMode("vault_lp");
+      setVaultLpModalOpen(true);
       return;
     }
 
@@ -1099,6 +1148,122 @@ function TerminalExperience() {
     });
   }
 
+  async function executeVaultLpReview(current: VaultLpReview) {
+    if (executionRef.current) {
+      return;
+    }
+
+    if (!account || !current.transactionData) {
+      toast({
+        variant: "destructive",
+        title: "Wallet required",
+        description: "Connect a wallet and prepare a signable Vault LP review."
+      });
+      return;
+    }
+
+    executionRef.current = true;
+    setBusy("execute");
+    setError(null);
+
+    try {
+      const executionNetwork = current.transactionData.network === "devnet" ? "devnet" : "testnet";
+
+      if (network && network !== executionNetwork) {
+        throw new Error(`Switch wallet network to ${executionNetwork} before signing.`);
+      }
+
+      const client = dAppKit.getClient(executionNetwork);
+      const suiBalanceRaw = await readSuiBalanceRaw(client, account.address);
+
+      if (suiBalanceRaw < MIN_SUI_GAS_BALANCE_MIST) {
+        throw new Error(`Need testnet SUI for gas. Wallet ${shortAddress(account.address)} has ${formatRawSui(suiBalanceRaw)} SUI on ${executionNetwork}; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available before signing.`);
+      }
+
+      if (current.transactionData.action === "deposit") {
+        const walletDusdc = readCoinBalanceRaw(await client.getBalance({
+          owner: account.address,
+          coinType: current.transactionData.quoteAssetType
+        }));
+
+        if (walletDusdc < BigInt(current.transactionData.amountRaw)) {
+          throw new Error(`Wallet DUSDC is insufficient. Need ${formatRawDusdc(current.transactionData.amountRaw)} DUSDC before supplying Vault LP.`);
+        }
+      } else {
+        const requiredSharesRaw = current.transactionData.plpSharesRaw;
+
+        if (!requiredSharesRaw) {
+          throw new Error("Vault LP withdraw review is missing PLP shares.");
+        }
+
+        const walletPlp = readCoinBalanceRaw(await client.getBalance({
+          owner: account.address,
+          coinType: current.transactionData.plpCoinType
+        }));
+
+        if (walletPlp < BigInt(requiredSharesRaw)) {
+          throw new Error(`Wallet PLP is insufficient. Need ${formatRawDusdc(requiredSharesRaw)} PLP shares before withdrawing.`);
+        }
+      }
+
+      const transaction = current.transactionData.action === "deposit"
+        ? buildVaultLpSupplyTransaction({
+            packageId: current.transactionData.packageId,
+            predictObject: current.transactionData.predictObject,
+            quoteAssetType: current.transactionData.quoteAssetType,
+            amountRaw: current.transactionData.amountRaw,
+            recipient: account.address
+          })
+        : buildVaultLpWithdrawTransaction({
+            packageId: current.transactionData.packageId,
+            predictObject: current.transactionData.predictObject,
+            quoteAssetType: current.transactionData.quoteAssetType,
+            plpCoinType: current.transactionData.plpCoinType,
+            plpSharesRaw: current.transactionData.plpSharesRaw!,
+            recipient: account.address
+          });
+
+      const confirmed = await signAndSubmitTransaction(transaction, executionNetwork);
+      const digest = getExecutedDigest(confirmed);
+      const action = current.transactionData.action === "deposit" ? "vault_lp_supply" : "vault_lp_withdraw";
+
+      const executionReceipt: ExecutionReceipt = {
+        digest,
+        status: "success",
+        walletAddress: account.address,
+        network: executionNetwork,
+        action,
+        note: `${current.transactionData.action === "deposit" ? "Supplied wallet DUSDC to" : "Withdrew wallet PLP from"} DeepBook Predict Vault LP.`
+      };
+
+      setReceipt(executionReceipt);
+      saveVaultLpExecutionReceipt(executionReceipt, current);
+      setVaultLpReview({
+        ...current,
+        timeline: current.timeline.map((step) => step.label === "Ready to sign"
+          ? { ...step, state: "complete", detail: digest }
+          : step)
+      });
+
+      toast({
+        variant: "success",
+        title: current.transactionData.action === "deposit" ? "Vault LP supplied" : "Vault LP withdrawn",
+        description: digest
+      });
+    } catch (vaultLpError) {
+      const message = explainWalletExecutionError(vaultLpError);
+      setError(message);
+      toast({
+        variant: "destructive",
+        title: "Vault LP execution failed",
+        description: message
+      });
+    } finally {
+      executionRef.current = false;
+      setBusy(null);
+    }
+  }
+
   async function preflightSuiGas({
     network: executionNetwork,
     owner,
@@ -1233,7 +1398,7 @@ function TerminalExperience() {
         : effectiveUrlStrike ?? marketPreview?.selectedMarket?.selectedStrike;
   const hasLockedStrike = Boolean(compiled?.market || intentStrike || effectiveUrlStrike);
   const selectedStrikeLabel = hasLockedStrike ? "strike" : "ATM ref";
-  const showPilotActions = Boolean(pilotMode || compiled || effectiveStrategyReview || busy === "pilot" || receipt || error || ragSources.length > 0);
+  const showPilotActions = Boolean(pilotMode || compiled || effectiveStrategyReview || vaultLpReview || busy === "pilot" || receipt || error || ragSources.length > 0);
 
   return (
     <AppShell
@@ -1280,6 +1445,25 @@ function TerminalExperience() {
           }}
           onConfirm={executePredict}
         />
+        <TerminalVaultLpReviewModal
+          open={vaultLpModalOpen}
+          review={vaultLpReview}
+          receipt={receipt?.action === "vault_lp_supply" || receipt?.action === "vault_lp_withdraw" ? receipt : null}
+          error={error}
+          busy={busy === "execute"}
+          detailsExpanded={vaultLpDetailsExpanded}
+          onDetailsChange={setVaultLpDetailsExpanded}
+          onClose={() => {
+            if (busy !== "execute") {
+              setVaultLpModalOpen(false);
+            }
+          }}
+          onConfirm={() => {
+            if (vaultLpReview) {
+              void executeVaultLpReview(vaultLpReview);
+            }
+          }}
+        />
 
         <div className="terminal-grid">
           <section className="market-column flex min-w-0 flex-col gap-3">
@@ -1313,12 +1497,19 @@ function TerminalExperience() {
                 busy={busy === "pilot"}
                 compiled={compiled}
                 strategyReview={effectiveStrategyReview}
+                vaultLpReview={vaultLpReview}
                 receipt={receipt}
                 error={error}
                 sources={ragSources}
                 sourcesExpanded={sourcesExpanded}
                 onToggleSources={() => setSourcesExpanded((current) => !current)}
-                onOpenReview={() => setTradeModalOpen(true)}
+                onOpenReview={() => {
+                  if (vaultLpReview) {
+                    setVaultLpModalOpen(true);
+                  } else {
+                    setTradeModalOpen(true);
+                  }
+                }}
               />
             ) : null}
             <TradeTicket
@@ -1503,6 +1694,7 @@ function PilotActionsCard({
   busy,
   compiled,
   strategyReview,
+  vaultLpReview,
   receipt,
   error,
   sources,
@@ -1515,6 +1707,7 @@ function PilotActionsCard({
   busy: boolean;
   compiled: CompileApiResult | null;
   strategyReview: StrategyApiReview | null;
+  vaultLpReview: VaultLpReview | null;
   receipt: ExecutionReceipt | null;
   error: string | null;
   sources: RagSource[];
@@ -1523,7 +1716,8 @@ function PilotActionsCard({
   onOpenReview: () => void;
 }) {
   const hasStrategy = pilotMode === "strategy" || Boolean(strategyReview);
-  const hasTrade = pilotMode === "trade" || Boolean(compiled) || hasStrategy;
+  const hasVaultLp = pilotMode === "vault_lp" || Boolean(vaultLpReview);
+  const hasTrade = pilotMode === "trade" || Boolean(compiled) || hasStrategy || hasVaultLp;
   const modeLabel = pilotMode ? pilotMode.toUpperCase() : busy ? "ROUTING" : "STANDBY";
 
   return (
@@ -1546,7 +1740,12 @@ function PilotActionsCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3 p-4 pt-0">
-        {hasStrategy && strategyReview ? (
+        {hasVaultLp && vaultLpReview ? (
+          <>
+            <StatusPill status={receipt ? "executed" : vaultLpReview.execution.canSign ? "quote_ready" : "preflight_failed"} compiled={null} receipt={receipt} error={error} />
+            <VaultLpSummaryBlock review={vaultLpReview} />
+          </>
+        ) : hasStrategy && strategyReview ? (
           <>
             <StatusPill status={tradeStatus} compiled={null} strategyReview={strategyReview} receipt={receipt} error={error} />
             <StrategySummaryBlock review={strategyReview} />
@@ -1593,7 +1792,7 @@ function TradeReviewModal({
   status: TradeModalStatus;
   compiled: CompileApiResult | null;
   strategyReview: StrategyApiReview | null;
-  pilotMode: "chat" | "trade" | "strategy" | null;
+  pilotMode: PilotMode | null;
   streamTimeline: CompileResult["timeline"];
   receipt: ExecutionReceipt | null;
   error: string | null;
@@ -1749,6 +1948,161 @@ function TradeReviewModal({
   );
 }
 
+function TerminalVaultLpReviewModal({
+  open,
+  review,
+  receipt,
+  error,
+  busy,
+  detailsExpanded,
+  onDetailsChange,
+  onClose,
+  onConfirm
+}: {
+  open: boolean;
+  review: VaultLpReview | null;
+  receipt: ExecutionReceipt | null;
+  error: string | null;
+  busy: boolean;
+  detailsExpanded: boolean;
+  onDetailsChange: (value: boolean) => void;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  if (!open) {
+    return null;
+  }
+
+  const canConfirm = Boolean(review?.transactionData && review.execution.canSign && !busy && !receipt);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/82 px-3 py-5 backdrop-blur-md">
+      <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="vault-lp-review-modal-title"
+        initial={{ opacity: 0, scale: 0.98, y: 10 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: 10 }}
+        className="trade-review-modal glass-line max-h-[92vh] w-full max-w-4xl overflow-hidden rounded-lg border border-border shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-border/75 bg-card/75 p-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <div className="grid h-9 w-9 place-items-center rounded-md border border-border bg-background/80">
+                {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Fuel className="h-4 w-4" />}
+              </div>
+              <div className="min-w-0">
+                <h2 id="vault-lp-review-modal-title" className="truncate text-base font-semibold text-foreground">
+                  Vault LP Review
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  {review
+                    ? `${review.intent.action.toUpperCase()} · ${formatRawDusdc(review.execution.amountRaw)} DUSDC · PLP is a vault share, not fixed yield.`
+                    : "Preparing Vault LP review."}
+                </p>
+              </div>
+            </div>
+          </div>
+          <Button size="icon" variant="ghost" aria-label="Close Vault LP review" onClick={onClose} disabled={busy}>
+            <X />
+          </Button>
+        </div>
+
+        <div className="max-h-[calc(92vh-82px)] overflow-y-auto p-4">
+          <div className="grid gap-4 lg:grid-cols-[0.9fr_1.1fr]">
+            <div className="space-y-3">
+              <div className={cn(
+                "rounded-md border p-3",
+                review?.execution.canSign ? "border-border bg-background/70" : "border-destructive/35 bg-destructive/10"
+              )}>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-foreground">{review?.execution.canSign ? "Ready to sign" : "Review blocked"}</p>
+                  <Badge variant="outline">{review ? (review.execution.canSign ? "READY" : "BLOCKED") : "PENDING"}</Badge>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-muted-foreground">{review?.execution.reason ?? "Waiting for vault state."}</p>
+              </div>
+
+              <div className="rounded-md border border-border bg-background/55 p-3">
+                {(review?.timeline ?? []).map((step) => (
+                  <div key={step.label} className="grid grid-cols-[24px_1fr] gap-3 py-1.5">
+                    <StatusIcon state={step.state} busy={busy || step.state === "pending"} />
+                    <div>
+                      <p className="text-sm text-foreground">{step.label}</p>
+                      <p className="text-xs text-muted-foreground">{step.detail}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {receipt ? (
+                <div className="rounded-md border border-border bg-background/70 p-3">
+                  <div className="flex items-center gap-2 text-foreground">
+                    <Check className="h-4 w-4" />
+                    <p className="text-sm font-medium">{receipt.action === "vault_lp_supply" ? "Vault LP supplied" : "Vault LP withdrawn"}</p>
+                  </div>
+                  <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{receipt.digest}</p>
+                </div>
+              ) : null}
+
+              {error ? (
+                <div className="rounded-md border border-destructive/35 bg-destructive/10 p-3 text-sm leading-6 text-destructive-foreground">
+                  {error}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-3">
+              {review ? <VaultLpSummaryBlock review={review} /> : <MutedBox>Preparing Vault LP summary.</MutedBox>}
+              <div className="grid grid-cols-2 gap-2">
+                <MiniMetric label="Amount" value={`${formatRawDusdc(review?.execution.amountRaw ?? null)} DUSDC`} />
+                <MiniMetric label="Available" value={`${formatRawDusdc(review?.execution.availableWithdrawalRaw ?? null)} DUSDC`} />
+                <MiniMetric label="Est. shares" value={review?.transactionData?.plpSharesRaw ? `${formatRawDusdc(review.transactionData.plpSharesRaw)} PLP` : "--"} />
+                <MiniMetric label="Est. DUSDC out" value={review?.transactionData?.estimatedDusdcOutRaw ? `${formatRawDusdc(review.transactionData.estimatedDusdcOutRaw)} DUSDC` : "--"} />
+              </div>
+
+              <div className="rounded-md border border-border bg-background/55 p-3">
+                {review?.execution.checks.map((check) => (
+                  <div key={check.label} className="flex items-start justify-between gap-3 border-b border-border/60 py-2 last:border-b-0">
+                    <div>
+                      <p className="text-sm text-foreground">{check.label}</p>
+                      <p className="text-xs text-muted-foreground">{check.detail}</p>
+                    </div>
+                    <Badge variant="outline" className={check.passed ? "text-emerald-300" : "text-red-300"}>
+                      {check.passed ? "OK" : "BLOCK"}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <Button variant="outline" onClick={() => onDetailsChange(!detailsExpanded)}>
+                  <ChevronDown className={cn("transition-transform", detailsExpanded && "rotate-180")} />
+                  {detailsExpanded ? "Hide details" : "Show details"}
+                </Button>
+                <Button className="h-10" disabled={!canConfirm} onClick={onConfirm}>
+                  {busy ? <RefreshCw className="animate-spin" /> : canConfirm ? <LockKeyhole /> : <AlertTriangle />}
+                  {receipt ? "Executed" : "Review & Sign"}
+                </Button>
+              </div>
+
+              {detailsExpanded ? (
+                <pre className="max-h-52 overflow-auto rounded-md border border-border bg-background/70 p-3 text-xs text-muted-foreground">
+                  {JSON.stringify(review?.transactionData ?? review?.intent ?? null, null, 2)}
+                </pre>
+              ) : null}
+
+              <p className="rounded-md border border-border bg-background/55 p-3 text-xs leading-5 text-muted-foreground">
+                {review?.disclosure ?? "PLP is a vault share. Final execution depends on wallet confirmation and current on-chain vault state."}
+              </p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function StatusPill({
   status,
   compiled,
@@ -1820,6 +2174,27 @@ function StrategySummaryBlock({ review }: { review: StrategyApiReview }) {
     ["Payment", `${formatRawDusdc(review.aggregateReadiness.estimatedPaymentRaw)} DUSDC`],
     ["Balance", `${formatRawDusdc(review.aggregateReadiness.managerBalanceRaw)} DUSDC`],
     ["Funding", review.aggregateReadiness.fundingStatus.toUpperCase()]
+  ];
+
+  return (
+    <div className="rounded-md border border-border bg-background/55">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-[92px_1fr] gap-3 border-b border-border/70 px-3 py-2 last:border-b-0">
+          <span className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label}</span>
+          <span className="min-w-0 truncate font-mono text-xs text-foreground/85">{value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function VaultLpSummaryBlock({ review }: { review: VaultLpReview }) {
+  const rows: Array<[string, string]> = [
+    ["Mode", "VAULT LP"],
+    ["Action", review.intent.action.toUpperCase()],
+    ["Amount", `${formatRawDusdc(review.execution.amountRaw)} DUSDC`],
+    ["Share", `${review.summary.vault.plp_share_price.toFixed(6)} DUSDC`],
+    ["Ready", review.execution.canSign ? "YES" : "NO"]
   ];
 
   return (
@@ -2965,6 +3340,28 @@ function tradeAssistantCopy(compiled: CompileApiResult) {
   ].join("\n");
 }
 
+function vaultLpAssistantCopy(review: VaultLpReview) {
+  if (review.intent.action === "info") {
+    return [
+      "Vault LP summary is ready.",
+      `Vault value: ${formatRawDusdc(review.summary.vault.vault_value)} DUSDC`,
+      `Share price: ${review.summary.vault.plp_share_price.toFixed(6)} DUSDC`,
+      `Utilization: ${(review.summary.vault.utilization * 100).toFixed(2)}%`,
+      "No wallet signature is required for this read-only view."
+    ].join("\n");
+  }
+
+  return [
+    "Vault LP review is ready.",
+    `Action: ${review.intent.action.toUpperCase()}`,
+    `Amount: ${formatRawDusdc(review.execution.amountRaw)} DUSDC`,
+    `Share price: ${review.summary.vault.plp_share_price.toFixed(6)} DUSDC`,
+    review.transactionData?.plpSharesRaw ? `Estimated PLP: ${formatRawDusdc(review.transactionData.plpSharesRaw)} PLP` : null,
+    review.transactionData?.estimatedDusdcOutRaw ? `Estimated DUSDC out: ${formatRawDusdc(review.transactionData.estimatedDusdcOutRaw)} DUSDC` : null,
+    review.execution.canSign ? "Open the Vault LP review before signing." : review.execution.reason
+  ].filter(Boolean).join("\n");
+}
+
 function createMessageId(prefix: string) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -3263,8 +3660,12 @@ function executableFingerprint(compiled: CompileApiResult) {
   });
 }
 
-function parseRawAmount(value: string | null | undefined) {
-  return value && /^\d+$/.test(value) ? BigInt(value) : 0n;
+function parseRawAmount(value: string | number | null | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return BigInt(Math.trunc(value));
+  }
+
+  return typeof value === "string" && /^\d+$/.test(value) ? BigInt(value) : 0n;
 }
 
 function sumRawAmounts(values: Array<string | null | undefined>) {
@@ -3398,7 +3799,7 @@ function saveExecutionReceipt(
   storePreviewReceipt({
     id: receipt.digest,
     time: new Date().toISOString(),
-    type: receipt.action === "strategy_batch_mint" ? "predict_mint" : receipt.action,
+    type: activityTypeForExecution(receipt.action),
     oracleId: isStrategy ? review.compiledLegs[0]?.result?.market?.oracle.oracle_id : review.market?.oracle.oracle_id,
     digest: receipt.digest,
     guardianDecision: isStrategy ? undefined : review.guardian.decision,
@@ -3414,6 +3815,32 @@ function saveExecutionReceipt(
   });
 }
 
+function activityTypeForExecution(action: ExecutionReceipt["action"]): Parameters<typeof storePreviewReceipt>[0]["type"] {
+  switch (action) {
+    case "strategy_batch_mint":
+      return "predict_mint";
+    case "manager_create":
+    case "predict_mint":
+    case "vault_lp_supply":
+    case "vault_lp_withdraw":
+      return action;
+  }
+}
+
+function saveVaultLpExecutionReceipt(receipt: ExecutionReceipt, review: VaultLpReview) {
+  storePreviewReceipt({
+    id: receipt.digest,
+    time: new Date().toISOString(),
+    type: activityTypeForExecution(receipt.action),
+    digest: receipt.digest,
+    summary: `${review.intent.action === "deposit" ? "Vault LP supply" : "Vault LP withdraw"} ${formatRawDusdc(review.execution.amountRaw)} DUSDC`,
+    walletAddress: receipt.walletAddress,
+    network: receipt.network,
+    status: receipt.status,
+    note: receipt.note
+  });
+}
+
 function SectionHeading({ title, detail, icon }: { title: string; detail: string; icon?: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3">
@@ -3422,6 +3849,15 @@ function SectionHeading({ title, detail, icon }: { title: string; detail: string
         <CardTitle className="truncate text-sm">{title}</CardTitle>
       </div>
       <CardDescription className="shrink-0 text-xs">{detail}</CardDescription>
+    </div>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-background/55 p-3">
+      <p className="text-[10px] uppercase tracking-[0.14em] text-muted-foreground">{label}</p>
+      <p className="mt-2 truncate font-mono text-xs text-foreground/85">{value}</p>
     </div>
   );
 }
@@ -3525,7 +3961,7 @@ function formatDusdc(value: number | null) {
       });
 }
 
-function formatRawDusdc(value: string | bigint | null | undefined) {
+function formatRawDusdc(value: string | number | bigint | null | undefined) {
   const raw = typeof value === "bigint" ? value : parseRawAmount(value);
   const whole = Number(raw) / Number(DUSDC_BASE_UNITS);
 

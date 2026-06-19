@@ -9,7 +9,8 @@ import { compileStrategy } from "./strategy";
 import { createTelegramLoginToken, telegramHashForUserId, telegramLoginUrl } from "./telegram-auth";
 import { clearTelegramMemoryFallback, getTelegramSession, upsertTelegramSession } from "./telegram-session";
 import { memoryContextText, readAgentMemory, writeAgentMemory } from "./memory";
-import type { CompileResult, StrategyReview, TelegramSession } from "./types";
+import { compileVaultLpIntent, getVaultLpSummary } from "./vault-lp";
+import type { CompileResult, StrategyReview, TelegramSession, VaultLpReview } from "./types";
 
 type TelegramInlineButton = {
   text: string;
@@ -82,6 +83,21 @@ const TELEGRAM_SUGGESTIONS = [
     id: "split_down",
     label: "Split DOWN ladder",
     command: "/strategy Split 1 DUSDC BTC DOWN across nearest, 1h, and 2h expiries"
+  },
+  {
+    id: "lp_deposit",
+    label: "Deposit Vault LP",
+    command: "/lp deposit 1 DUSDC"
+  },
+  {
+    id: "lp_withdraw",
+    label: "Withdraw Vault LP",
+    command: "/lp withdraw 1 DUSDC"
+  },
+  {
+    id: "lp_status",
+    label: "Vault LP status",
+    command: "/lp"
   }
 ] as const;
 
@@ -190,6 +206,11 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
     return;
   }
 
+  if (text.startsWith("/lp")) {
+    await runVaultLp(chatId, session, text.replace(/^\/lp\s*/i, "").trim());
+    return;
+  }
+
   await runNaturalLanguage(chatId, session, text);
 }
 
@@ -240,6 +261,11 @@ async function runNaturalLanguage(chatId: number | string, session: TelegramSess
 
   if (classification.mode === "strategy") {
     await runStrategy(chatId, session, text, false);
+    return;
+  }
+
+  if (classification.mode === "vault_lp") {
+    await runVaultLp(chatId, session, text, false);
     return;
   }
 
@@ -351,6 +377,45 @@ async function runStrategy(
   ]);
 }
 
+async function runVaultLp(
+  chatId: number | string,
+  session: TelegramSession,
+  intent: string,
+  shouldConsumeQuota = true
+) {
+  if (!intent) {
+    const summary = await getVaultLpSummary({ wallet: session.walletAddress });
+
+    await sendMessage(chatId, formatVaultLpSummary(summary), [
+      { text: "Deposit 1 DUSDC", callback_data: "suggest:lp_deposit" },
+      { text: "Withdraw 1 DUSDC", callback_data: "suggest:lp_withdraw" }
+    ]);
+    return;
+  }
+
+  if (shouldConsumeQuota && !(await consumeQuotaOrReply(chatId, session))) {
+    return;
+  }
+
+  const review = await compileVaultLpIntent(intent, {
+    wallet: session.walletAddress
+  });
+  const token = encodeReviewSeed(createReviewSeed({
+    source: "telegram",
+    message: intent,
+    modeHint: "vault_lp",
+    telegramHash: session.telegramHash
+  }));
+
+  await writeAgentMemory(session.profileId!, {
+    lastTradeShape: summarizeVaultLpShape(review)
+  });
+
+  await sendMessage(chatId, formatVaultLpReview(review), [
+    { text: "Review Vault LP", url: vaultLpReviewUrl(token) }
+  ]);
+}
+
 async function sendLogin(chatId: number | string, userId: number | string, prefix?: string) {
   const token = createTelegramLoginToken({ telegramUserId: userId, chatId });
 
@@ -363,6 +428,7 @@ async function sendLogin(chatId: number | string, userId: number | string, prefi
     "- /markets",
     "- /trade Bet 1 DUSDC on BTC DOWN at the nearest settlement",
     "- /strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
+    "- /lp deposit 1 DUSDC",
     "",
     "Account setup",
     "1. Tap Connect wallet.",
@@ -404,6 +470,7 @@ async function sendWelcome(chatId: number | string, session: TelegramSession) {
     "2. Ask for active DeepBook Predict markets.",
     "3. Ask DeepPilot to prepare a trade review.",
     "4. Ask for a multi-leg strategy candidate.",
+    "5. Deposit or withdraw Vault LP through a Web Review link.",
     "",
     "Trading never signs inside Telegram. The bot sends a Web Review link, then you confirm with your Sui wallet.",
     "",
@@ -446,6 +513,11 @@ async function sendIdeas(chatId: number | string) {
     "Strategy candidates:",
     "- /strategy Build a 1 DUSDC hedge strategy, mostly BTC UP, nearest settlement",
     "- /strategy Split 1 DUSDC BTC DOWN across nearest, 1h, and 2h expiries",
+    "",
+    "Vault LP:",
+    "- /lp",
+    "- /lp deposit 1 DUSDC",
+    "- /lp withdraw 1 DUSDC",
     "",
     "You can also type these as normal chat messages. Clear trade or strategy intent returns a Web Review link."
   ].join("\n"), suggestionButtons());
@@ -557,6 +629,34 @@ function formatStrategyReview(review: StrategyReview) {
   ].join("\n");
 }
 
+function formatVaultLpSummary(summary: Awaited<ReturnType<typeof getVaultLpSummary>>) {
+  return [
+    "Vault LP",
+    `Vault value: ${formatRawDusdc(summary.vault.vault_value)} DUSDC`,
+    `Share price: ${summary.vault.plp_share_price.toFixed(6)} DUSDC`,
+    `Utilization: ${(summary.vault.utilization * 100).toFixed(2)}%`,
+    `Available withdrawal: ${formatRawDusdc(summary.vault.available_withdrawal)} DUSDC`,
+    "",
+    "Use /lp deposit 1 DUSDC or /lp withdraw 1 DUSDC to prepare a Web Review link."
+  ].join("\n");
+}
+
+function formatVaultLpReview(review: VaultLpReview) {
+  const actionLabel = review.intent.action === "deposit" ? "Deposit to Vault LP" : review.intent.action === "withdraw" ? "Withdraw from Vault LP" : "Vault LP info";
+
+  return [
+    actionLabel,
+    `Amount: ${formatRawDusdc(review.execution.amountRaw)} DUSDC`,
+    `Share price: ${review.summary.vault.plp_share_price.toFixed(6)} DUSDC`,
+    review.transactionData?.plpSharesRaw ? `Estimated PLP: ${formatRawDusdc(review.transactionData.plpSharesRaw)} PLP` : null,
+    review.transactionData?.estimatedDusdcOutRaw ? `Estimated DUSDC out: ${formatRawDusdc(review.transactionData.estimatedDusdcOutRaw)} DUSDC` : null,
+    `Readiness: ${review.execution.canSign ? "ready" : "blocked"}`,
+    review.execution.reason,
+    "",
+    "PLP is a vault share, not fixed yield. Open Web Review to refresh vault state and sign with your wallet."
+  ].filter(Boolean).join("\n");
+}
+
 function summarizeTradeShape(result: CompileResult) {
   const quote = result.quote;
 
@@ -574,6 +674,10 @@ function summarizeStrategyShape(review: StrategyReview) {
   ).join(" | ");
 }
 
+function summarizeVaultLpShape(review: VaultLpReview) {
+  return `vault_lp ${review.intent.action} ${formatRawDusdc(review.execution.amountRaw)} DUSDC`;
+}
+
 function summarizeMarketThesis(answer: string) {
   return answer
     .replace(/\[[^\]]+\]/g, "")
@@ -584,6 +688,10 @@ function summarizeMarketThesis(answer: string) {
 
 function reviewUrl(token: string) {
   return `${appBaseUrl().replace(/\/$/, "")}/trade?review=${encodeURIComponent(token)}`;
+}
+
+function vaultLpReviewUrl(token: string) {
+  return `${appBaseUrl().replace(/\/$/, "")}/vault-lp?review=${encodeURIComponent(token)}`;
 }
 
 function sourceLine(titles: string[]) {
@@ -607,6 +715,9 @@ function helpText() {
     "/news BTC - market news and risk context",
     "/trade <intent> - create Web Review link",
     "/strategy <intent> - create multi-leg Web Review link",
+    "/lp - Vault LP summary",
+    "/lp deposit 1 DUSDC - create Vault LP deposit review",
+    "/lp withdraw 1 DUSDC - create Vault LP withdraw review",
     "/memory - show Walrus or fallback memory",
     "/forget - clear Redis fallback memory",
     "",
@@ -694,6 +805,25 @@ function truncate(value: string, maxLength: number) {
 
 function formatDusdc(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(4)} DUSDC` : "--";
+}
+
+function formatRawDusdc(value: string | number | bigint | null | undefined) {
+  const raw = typeof value === "bigint"
+    ? value
+    : typeof value === "number" && Number.isFinite(value)
+      ? BigInt(Math.trunc(value))
+      : typeof value === "string" && /^\d+$/.test(value)
+        ? BigInt(value)
+        : null;
+
+  if (raw === null) {
+    return "--";
+  }
+
+  return (Number(raw) / 1_000_000).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6
+  });
 }
 
 function shortAddress(value: string | null | undefined) {

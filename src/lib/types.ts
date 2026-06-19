@@ -12,8 +12,9 @@ export type GasMode = "sponsored" | "gasless_stablecoin_transfer" | "user_pays_g
 export type MarketRiskLevel = RiskLevel | "unknown";
 export type ExpiryPreference = "next_active" | "specific_time";
 export type TradeSizingMode = "quote_budget" | "explicit_quantity" | "not_required";
-export type PilotMode = "chat" | "trade" | "strategy";
+export type PilotMode = "chat" | "trade" | "strategy" | "vault_lp";
 export type DeepPilotPlanName = "standard" | "pro" | "max";
+export type VaultLpAction = "deposit" | "withdraw" | "info";
 export type TradeMethod =
   | "predict_binary_mint"
   | "predict_range_mint"
@@ -209,6 +210,88 @@ export interface PredictRiskMetrics {
   vaultUtilization: number;
   maxPayoutUtilization: number;
   askBoundsAvailable: boolean;
+}
+
+export interface VaultLpPerformancePoint {
+  timestampMs: number;
+  sharePrice: number;
+  vaultValueRaw: string;
+  totalSharesRaw: string;
+}
+
+export interface VaultLpFlowItem {
+  id: string;
+  kind: "supply" | "withdraw";
+  digest: string | null;
+  timestampMs: number | null;
+  wallet: string | null;
+  amountRaw: string | null;
+  sharesRaw: string | null;
+}
+
+export interface VaultLpSummary {
+  predict: {
+    network: PredictDeployment["network"];
+    transport: string;
+    endpoint: string;
+    predictId: string;
+    quoteAsset: "DUSDC";
+  };
+  quoteAssetType: string;
+  plpCoinType: string;
+  vault: VaultSummary;
+  performance: VaultLpPerformancePoint[];
+  flows: VaultLpFlowItem[];
+  fetchedAt: string;
+}
+
+export interface VaultLpIntent {
+  status: "ready" | "needs_clarification";
+  action: VaultLpAction;
+  amountDusdc: number | null;
+  amountRaw: string | null;
+  raw: string;
+  missing: string[];
+  reason: string;
+}
+
+export interface VaultLpExecutionReadiness {
+  canSign: boolean;
+  action: VaultLpAction;
+  reason: string;
+  amountRaw: string | null;
+  plpSharesRaw: string | null;
+  availableWithdrawalRaw: string | null;
+  sharePrice: number | null;
+  checks: ExecutionReadinessCheck[];
+}
+
+export interface VaultLpTransactionData {
+  kind: "VaultLpTransaction";
+  network: PredictDeployment["network"];
+  packageId: string;
+  predictObject: string;
+  quoteAssetType: string;
+  plpCoinType: string;
+  action: "deposit" | "withdraw";
+  amountRaw: string;
+  plpSharesRaw: string | null;
+  estimatedDusdcOutRaw: string | null;
+  target: string;
+}
+
+export interface VaultLpReview {
+  intent: VaultLpIntent;
+  summary: VaultLpSummary;
+  execution: VaultLpExecutionReadiness;
+  transactionData: VaultLpTransactionData | null;
+  timeline: Array<{
+    label: string;
+    state: "complete" | "blocked" | "pending";
+    detail?: string;
+  }>;
+  disclosure: string;
+  fetchedAt: string;
 }
 
 export interface PredictMarketSnapshot {
@@ -589,6 +672,10 @@ export type PilotStreamEvent =
       review: StrategyReview;
     }
   | {
+      type: "vault_lp_compiled";
+      review: VaultLpReview;
+    }
+  | {
       type: "error";
       error: string;
     };
@@ -665,7 +752,7 @@ export interface PredictOracleHistory {
 export interface ProfileActivityItem {
   id: string;
   time: string;
-  type: "compile" | "sponsor_preview" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper" | "memory_pointer";
+  type: "compile" | "sponsor_preview" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper" | "memory_pointer" | "vault_lp_supply" | "vault_lp_withdraw";
   oracleId?: string;
   digest?: string;
   guardianDecision?: GuardianResult["decision"];

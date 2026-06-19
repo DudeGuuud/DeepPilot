@@ -8,6 +8,7 @@ import { createPredictClientPreview } from "@/src/lib/predict";
 import { buildRagContext, streamRagAnswer } from "@/src/lib/rag";
 import { authorizeRequestQuota } from "@/src/lib/request-quota";
 import { compileStrategy } from "@/src/lib/strategy";
+import { compileVaultLpIntent } from "@/src/lib/vault-lp";
 import type { CompileStreamEvent, ConversationContext, PilotStreamEvent } from "@/src/lib/types";
 
 export const runtime = "nodejs";
@@ -23,7 +24,7 @@ const bodySchema = z.object({
   conversation: z.array(z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().trim().min(1).max(900),
-    mode: z.enum(["chat", "trade", "strategy"]).optional(),
+    mode: z.enum(["chat", "trade", "strategy", "vault_lp"]).optional(),
     sourceTitles: z.array(z.string().trim().min(1).max(160)).max(4).optional()
   })).max(8).optional()
 }).refine((body) => Boolean(body.message || body.intent));
@@ -109,6 +110,11 @@ export async function POST(request: Request) {
             return;
           }
 
+          if (classification.mode === "vault_lp") {
+            await streamVaultLpReview(message, body.data, send);
+            return;
+          }
+
           await streamChatAnswer(message, classification, send);
         } catch (error) {
           send({
@@ -128,6 +134,31 @@ export async function POST(request: Request) {
       }
     }
   );
+}
+
+async function streamVaultLpReview(
+  message: string,
+  body: z.infer<typeof bodySchema>,
+  send: (event: PilotStreamEvent) => void
+) {
+  send({
+    type: "stage",
+    label: "Reading Vault LP state",
+    state: "pending"
+  });
+  const review = await compileVaultLpIntent(message, {
+    wallet: body.walletAddress ?? null
+  });
+  send({
+    type: "stage",
+    label: "Reading Vault LP state",
+    state: "complete",
+    detail: `Share price ${review.summary.vault.plp_share_price.toFixed(6)}`
+  });
+  send({
+    type: "vault_lp_compiled",
+    review
+  });
 }
 
 async function streamStrategyReview(

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { isVaultLpRequest } from "./vault-lp";
 import type { ActiveMarketContext, ConversationContext, PilotClassification } from "./types";
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
@@ -7,7 +8,7 @@ const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
 const CLASSIFIER_TIMEOUT_MS = 8_000;
 
 const classifierSchema = z.object({
-  mode: z.enum(["chat", "trade", "strategy"]),
+  mode: z.enum(["chat", "trade", "strategy", "vault_lp"]),
   asset: z.enum(["BTC", "ETH", "SOL", "TRX"]).nullable(),
   question: z.string().trim().min(1).max(500),
   missing: z.array(z.string()).default([])
@@ -127,6 +128,14 @@ async function callDeepSeekClassifier(
 }
 
 function normalizeClassification(raw: string, classified: ClassifierOutput): ClassifierOutput {
+  if (isVaultLpRequest(raw)) {
+    return {
+      ...classified,
+      mode: "vault_lp",
+      missing: vaultLpMissingFields(raw)
+    };
+  }
+
   if (!isAdviceQuestion(raw) && isExplicitStrategyRequest(raw)) {
     return {
       ...classified,
@@ -168,13 +177,18 @@ function normalizeClassification(raw: string, classified: ClassifierOutput): Cla
 
 function fallbackClassification(raw: string, options: PilotClassifierOptions): PilotClassification {
   const adviceQuestion = isAdviceQuestion(raw);
+  const vaultLp = isVaultLpRequest(raw);
   const explicitTrade = isExplicitTradeRequest(raw);
   const explicitStrategy = isExplicitStrategyRequest(raw);
-  const mode = explicitStrategy && !adviceQuestion
+  const mode = vaultLp
+    ? "vault_lp"
+    : explicitStrategy && !adviceQuestion
     ? "strategy"
     : explicitTrade && !adviceQuestion ? "trade" : "chat";
   const asset = detectAsset(raw) ?? inferContextAsset(options.conversationContext) ?? (mode === "strategy" ? "BTC" : null);
-  const missing = mode === "strategy" ? strategyMissingFields(raw) : mode === "trade" ? tradeMissingFields(raw) : [];
+  const missing = mode === "vault_lp"
+    ? vaultLpMissingFields(raw)
+    : mode === "strategy" ? strategyMissingFields(raw) : mode === "trade" ? tradeMissingFields(raw) : [];
 
   return {
     mode,
@@ -245,6 +259,13 @@ function strategyMissingFields(raw: string) {
   }
 
   return missing;
+}
+
+function vaultLpMissingFields(raw: string) {
+  const normalized = raw.toLowerCase();
+  const infoOnly = /\b(show|check|info|status|performance)\b|查看|看看|表现|信息|状态/.test(normalized);
+
+  return infoOnly || hasCurrencyAmount(raw) ? [] : ["amount"];
 }
 
 function isAdviceQuestion(raw: string) {
@@ -322,6 +343,7 @@ function classifierPrompt() {
 
 Task:
 Classify one user message as either:
+- "vault_lp": the user explicitly asks to deposit/supply DUSDC into the DeepBook Predict Vault LP, withdraw from Vault LP, or check Vault LP/PLP performance.
 - "trade": the user explicitly asks DeepPilot to execute, place, mint, buy/sell a Predict position, redeem, claim, or build a transaction review.
 - "strategy": the user explicitly asks DeepPilot to build a multi-leg trading plan, hedge, split, ladder, or allocate positions across several expiries.
 - "chat": the user asks about market movement, price performance, news, protocol risk, vault/oracle state, explanations, or asks for financial advice.
@@ -331,12 +353,13 @@ If the user asks "should I buy/sell/bet" or asks for a recommendation, classify 
 Use conversationContext and memoryContext only as context. If the current user message explicitly says buy, bet, mint, order, execute, 买, 买跌, 买涨, 下单, 下注, or 执行, recent BTC market discussion or stored last trade shape may fill the asset context. Never classify a pure follow-up advice question as trade.
 For trade wording, fastest settlement / nearest expiry / 最近结算 / 最快结算 means the next active Predict expiry.
 Strategy trigger examples: hedge, split, ladder, multi-leg, 分批, 对冲, 一小时两小时三小时. Only use strategy when the user asks to draft or execute a plan with multiple legs.
+Vault LP examples: deposit 1 DUSDC to Vault LP, supply liquidity, withdraw 1 DUSDC from PLP, 把 1 DUSDC 存进 LP vault, 从 LP 取出 1 DUSDC. Do not confuse Vault LP with PredictManager or Trading Balance funding.
 
 Supported assets: BTC, ETH, SOL, TRX.
 
 Return this JSON object:
 {
-  "mode": "chat" | "trade" | "strategy",
+  "mode": "chat" | "trade" | "strategy" | "vault_lp",
   "asset": "BTC" | "ETH" | "SOL" | "TRX" | null,
   "question": "cleaned user question",
   "missing": ["amount", "direction", "expiry"]

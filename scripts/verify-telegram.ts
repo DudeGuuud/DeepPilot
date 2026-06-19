@@ -31,6 +31,18 @@ if (reviewSeed.source !== "telegram" || reviewSeed.telegramHash !== telegramHash
   throw new Error("Telegram review seed did not round-trip.");
 }
 
+const vaultLpReviewToken = encodeReviewSeed(createReviewSeed({
+  source: "telegram",
+  message: "Deposit 1 DUSDC to Vault LP",
+  modeHint: "vault_lp",
+  telegramHash
+}));
+const vaultLpReviewSeed = decodeReviewSeed(vaultLpReviewToken);
+
+if (vaultLpReviewSeed.modeHint !== "vault_lp") {
+  throw new Error("Telegram Vault LP review seed did not preserve modeHint.");
+}
+
 const profileId = `0x${randomUUID().replace(/-/g, "").padEnd(64, "0").slice(0, 64)}`;
 
 try {
@@ -110,6 +122,7 @@ if (status.remaining !== 0 || status.limit !== 50) {
 console.log("telegram smoke ok", {
   telegramHash: telegramHash.slice(0, 12),
   reviewMode: reviewSeed.modeHint,
+  vaultLpMode: vaultLpReviewSeed.modeHint,
   quotaUsed: status.used,
   quotaLimit: status.limit,
   source: status.source
