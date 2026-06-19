@@ -44,6 +44,10 @@ assert.equal(vaultLpChinese.mode, "vault_lp", "Chinese Vault LP wording should r
 const vaultLpWithdraw = await classifyPilotInput("Withdraw 1 DUSDC from Vault LP");
 assert.equal(vaultLpWithdraw.mode, "vault_lp", "Vault LP withdraw should route to vault_lp mode");
 
+const vaultLpCasualDeposit = await classifyPilotInput("i wanna deposit one dusdc in lp vault");
+assert.equal(vaultLpCasualDeposit.mode, "vault_lp", "casual Telegram Vault LP deposit should route to vault_lp mode");
+assert(!vaultLpCasualDeposit.missing.includes("amount"), "word amount should satisfy Vault LP amount");
+
 const tradingBalanceDeposit = await classifyPilotInput("Deposit 1 DUSDC to Trading Balance");
 assert.notEqual(tradingBalanceDeposit.mode, "vault_lp", "Trading Balance deposit must not be misrouted to Vault LP");
 
@@ -154,6 +158,10 @@ assert(
 const vaultLpReview = await compileVaultLpIntent("Deposit 1 DUSDC to Vault LP");
 assert.equal(vaultLpReview.intent.action, "deposit", "Vault LP compiler should parse deposit action");
 assert.equal(vaultLpReview.transactionData?.action, "deposit", "Vault LP review should include deposit transaction data");
+const vaultLpCasualReview = await compileVaultLpIntent("i wanna deposit one dusdc in lp vault");
+assert.equal(vaultLpCasualReview.intent.action, "deposit", "casual Vault LP wording should parse deposit action");
+assert.equal(vaultLpCasualReview.intent.amountDusdc, 1, "word amount should parse as 1 DUSDC");
+assert.equal(vaultLpCasualReview.transactionData?.action, "deposit", "casual Vault LP wording should produce signable deposit transaction data");
 
 const naturalHedge = await classifyPilotInput("帮我在最近可以结算的地方开一个对冲 大头是涨 玩 1du sd c");
 assert.equal(naturalHedge.mode, "strategy", "Chinese hedge request should route to strategy");

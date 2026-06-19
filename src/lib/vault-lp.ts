@@ -140,8 +140,7 @@ export async function compileVaultLpIntent(input: string, options: { wallet?: st
 
 export function parseVaultLpIntent(input: string): VaultLpIntent {
   const raw = input.trim();
-  const normalized = normalizeCurrencyText(raw).toLowerCase();
-  const action = detectVaultLpAction(normalized);
+  const action = detectVaultLpAction(raw);
   const amountDusdc = detectAmount(raw);
   const amountRaw = amountDusdc === null ? null : toDusdcBaseUnits(amountDusdc).toString();
   const missing: string[] = [];
@@ -231,12 +230,15 @@ function buildExecution(intent: VaultLpIntent, summary: VaultLpSummary) {
   };
 }
 
-function detectVaultLpAction(normalized: string): VaultLpAction {
-  if (/\b(withdraw|remove|exit|redeem)\b|取出|赎回|退出/.test(normalized)) {
+function detectVaultLpAction(raw: string): VaultLpAction {
+  const normalized = raw.toLowerCase();
+  const compact = normalizeCurrencyText(raw).toLowerCase();
+
+  if (/\b(withdraw|remove|exit|redeem)\b|取出|赎回|退出/.test(normalized) || /(withdraw|remove|exit|redeem)/.test(compact)) {
     return "withdraw";
   }
 
-  if (/\b(deposit|supply|mint|add|provide)\b|存入|充值|放进|提供|加入|做/.test(normalized)) {
+  if (/\b(deposit|supply|mint|add|provide)\b|存入|充值|放进|提供|加入|做/.test(normalized) || /(deposit|supply|mint|add|provide)/.test(compact)) {
     return "deposit";
   }
 
@@ -246,14 +248,41 @@ function detectVaultLpAction(normalized: string): VaultLpAction {
 function detectAmount(raw: string) {
   const match = normalizeCurrencyText(raw).match(/(\d+(?:\.\d+)?)\s*(?:d?usdc|u|\$)/i);
 
+  if (match) {
+    const value = Number(match[1]);
+    const decimals = match[1].split(".")[1]?.length ?? 0;
+
+    return Number.isFinite(value) && value > 0 && decimals <= 6 ? value : null;
+  }
+
+  const wordAmount = detectWordAmount(raw);
+
+  return wordAmount;
+}
+
+function detectWordAmount(raw: string) {
+  const normalized = raw.toLowerCase();
+  const match = normalized.match(/\b(a|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:d?usdc|u)\b/);
+
   if (!match) {
     return null;
   }
 
-  const value = Number(match[1]);
-  const decimals = match[1].split(".")[1]?.length ?? 0;
+  const value = {
+    a: 1,
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10
+  }[match[1]];
 
-  return Number.isFinite(value) && value > 0 && decimals <= 6 ? value : null;
+  return value ?? null;
 }
 
 function ceilDivBySharePrice(amountRaw: bigint, sharePrice: number) {

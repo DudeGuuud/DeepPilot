@@ -304,7 +304,10 @@ function isExplicitStrategyRequest(raw: string) {
 }
 
 function hasCurrencyAmount(raw: string) {
-  return /(\d+(?:\.\d+)?)\s*(?:d?usdc|u|\$)/i.test(normalizeCurrencyText(raw));
+  return (
+    /(\d+(?:\.\d+)?)\s*(?:d?usdc|u|\$)/i.test(normalizeCurrencyText(raw)) ||
+    /\b(a|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:d?usdc|u)\b/i.test(raw)
+  );
 }
 
 function normalizeCurrencyText(raw: string) {
