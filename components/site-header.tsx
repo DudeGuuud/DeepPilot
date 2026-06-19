@@ -11,7 +11,8 @@ const navItems = [
   { href: "/trade", label: "Trade" },
   { href: "/vault-lp", label: "Vault LP" },
   { href: "/telegram/login", label: "Telegram" },
-  { href: "/profile", label: "Profile" }
+  { href: "/profile", label: "Profile" },
+  { href: "/agent", label: "Agent" }
 ] as const;
 
 type SiteHeaderProps = {
