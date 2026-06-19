@@ -4,7 +4,7 @@ import { z } from "zod";
 import { appBaseUrl, getPlanConfig, profilePackageConfig } from "@/src/lib/deep-pilot-config";
 import { parseJsonBody } from "@/src/lib/http";
 import { verifyTelegramWalletLink } from "@/src/lib/telegram-auth";
-import { upsertTelegramSession } from "@/src/lib/telegram-session";
+import { getTelegramSession, upsertTelegramSession } from "@/src/lib/telegram-session";
 
 export const runtime = "nodejs";
 
@@ -27,6 +27,16 @@ export async function POST(request: Request) {
       walletAddress: body.data.walletAddress,
       signature: body.data.signature
     });
+    const existing = await getTelegramSession(verified.telegramHash);
+    const existingWallet = existing?.walletAddress?.toLowerCase() ?? null;
+    const nextWallet = verified.walletAddress.toLowerCase();
+
+    if (existing?.profileId && existingWallet && existingWallet !== nextWallet) {
+      return NextResponse.json({
+        error: "This Telegram account already has a Profile NFT linked to another wallet. Switch to the linked wallet before refreshing the Telegram login."
+      }, { status: 409 });
+    }
+
     const session = await upsertTelegramSession({
       telegramHash: verified.telegramHash,
       chatId: verified.chatId,

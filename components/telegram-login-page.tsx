@@ -57,6 +57,13 @@ export function TelegramLoginPage() {
   const [error, setError] = useState<string | null>(null);
   const targetNetwork = clientNetwork;
   const networkMismatch = Boolean(currentNetwork && currentNetwork !== targetNetwork);
+  const linkedWalletAddress = data?.session?.walletAddress ?? null;
+  const connectedWalletAddress = account?.address ?? null;
+  const linkedWalletMismatch = Boolean(
+    linkedWalletAddress
+      && connectedWalletAddress
+      && linkedWalletAddress.toLowerCase() !== connectedWalletAddress.toLowerCase()
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +123,7 @@ export function TelegramLoginPage() {
       `expiresAt=${data.token.expiresAt}`
     ].join("\n");
   }, [account?.address, data?.token]);
+  const canSignWalletLink = Boolean(connectedWalletAddress && linkMessage && !linkedWalletMismatch && busy === null);
 
   async function refreshSession() {
     const response = await fetch(`/api/telegram/session?token=${encodeURIComponent(token)}`, {
@@ -134,6 +142,11 @@ export function TelegramLoginPage() {
   async function linkWallet() {
     if (!account?.address || !linkMessage) {
       setError("Connect a Sui wallet before linking Telegram.");
+      return;
+    }
+
+    if (linkedWalletMismatch) {
+      setError("This Telegram account is already linked to a different wallet. Switch to the linked wallet before refreshing the link.");
       return;
     }
 
@@ -406,11 +419,20 @@ export function TelegramLoginPage() {
               <StatusRow label="Profile NFT" value={data?.session?.profileId ? shortAddress(data.session.profileId) : "not created"} active={Boolean(data?.session?.profileId)} />
               <StatusRow label="Plan" value={data?.session?.plan ?? "standard"} active={Boolean(data?.session)} />
             </div>
+            {linkedWalletMismatch ? (
+              <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-3 text-sm text-amber-100">
+                Connected wallet differs from the linked Telegram wallet. Switch to the linked wallet to refresh this login.
+              </div>
+            ) : null}
 
             <div className="flex flex-wrap gap-2">
-              <Button onClick={linkWallet} disabled={!account?.address || busy !== null || Boolean(data?.session?.walletAddress)}>
+              <Button onClick={linkWallet} disabled={!canSignWalletLink}>
                 <LockKeyhole className="mr-2 h-4 w-4" />
-                {busy === "link" ? "Signing..." : "Sign wallet link"}
+                {busy === "link"
+                  ? "Signing..."
+                  : data?.session?.walletAddress
+                    ? "Re-sign wallet link"
+                    : "Sign wallet link"}
               </Button>
               <Button
                 variant="secondary"
