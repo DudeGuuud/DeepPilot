@@ -156,12 +156,28 @@ export function VaultLpPage() {
     }
 
     const stableToken = token;
+    const walletAddress = account?.address ?? null;
 
+    if (!walletAddress) {
+      const pendingWalletKey = `${stableToken}:needs-wallet`;
+
+      if (loadedReviewTokenRef.current !== pendingWalletKey) {
+        loadedReviewTokenRef.current = pendingWalletKey;
+        toast({
+          title: "Connect wallet",
+          description: "Please connect your wallet first to open this Vault LP review."
+        });
+      }
+
+      return;
+    }
+
+    const reviewWalletAddress = walletAddress;
     let cancelled = false;
 
     async function loadReview() {
       try {
-        const walletQuery = account?.address ? `&wallet=${encodeURIComponent(account.address)}` : "";
+        const walletQuery = `&wallet=${encodeURIComponent(reviewWalletAddress)}`;
         const response = await fetch(`/api/review-seed?token=${encodeURIComponent(stableToken)}${walletQuery}`, {
           cache: "no-store"
         });
@@ -177,7 +193,7 @@ export function VaultLpPage() {
         }
 
         if (!cancelled && payload.seed.message) {
-          loadedReviewTokenRef.current = `${stableToken}:${account?.address ?? "no-wallet"}`;
+          loadedReviewTokenRef.current = `${stableToken}:${reviewWalletAddress}`;
           await compileReview(payload.seed.message);
         }
       } catch (reviewError) {

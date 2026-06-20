@@ -257,6 +257,20 @@ function TerminalExperience() {
     const token = reviewToken;
     const walletAddress = account?.address ?? null;
 
+    if (!walletAddress) {
+      const pendingWalletKey = `${token}:needs-wallet`;
+
+      if (loadedReviewTokenRef.current !== pendingWalletKey) {
+        loadedReviewTokenRef.current = pendingWalletKey;
+        toast({
+          title: "Connect wallet",
+          description: "Please connect your wallet first to open this review."
+        });
+      }
+
+      return;
+    }
+
     if (loadedReviewTokenRef.current === `${token}:${walletAddress ?? "no-wallet"}`) {
       return;
     }
