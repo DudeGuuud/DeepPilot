@@ -50,6 +50,12 @@ type TelegramUpdate = {
 
 type TelegramButtonRows = TelegramInlineButton[] | TelegramInlineButton[][];
 type ClarifiableMode = PendingTelegramIntent["mode"];
+type TelegramTextOptions = {
+  parseMode?: "HTML";
+};
+
+const TELEGRAM_STREAM_EDIT_INTERVAL_MS = 900;
+const TELEGRAM_STREAM_PLACEHOLDER = "DeepPilot is reading Predict data...";
 
 const TELEGRAM_SUGGESTIONS = [
   {
@@ -295,6 +301,12 @@ async function runNaturalLanguage(chatId: number | string, session: TelegramSess
   }
 
   const memory = memoryContextText(await readAgentMemory(session.profileId!));
+
+  if (isStoredVaultLpReplay(text, memory)) {
+    await runVaultLp(chatId, session, text, false);
+    return;
+  }
+
   const classification = await classifyPilotInput(text, {
     conversationContext: memory ? { messages: [], memoryContext: memory } : null
   });
@@ -374,27 +386,66 @@ async function runNews(
     return;
   }
 
+  const streamMessage = await sendMessage(chatId, TELEGRAM_STREAM_PLACEHOLDER).catch(() => null);
+  const streamMessageId = streamMessage?.message_id ?? null;
+
   const classification = await classifyPilotInput(query);
   const context = await buildRagContext(query, classification);
   let answer = "";
+  let lastQueuedEditAt = 0;
+  let lastQueuedLength = 0;
+  let editChain = Promise.resolve();
+
+  const queueEdit = (force = false) => {
+    if (!streamMessageId || !answer.trim()) {
+      return;
+    }
+
+    const now = Date.now();
+
+    if (!force && now - lastQueuedEditAt < TELEGRAM_STREAM_EDIT_INTERVAL_MS) {
+      return;
+    }
+
+    if (!force && answer.length === lastQueuedLength) {
+      return;
+    }
+
+    lastQueuedEditAt = now;
+    lastQueuedLength = answer.length;
+    const partialText = `${truncate(answer, 2600)}\n\nReading sources...`;
+    editChain = editChain.then(() => editMessage(chatId, streamMessageId, partialText, { parseMode: "HTML" }).catch(() => {}));
+  };
+
   await streamRagAnswer({
     input: query,
     classification,
     sources: context.sources,
     onDelta: (delta) => {
       answer += delta;
+      queueEdit();
     }
   });
+  queueEdit(true);
+  await editChain;
 
   await writeAgentMemory(session.profileId!, {
     lastMarketThesis: summarizeMarketThesis(answer)
   });
 
-  await sendMessage(chatId, [
+  const finalText = [
     truncate(answer, 2600),
     "",
     sourceLine(context.sources.map((source) => source.title).slice(0, 4))
-  ].join("\n"));
+  ].join("\n");
+
+  if (streamMessageId) {
+    await editMessage(chatId, streamMessageId, finalText, { parseMode: "HTML" }).catch(async () => {
+      await sendMessage(chatId, finalText, [], { parseMode: "HTML" });
+    });
+  } else {
+    await sendMessage(chatId, finalText, [], { parseMode: "HTML" });
+  }
 }
 
 async function runTrade(
@@ -519,12 +570,15 @@ async function runVaultLp(
     return;
   }
 
+  const memoryContext = memoryContextText(await readAgentMemory(session.profileId!));
+
   if (await askClarificationIfMissing(chatId, session, "vault_lp", intent, [])) {
     return;
   }
 
   const review = await compileVaultLpIntent(intent, {
-    wallet: session.walletAddress
+    wallet: session.walletAddress,
+    memoryContext
   });
 
   if (review.intent.status === "needs_clarification") {
@@ -534,7 +588,7 @@ async function runVaultLp(
 
   const token = encodeReviewSeed(createReviewSeed({
     source: "telegram",
-    message: intent,
+    message: vaultLpSeedMessage(review) ?? intent,
     modeHint: "vault_lp",
     telegramHash: session.telegramHash
   }));
@@ -811,6 +865,18 @@ function summarizeVaultLpShape(review: VaultLpReview) {
   return `vault_lp ${review.intent.action} ${formatRawDusdc(review.execution.amountRaw)} DUSDC`;
 }
 
+function vaultLpSeedMessage(review: VaultLpReview) {
+  if (review.intent.status !== "ready" || review.intent.action === "info" || !review.execution.amountRaw) {
+    return null;
+  }
+
+  const amount = formatRawDusdc(review.execution.amountRaw);
+
+  return review.intent.action === "deposit"
+    ? `Deposit ${amount} DUSDC to Vault LP`
+    : `Withdraw ${amount} DUSDC from Vault LP`;
+}
+
 function summarizeMarketThesis(answer: string) {
   return answer
     .replace(/\[[^\]]+\]/g, "")
@@ -872,6 +938,10 @@ function telegramMissingFields(mode: ClarifiableMode, intent: string, upstreamMi
   }
 
   return [...missing];
+}
+
+function isStoredVaultLpReplay(intent: string, memoryContext: string | null) {
+  return referencesStoredShape(intent) && Boolean(vaultLpActionFromMemory(memoryContext));
 }
 
 function normalizeMissingFields(mode: ClarifiableMode, missing: string[]) {
@@ -967,6 +1037,24 @@ function referencesStoredShape(raw: string) {
   return /\b(same|repeat|again|last time|previous|as before)\b|跟上一次|和上次一样|照旧|同样/i.test(raw);
 }
 
+function vaultLpActionFromMemory(memoryContext: string | null) {
+  if (!memoryContext) {
+    return null;
+  }
+
+  const normalized = memoryContext.toLowerCase();
+
+  if (/\bvault_lp\s+(deposit|supply|mint|add|provide)\b/.test(normalized)) {
+    return "deposit";
+  }
+
+  if (/\bvault_lp\s+(withdraw|remove|exit|redeem)\b/.test(normalized)) {
+    return "withdraw";
+  }
+
+  return null;
+}
+
 function normalizeCurrencyText(raw: string) {
   return raw.replace(/([a-z])\s+(?=[a-z])/gi, "$1");
 }
@@ -1036,16 +1124,37 @@ function chunkButtons(buttons: TelegramInlineButton[], size: number): TelegramIn
   return rows;
 }
 
-async function sendMessage(chatId: number | string, text: string, buttons: TelegramButtonRows = []) {
+async function sendMessage(
+  chatId: number | string,
+  text: string,
+  buttons: TelegramButtonRows = [],
+  options: TelegramTextOptions = {}
+) {
   const inlineKeyboard = normalizeButtonRows(buttons);
 
-  await telegramApi("sendMessage", {
+  const payload = await telegramApi("sendMessage", {
     chat_id: chatId,
-    text: truncate(text, 3900),
+    ...telegramTextPayload(text, options),
     disable_web_page_preview: true,
     reply_markup: inlineKeyboard.length
       ? { inline_keyboard: inlineKeyboard }
       : undefined
+  });
+
+  return extractTelegramMessage(payload);
+}
+
+async function editMessage(
+  chatId: number | string,
+  messageId: number,
+  text: string,
+  options: TelegramTextOptions = {}
+) {
+  await telegramApi("editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    ...telegramTextPayload(text, options),
+    disable_web_page_preview: true
   });
 }
 
@@ -1082,6 +1191,48 @@ async function telegramApi(method: string, payload: Record<string, unknown>) {
   if (!response.ok) {
     throw new Error(`Telegram API ${method} failed with ${response.status}.`);
   }
+
+  return await response.json() as unknown;
+}
+
+function telegramTextPayload(text: string, options: TelegramTextOptions) {
+  if (options.parseMode === "HTML") {
+    return {
+      text: formatTelegramHtml(truncate(text, 3400)),
+      parse_mode: "HTML" as const
+    };
+  }
+
+  return {
+    text: truncate(text, 3900)
+  };
+}
+
+function extractTelegramMessage(payload: unknown): TelegramMessage | null {
+  if (!payload || typeof payload !== "object" || !("result" in payload)) {
+    return null;
+  }
+
+  const result = (payload as { result?: unknown }).result;
+
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+
+  const messageId = (result as { message_id?: unknown }).message_id;
+
+  return typeof messageId === "number" ? { message_id: messageId } : null;
+}
+
+function formatTelegramHtml(text: string) {
+  return escapeTelegramHtml(text).replace(/\*\*([^*\n][^*\n]{0,180}?)\*\*/g, "<b>$1</b>");
+}
+
+function escapeTelegramHtml(text: string) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
 
 function truncate(value: string, maxLength: number) {
@@ -1118,5 +1269,8 @@ function shortAddress(value: string | null | undefined) {
 export const telegramClarificationTestHooks = {
   telegramMissingFields,
   formatClarificationQuestion,
-  mergePendingIntentText
+  mergePendingIntentText,
+  formatTelegramHtml,
+  isStoredVaultLpReplay,
+  vaultLpSeedMessage
 };

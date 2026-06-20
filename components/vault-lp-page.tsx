@@ -2,7 +2,7 @@
 
 import { useCurrentAccount, useCurrentNetwork, useDAppKit } from "@mysten/dapp-kit-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDownToLine, ArrowUpFromLine, CircleDashed, LockKeyhole, RefreshCw, Shield, Vault, X } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CircleDashed, LockKeyhole, RefreshCw, Shield, Vault, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -452,6 +452,9 @@ function VaultLpReviewModal({
   onClose: () => void;
   onSign: () => void;
 }) {
+  const canSign = Boolean(review?.transactionData && !busy);
+  const isInfoOnly = review?.intent.action === "info";
+
   return (
     <AnimatePresence>
       {open ? (
@@ -528,9 +531,9 @@ function VaultLpReviewModal({
                       </pre>
                     ) : null}
                     <p className="rounded-md border border-border bg-background/55 p-3 text-xs leading-5 text-muted-foreground">{review?.disclosure}</p>
-                    <Button className="h-11 w-full" disabled={!review?.transactionData || busy} onClick={onSign}>
-                      {busy ? <RefreshCw className="animate-spin" /> : <LockKeyhole />}
-                      Review & Sign
+                    <Button className="h-11 w-full" disabled={!canSign} onClick={onSign}>
+                      {busy ? <RefreshCw className="animate-spin" /> : canSign ? <LockKeyhole /> : <AlertTriangle />}
+                      {isInfoOnly ? "No signature needed" : "Review & Sign"}
                     </Button>
                   </CardContent>
                 </Card>

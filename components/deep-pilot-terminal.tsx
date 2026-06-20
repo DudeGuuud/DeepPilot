@@ -2016,6 +2016,7 @@ function TerminalVaultLpReviewModal({
   }
 
   const canConfirm = Boolean(review?.transactionData && review.execution.canSign && !busy && !receipt);
+  const isInfoOnly = review?.intent.action === "info";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/82 px-3 py-5 backdrop-blur-md">
@@ -2124,7 +2125,7 @@ function TerminalVaultLpReviewModal({
                 </Button>
                 <Button className="h-10" disabled={!canConfirm} onClick={onConfirm}>
                   {busy ? <RefreshCw className="animate-spin" /> : canConfirm ? <LockKeyhole /> : <AlertTriangle />}
-                  {receipt ? "Executed" : "Review & Sign"}
+                  {receipt ? "Executed" : isInfoOnly ? "No signature needed" : "Review & Sign"}
                 </Button>
               </div>
 

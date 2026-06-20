@@ -117,7 +117,7 @@ export async function POST(request: Request) {
               return;
             }
 
-            await streamVaultLpReview(message, body.data, send);
+            await streamVaultLpReview(message, body.data, conversationContext, send);
             return;
           }
 
@@ -150,6 +150,7 @@ export async function POST(request: Request) {
 async function streamVaultLpReview(
   message: string,
   body: z.infer<typeof bodySchema>,
+  conversationContext: ConversationContext | null,
   send: (event: PilotStreamEvent) => void
 ) {
   send({
@@ -158,7 +159,8 @@ async function streamVaultLpReview(
     state: "pending"
   });
   const review = await compileVaultLpIntent(message, {
-    wallet: body.walletAddress ?? null
+    wallet: body.walletAddress ?? null,
+    memoryContext: conversationContext?.memoryContext ?? null
   });
 
   if (review.intent.status === "needs_clarification") {

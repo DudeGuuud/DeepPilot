@@ -162,6 +162,16 @@ const vaultLpCasualReview = await compileVaultLpIntent("i wanna deposit one dusd
 assert.equal(vaultLpCasualReview.intent.action, "deposit", "casual Vault LP wording should parse deposit action");
 assert.equal(vaultLpCasualReview.intent.amountDusdc, 1, "word amount should parse as 1 DUSDC");
 assert.equal(vaultLpCasualReview.transactionData?.action, "deposit", "casual Vault LP wording should produce signable deposit transaction data");
+const vaultLpReplayReview = await compileVaultLpIntent("do the same trade again with 1 dUSDC", {
+  memoryContext: "last trade shape: vault_lp deposit 1 DUSDC"
+});
+assert.equal(vaultLpReplayReview.intent.action, "deposit", "Vault LP same-trade memory should restore deposit action");
+assert.equal(vaultLpReplayReview.execution.canSign, true, "Vault LP same-trade replay should be signable when vault checks pass");
+assert.equal(vaultLpReplayReview.transactionData?.action, "deposit", "Vault LP same-trade replay should include deposit transaction data");
+const vaultLpReplayWithoutLpMemory = await compileVaultLpIntent("do the same trade again with 1 dUSDC", {
+  memoryContext: "last trade shape: BTC DOWN 1 DUSDC next_active"
+});
+assert.equal(vaultLpReplayWithoutLpMemory.intent.status, "needs_clarification", "same-trade Vault LP replay without LP memory should ask for action");
 
 const naturalHedge = await classifyPilotInput("帮我在最近可以结算的地方开一个对冲 大头是涨 玩 1du sd c");
 assert.equal(naturalHedge.mode, "strategy", "Chinese hedge request should route to strategy");

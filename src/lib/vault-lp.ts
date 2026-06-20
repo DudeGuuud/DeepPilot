@@ -91,9 +91,11 @@ export async function getVaultLpSummary(input: { wallet?: string | null; flowLim
   };
 }
 
-export async function compileVaultLpIntent(input: string, options: { wallet?: string | null } = {}): Promise<VaultLpReview> {
+export async function compileVaultLpIntent(input: string, options: { wallet?: string | null; memoryContext?: string | null } = {}): Promise<VaultLpReview> {
   const summary = await getVaultLpSummary({ wallet: options.wallet });
-  const intent = parseVaultLpIntent(input);
+  const intent = parseVaultLpIntent(input, {
+    memoryContext: options.memoryContext ?? null
+  });
   const execution = buildExecution(intent, summary);
   const transactionData = intent.status === "ready" && execution.canSign && intent.action !== "info" && intent.amountRaw
     ? {
@@ -138,12 +140,16 @@ export async function compileVaultLpIntent(input: string, options: { wallet?: st
   };
 }
 
-export function parseVaultLpIntent(input: string): VaultLpIntent {
+export function parseVaultLpIntent(input: string, options: { memoryContext?: string | null } = {}): VaultLpIntent {
   const raw = input.trim();
-  const action = detectVaultLpAction(raw);
+  const action = resolveVaultLpAction(raw, options.memoryContext ?? null);
   const amountDusdc = detectAmount(raw);
   const amountRaw = amountDusdc === null ? null : toDusdcBaseUnits(amountDusdc).toString();
   const missing: string[] = [];
+
+  if (action === "info" && referencesStoredShape(raw) && !isVaultLpInfoRequest(raw)) {
+    missing.push("action");
+  }
 
   if (action !== "info" && amountDusdc === null) {
     missing.push("amount");
@@ -243,6 +249,42 @@ function detectVaultLpAction(raw: string): VaultLpAction {
   }
 
   return "info";
+}
+
+function resolveVaultLpAction(raw: string, memoryContext: string | null): VaultLpAction {
+  const explicitAction = detectVaultLpAction(raw);
+
+  if (explicitAction !== "info" || !referencesStoredShape(raw) || isVaultLpInfoRequest(raw)) {
+    return explicitAction;
+  }
+
+  return vaultLpActionFromMemory(memoryContext) ?? "info";
+}
+
+function vaultLpActionFromMemory(memoryContext: string | null): Exclude<VaultLpAction, "info"> | null {
+  if (!memoryContext) {
+    return null;
+  }
+
+  const normalized = memoryContext.toLowerCase();
+
+  if (/\bvault_lp\s+(deposit|supply|mint|add|provide)\b/.test(normalized)) {
+    return "deposit";
+  }
+
+  if (/\bvault_lp\s+(withdraw|remove|exit|redeem)\b/.test(normalized)) {
+    return "withdraw";
+  }
+
+  return null;
+}
+
+function referencesStoredShape(raw: string) {
+  return /\b(same|repeat|again|last time|previous|as before)\b|跟上一次|和上次一样|照旧|同样/i.test(raw);
+}
+
+function isVaultLpInfoRequest(raw: string) {
+  return /\b(show|check|info|status|performance)\b|查看|看看|表现|信息|状态/i.test(raw);
 }
 
 function detectAmount(raw: string) {

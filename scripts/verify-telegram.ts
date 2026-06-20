@@ -86,6 +86,20 @@ if (clarification.includes("Review & Sign") || !clarification.includes("How much
   throw new Error("Clarification response should ask a question without review link language.");
 }
 
+const formattedHtml = telegramClarificationTestHooks.formatTelegramHtml("**BTC** <risk> & data");
+
+if (formattedHtml !== "<b>BTC</b> &lt;risk&gt; &amp; data") {
+  throw new Error("Telegram HTML formatter should render safe bold and escape unsafe HTML.");
+}
+
+if (!telegramClarificationTestHooks.isStoredVaultLpReplay("do the same trade again with 1 dUSDC", "last trade shape: vault_lp deposit 1 DUSDC")) {
+  throw new Error("Telegram should recognize same-trade replay when memory stores Vault LP.");
+}
+
+if (telegramClarificationTestHooks.isStoredVaultLpReplay("do the same trade again with 1 dUSDC", "last trade shape: BTC DOWN 1 DUSDC")) {
+  throw new Error("Telegram should not treat non-LP memory as Vault LP replay.");
+}
+
 const mergedIntent = telegramClarificationTestHooks.mergePendingIntentText({
   mode: "trade",
   originalText: "Bet 1 DUSDC BTC",
