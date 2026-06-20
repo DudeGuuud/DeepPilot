@@ -888,20 +888,22 @@ function summarizeMarketThesis(answer: string) {
 function telegramMissingFields(mode: ClarifiableMode, intent: string, upstreamMissing: string[]) {
   const missing = new Set(normalizeMissingFields(mode, upstreamMissing));
 
-  if (referencesStoredShape(intent)) {
-    return [...missing];
-  }
-
   if (mode === "trade") {
-    if (!hasCurrencyAmount(intent)) {
+    if (hasCurrencyAmount(intent)) {
+      missing.delete("amount");
+    } else {
       missing.add("amount");
     }
 
-    if (!hasTradeDirection(intent)) {
+    if (hasTradeDirection(intent)) {
+      missing.delete("direction");
+    } else {
       missing.add("direction");
     }
 
-    if (!hasExpiryPlan(intent) && !hasObjectId(intent)) {
+    if (hasExpiryPlan(intent) || hasObjectId(intent)) {
+      missing.delete("expiry");
+    } else {
       missing.add("expiry");
     }
   }

@@ -231,20 +231,22 @@ function webMissingFields(
 ) {
   const missing = new Set(normalizeMissingFields(mode, upstreamMissing));
 
-  if (referencesStoredShape(rawIntent)) {
-    return [...missing];
-  }
-
   if (mode === "trade") {
-    if (!hasCurrencyAmount(rawIntent)) {
+    if (hasCurrencyAmount(rawIntent)) {
+      missing.delete("amount");
+    } else {
       missing.add("amount");
     }
 
-    if (!hasTradeDirection(rawIntent)) {
+    if (hasTradeDirection(rawIntent)) {
+      missing.delete("direction");
+    } else {
       missing.add("direction");
     }
 
-    if (!hasExpiryPlan(rawIntent) && !hasObjectId(rawIntent)) {
+    if (hasExpiryPlan(rawIntent) || hasObjectId(rawIntent)) {
+      missing.delete("expiry");
+    } else {
       missing.add("expiry");
     }
   }
@@ -367,10 +369,6 @@ function hasExpiryPlan(raw: string) {
 
 function hasObjectId(raw: string) {
   return /0x[a-fA-F0-9]{16,64}/.test(raw);
-}
-
-function referencesStoredShape(raw: string) {
-  return /\b(same|repeat|again|last time|previous|as before)\b|跟上一次|和上次一样|照旧|同样/i.test(raw);
 }
 
 function normalizeCurrencyText(raw: string) {

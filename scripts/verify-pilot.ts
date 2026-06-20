@@ -103,6 +103,11 @@ const followUpTrade = await classifyPilotInput("那就买跌 10u 最快结算", 
 assert.equal(followUpTrade.mode, "trade", "explicit Chinese follow-up trade should route to trade mode");
 assert.equal(followUpTrade.asset, "BTC", "follow-up trade should inherit BTC context");
 assert(!followUpTrade.missing.includes("expiry"), "fastest settlement should satisfy expiry");
+const sameShapeClarification = await classifyPilotInput("Do the same trade shape again with 1\nClarification: 1dusdc btc down 2h");
+assert.equal(sameShapeClarification.mode, "trade", "same-shape clarification should route to trade mode");
+assert(!sameShapeClarification.missing.includes("amount"), "merged same-shape clarification should satisfy amount");
+assert(!sameShapeClarification.missing.includes("direction"), "merged same-shape clarification should satisfy direction");
+assert(!sameShapeClarification.missing.includes("expiry"), "merged same-shape clarification should satisfy 2h expiry");
 
 const compiled = await compileIntent(TRADE_SMOKE_INTENT);
 assert.equal(compiled.intent.status, "ready", "trade fallback compiler should produce a typed intent");
@@ -142,6 +147,11 @@ assert.equal(fastestCompiled.intent.direction, "down", "买跌 should compile as
 assert.equal(fastestCompiled.intent.expiryPreference, "next_active", "最快结算 should map to next active expiry");
 assert(fastestCompiled.market?.oracle.status === "active", "fastest settlement should resolve an active oracle");
 assert(fastestCompiled.reviewFreshness?.refreshed, "refreshed compile should mark review freshness");
+const sameShapeCompiled = await compileIntent("Do the same trade shape again with 1\nClarification: 1dusdc btc down 2h");
+assert.equal(sameShapeCompiled.intent.status, "ready", "same-shape clarification with 2h should compile");
+assert(sameShapeCompiled.intent.status === "ready");
+assert.equal(sameShapeCompiled.intent.direction, "down", "same-shape clarification should compile DOWN");
+assert.equal(sameShapeCompiled.intent.expiryPreference, "specific_time", "2h should compile as a target expiry time");
 
 const missingBudgetStrategy = await compileStrategy("BTC 分别在一小时两小时三小时做多");
 assert.equal(missingBudgetStrategy.plan.mode, "strategy", "strategy compiler should return a strategy plan");

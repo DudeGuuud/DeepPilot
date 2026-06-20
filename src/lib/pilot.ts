@@ -227,7 +227,7 @@ function tradeMissingFields(raw: string) {
   const hasAmount = hasCurrencyAmount(raw) || /amount|金额/i.test(raw);
   const hasDirection = /\b(up|down|call|put)\b|涨|跌|做多|做空/i.test(raw);
   const hasExpiry =
-    /\b(next|tonight|today|tomorrow|nearest|fastest|earliest|settlement|expiry|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b|今天|今晚|明天|到期|结算|最快|最近|六点|[0-2]?\d点/i.test(raw);
+    /\b(next|tonight|today|tomorrow|nearest|fastest|earliest|settlement|expiry|1h|2h|3h|one hour|two hour|three hour|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b|今天|今晚|明天|到期|结算|最快|最近|一小时|两小时|二小时|三小时|六点|[0-2]?\d点/i.test(raw);
   const isRedeem = /\b(redeem|claim)\b|赎回|领取/.test(normalized);
 
   if (!isRedeem && !hasAmount) {
@@ -286,6 +286,7 @@ function isExplicitTradeRequest(raw: string) {
 
   return (
     /\b(bet|mint|redeem|claim|execute|order)\b/.test(normalized) ||
+    (/\b(trade|position|trade shape)\b/.test(normalized) && /\b(dusdc|usdc|down|up|btc|predict)\b/.test(normalized)) ||
     /\b(buy|sell)\b.*\b(dusdc|usdc|down|up|position|contract|predict)\b/.test(normalized) ||
     /(帮我|我要|给我|执行|下单|下注|买|买入|卖出|赎回|领取|做多|做空).*?(btc|eth|sol|trx|跌|涨|down|up|dusdc|usdc|\d+\s*u)/i.test(raw) ||
     /(买跌|买涨|做空|做多).*?(\d+(?:\.\d+)?\s*(u|dusdc|usdc|\$))/i.test(normalizeCurrencyText(raw))

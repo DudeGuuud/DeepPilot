@@ -236,6 +236,12 @@ async function readDeepSeekStream(body: ReadableStream<Uint8Array>, options: Int
 
 function normalizeIntent(raw: string, intent: LlmIntent): ParsedIntent {
   if (intent.status === "needs_clarification") {
+    const fallback = parseIntentFallback(raw);
+
+    if (fallback.status === "ready") {
+      return fallback;
+    }
+
     return needsClarification(
       raw,
       intent.missing?.filter(Boolean) ?? ["intent"],
@@ -595,6 +601,16 @@ function fallbackExpiry(text: string): {
     };
   }
 
+  const relativeHours = fallbackRelativeHours(text);
+
+  if (relativeHours) {
+    return {
+      preference: "specific_time",
+      requestedExpiryMs: Date.now() + relativeHours * 60 * 60 * 1_000,
+      label: `${relativeHours}h from now`
+    };
+  }
+
   const time = fallbackClockTime(text);
 
   if (!time) {
@@ -610,6 +626,34 @@ function fallbackExpiry(text: string): {
     requestedExpiryMs,
     label
   };
+}
+
+function fallbackRelativeHours(text: string) {
+  const numeric = text.match(/\b([123])\s*h(?:ours?)?\b/i);
+
+  if (numeric) {
+    return Number(numeric[1]);
+  }
+
+  const word = text.match(/\b(one|two|three)\s+hours?\b/i)?.[1]?.toLowerCase();
+
+  if (word) {
+    return { one: 1, two: 2, three: 3 }[word];
+  }
+
+  if (/一小时/.test(text)) {
+    return 1;
+  }
+
+  if (/两小时|二小时/.test(text)) {
+    return 2;
+  }
+
+  if (/三小时/.test(text)) {
+    return 3;
+  }
+
+  return null;
 }
 
 function fallbackClockTime(text: string) {
@@ -741,6 +785,7 @@ Rules:
 - A single strike phrase such as "near 62500", "at strike 62500", or "行权价 62500" is a binary strike. Use predict_range_mint only when the user explicitly asks for range/between/lower+upper strikes.
 - If oracleId is supplied, treat it as the concrete Predict oracle. Do not ask for expiryPreference just because expiry text is absent.
 - If user gives a time like tonight 18:00, 6pm, or 今天六点, set expiryPreference to specific_time and compute requestedExpiryIso/requestedExpiryMs using the provided nowIso/defaultTimezone.
+- If user gives a relative expiry like 1h, 2h, 3h, one hour, two hours, 一小时, 两小时, or 三小时, set expiryPreference to specific_time and compute requestedExpiryMs as now plus that duration.
 - If user says next active expiry, nearest expiry, nearest time, fastest settlement, earliest settlement, 最近结算, 最快结算, 最近到期, or 最快到期, set expiryPreference to next_active.
 - Only active DeepBook Predict oracles are valid for a mint. If activeMarketContext is provided, prefer the market marked isEarliestActive when expiryPreference is next_active.
 - Use conversationContext and memoryContext only to fill missing market context after an explicit trade request. Example: after a BTC news/risk discussion, "那就买跌 10u 最快结算" means BTC DOWN with 10 DUSDC and next_active. If memoryContext says the last trade shape was BTC DOWN next_active, "跟上一次一样 1 DUSDC" may reuse BTC DOWN next_active. Do not turn financial-advice chat into a trade without explicit buy/bet/mint/execute wording.
