@@ -89,6 +89,7 @@ const CONVERSATION_CONTEXT_TTL_MS = 5 * 60 * 1_000;
 type RunPilotOptions = {
   openTradeModal?: boolean;
   clearComposer?: boolean;
+  ignorePendingClarification?: boolean;
 };
 
 type TradeModalStatus =
@@ -162,6 +163,12 @@ type PilotMessage = {
   createdAt?: number;
 };
 
+type PendingPilotClarification = {
+  mode: Exclude<PilotMode, "chat">;
+  originalText: string;
+  missing: string[];
+};
+
 export default function DeepPilotTerminal() {
   return <TerminalExperience />;
 }
@@ -201,6 +208,7 @@ function TerminalExperience() {
   const [tradeModalOpen, setTradeModalOpen] = useState(false);
   const [tradeModalStatus, setTradeModalStatus] = useState<TradeModalStatus>("idle");
   const [tradeDetailsExpanded, setTradeDetailsExpanded] = useState(false);
+  const [pendingClarification, setPendingClarification] = useState<PendingPilotClarification | null>(null);
   const [preflightSnapshot, setPreflightSnapshot] = useState<PreflightSnapshot | null>(null);
   const [confirmedReviewFingerprint, setConfirmedReviewFingerprint] = useState<string | null>(null);
   const [activeReviewMessageId, setActiveReviewMessageId] = useState<string | null>(null);
@@ -229,6 +237,7 @@ function TerminalExperience() {
     setTradeModalOpen(false);
     setTradeModalStatus("idle");
     setTradeDetailsExpanded(false);
+    setPendingClarification(null);
     setPreflightSnapshot(null);
     setConfirmedReviewFingerprint(null);
     setActiveReviewMessageId(null);
@@ -270,7 +279,7 @@ function TerminalExperience() {
 
         if (!cancelled && message) {
           loadedReviewTokenRef.current = `${token}:${walletAddress ?? "no-wallet"}`;
-          await runPilotRef.current(message, managerId, { openTradeModal: true, clearComposer: false });
+          await runPilotRef.current(message, managerId, { openTradeModal: true, clearComposer: false, ignorePendingClarification: true });
         }
       } catch (seedError) {
         if (!cancelled) {
@@ -473,6 +482,8 @@ function TerminalExperience() {
       return;
     }
 
+    const clarification = options.ignorePendingClarification ? null : pendingClarification;
+    const requestIntent = clarification ? mergePendingClarification(clarification, trimmedIntent) : trimmedIntent;
     const conversation = buildConversationForPilot(messages);
     const lastMarketThesis = latestMarketThesis(messages);
     pilotAbortRef.current?.abort();
@@ -499,6 +510,9 @@ function TerminalExperience() {
     setActiveReviewMessageId(null);
     setTradeModalStatus(options.openTradeModal ? "compiling" : "idle");
     setTradeModalOpen(Boolean(options.openTradeModal));
+    if (!clarification || options.ignorePendingClarification) {
+      setPendingClarification(null);
+    }
     if (options.clearComposer !== false) {
       setIntent("");
     }
@@ -528,7 +542,7 @@ function TerminalExperience() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          message: trimmedIntent,
+          message: requestIntent,
           walletAddress: account?.address,
           managerId: managerOverride ?? undefined,
           conversation,
@@ -616,7 +630,7 @@ function TerminalExperience() {
     }
 
     if (event.type === "answer_delta") {
-      setPilotMode("chat");
+      setPilotMode(null);
       updateAssistantMessage(assistantId, (message) => ({
         ...message,
         mode: "chat",
@@ -641,6 +655,31 @@ function TerminalExperience() {
       return;
     }
 
+    if (event.type === "clarification") {
+      setPendingClarification({
+        mode: event.mode,
+        originalText: event.originalText,
+        missing: event.missing
+      });
+      setPilotMode("chat");
+      setTradeModalOpen(false);
+      setTradeModalStatus("idle");
+      setVaultLpModalOpen(false);
+      setVaultLpDetailsExpanded(false);
+      setCompiled(null);
+      setStrategyReview(null);
+      setVaultLpReview(null);
+      setSelectedStrategyLegIds([]);
+      setActiveReviewMessageId(null);
+      updateAssistantMessage(assistantId, {
+        mode: undefined,
+        pending: false,
+        content: event.question,
+        reviewAction: undefined
+      });
+      return;
+    }
+
     if (event.type === "compiled") {
       const result = event.result as CompileApiResult;
       const compiledManagerId = result.profile?.managerId ?? result.ptb?.execution.managerId ?? null;
@@ -656,6 +695,7 @@ function TerminalExperience() {
       setVaultLpModalOpen(false);
       setSelectedStrategyLegIds([]);
       setPilotMode("trade");
+      setPendingClarification(null);
       setTradeModalOpen(true);
       setTradeModalStatus(tradeStatusForCompiled(result));
       setTradeDetailsExpanded(false);
@@ -688,6 +728,7 @@ function TerminalExperience() {
       setVaultLpModalOpen(false);
       setSelectedStrategyLegIds(defaultSelectedStrategyLegIds(review));
       setPilotMode("strategy");
+      setPendingClarification(null);
       setTradeModalOpen(true);
       setTradeModalStatus(strategyStatusForReview(review));
       setTradeDetailsExpanded(false);
@@ -711,6 +752,7 @@ function TerminalExperience() {
       setSelectedStrategyLegIds([]);
       setVaultLpReview(event.review);
       setPilotMode("vault_lp");
+      setPendingClarification(null);
       setTradeModalOpen(false);
       setVaultLpModalOpen(true);
       setVaultLpDetailsExpanded(false);
@@ -897,7 +939,7 @@ function TerminalExperience() {
       title: "PredictManager created",
       description: `${shortAddress(createdManagerId)} · review refreshed`
     });
-    await runPilot(intent.trim(), createdManagerId, { openTradeModal: true, clearComposer: false });
+    await runPilot(intent.trim(), createdManagerId, { openTradeModal: true, clearComposer: false, ignorePendingClarification: true });
   }
 
   async function refreshExecutableReview(current: CompileApiResult) {
@@ -1484,7 +1526,7 @@ function TerminalExperience() {
               onOpenReview={openActiveReviewFromChat}
               onExample={(example) => {
                 setIntent(example);
-                void runPilot(example);
+                void runPilot(example, managerId, { ignorePendingClarification: true });
               }}
             />
           </section>
@@ -1518,7 +1560,7 @@ function TerminalExperience() {
               initialStrike={effectiveUrlStrike ?? marketPreview?.selectedMarket?.selectedStrike}
               onGenerate={(nextIntent) => {
                 setIntent(nextIntent);
-                void runPilot(nextIntent, managerId, { openTradeModal: true });
+                void runPilot(nextIntent, managerId, { openTradeModal: true, ignorePendingClarification: true });
               }}
             />
           </aside>
@@ -3388,6 +3430,10 @@ function buildConversationForPilot(messages: PilotMessage[]): PilotMessageSummar
       mode: message.mode,
       sourceTitles: message.sources?.slice(0, 4).map((source) => source.title.slice(0, 160))
     }));
+}
+
+function mergePendingClarification(pending: PendingPilotClarification, clarification: string) {
+  return `${pending.originalText}\nClarification: ${clarification.trim()}`;
 }
 
 function latestMarketThesis(messages: PilotMessage[]) {

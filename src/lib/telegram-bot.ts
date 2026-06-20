@@ -7,10 +7,17 @@ import { classifyPilotInput } from "./pilot";
 import { getActivePredictMarketContext } from "./predict";
 import { compileStrategy } from "./strategy";
 import { createTelegramLoginToken, telegramHashForUserId, telegramLoginUrl } from "./telegram-auth";
-import { clearTelegramMemoryFallback, getTelegramSession, upsertTelegramSession } from "./telegram-session";
+import {
+  clearPendingTelegramIntent,
+  clearTelegramMemoryFallback,
+  getPendingTelegramIntent,
+  getTelegramSession,
+  setPendingTelegramIntent,
+  upsertTelegramSession
+} from "./telegram-session";
 import { memoryContextText, readAgentMemory, writeAgentMemory } from "./memory";
 import { compileVaultLpIntent, getVaultLpSummary } from "./vault-lp";
-import type { CompileResult, StrategyReview, TelegramSession, VaultLpReview } from "./types";
+import type { CompileResult, PendingTelegramIntent, StrategyReview, TelegramSession, VaultLpReview } from "./types";
 
 type TelegramInlineButton = {
   text: string;
@@ -42,6 +49,7 @@ type TelegramUpdate = {
 };
 
 type TelegramButtonRows = TelegramInlineButton[] | TelegramInlineButton[][];
+type ClarifiableMode = PendingTelegramIntent["mode"];
 
 const TELEGRAM_SUGGESTIONS = [
   {
@@ -155,6 +163,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
     return;
   }
 
+  if (text === "/cancel") {
+    await clearPendingTelegramIntent(telegramHash);
+    await sendMessage(chatId, "Pending DeepPilot request cancelled.");
+    return;
+  }
+
   if (!session?.walletAddress) {
     await sendLogin(chatId, userId, "Connect your wallet before using DeepPilot in Telegram.");
     return;
@@ -181,9 +195,19 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
   }
 
   if (text === "/forget") {
+    await clearPendingTelegramIntent(session.telegramHash);
     await clearTelegramMemoryFallback(session.profileId);
     await sendMessage(chatId, "Redis fallback memory cleared. Walrus Memory uses the Profile-authorized namespace; disable or revoke it from the Web authorization flow when available.");
     return;
+  }
+
+  if (!text.startsWith("/")) {
+    const pendingIntent = await getPendingTelegramIntent(session.telegramHash);
+
+    if (pendingIntent) {
+      await runPendingIntent(chatId, session, pendingIntent, text);
+      return;
+    }
   }
 
   if (text === "/markets") {
@@ -242,6 +266,27 @@ async function handleTelegramCallback(query: NonNullable<TelegramUpdate["callbac
   });
 }
 
+async function runPendingIntent(
+  chatId: number | string,
+  session: TelegramSession,
+  pendingIntent: PendingTelegramIntent,
+  clarification: string
+) {
+  const mergedIntent = mergePendingIntentText(pendingIntent, clarification);
+
+  switch (pendingIntent.mode) {
+    case "trade":
+      await runTrade(chatId, session, mergedIntent, false);
+      return;
+    case "strategy":
+      await runStrategy(chatId, session, mergedIntent, false);
+      return;
+    case "vault_lp":
+      await runVaultLp(chatId, session, mergedIntent, false);
+      return;
+  }
+}
+
 async function runNaturalLanguage(chatId: number | string, session: TelegramSession, text: string) {
   const quota = await consumeQuotaOrReply(chatId, session);
 
@@ -255,21 +300,68 @@ async function runNaturalLanguage(chatId: number | string, session: TelegramSess
   });
 
   if (classification.mode === "trade") {
+    if (await askClarificationIfMissing(chatId, session, "trade", text, classification.missing)) {
+      return;
+    }
+
     await runTrade(chatId, session, text, false);
     return;
   }
 
   if (classification.mode === "strategy") {
+    if (await askClarificationIfMissing(chatId, session, "strategy", text, classification.missing)) {
+      return;
+    }
+
     await runStrategy(chatId, session, text, false);
     return;
   }
 
   if (classification.mode === "vault_lp") {
+    if (await askClarificationIfMissing(chatId, session, "vault_lp", text, classification.missing)) {
+      return;
+    }
+
     await runVaultLp(chatId, session, text, false);
     return;
   }
 
   await runNews(chatId, session, text, false);
+}
+
+async function askClarificationIfMissing(
+  chatId: number | string,
+  session: TelegramSession,
+  mode: ClarifiableMode,
+  intent: string,
+  upstreamMissing: string[]
+) {
+  const missing = telegramMissingFields(mode, intent, upstreamMissing);
+
+  if (!missing.length) {
+    return false;
+  }
+
+  await askClarification(chatId, session, mode, intent, missing);
+  return true;
+}
+
+async function askClarification(
+  chatId: number | string,
+  session: TelegramSession,
+  mode: ClarifiableMode,
+  intent: string,
+  missing: string[]
+) {
+  const normalizedMissing = normalizeMissingFields(mode, missing);
+
+  await setPendingTelegramIntent(session.telegramHash, {
+    mode,
+    originalText: intent,
+    missing: normalizedMissing,
+    createdAt: new Date().toISOString()
+  });
+  await sendMessage(chatId, formatClarificationQuestion(mode, normalizedMissing));
 }
 
 async function runNews(
@@ -320,11 +412,25 @@ async function runTrade(
     return;
   }
 
+  const classification = await classifyPilotInput(intent, {
+    conversationContext: await sessionConversationContext(session)
+  });
+
+  if (await askClarificationIfMissing(chatId, session, "trade", intent, classification.missing)) {
+    return;
+  }
+
   const result = await compileIntent(intent, {
     walletAddress: session.walletAddress,
     managerId: session.managerId,
     conversationContext: await sessionConversationContext(session)
   });
+
+  if (result.intent.status === "needs_clarification") {
+    await askClarification(chatId, session, "trade", intent, result.intent.missing);
+    return;
+  }
+
   const token = encodeReviewSeed(createReviewSeed({
     source: "telegram",
     message: intent,
@@ -335,6 +441,7 @@ async function runTrade(
   await writeAgentMemory(session.profileId!, {
     lastTradeShape: summarizeTradeShape(result)
   });
+  await clearPendingTelegramIntent(session.telegramHash);
 
   await sendMessage(chatId, formatTradeReview(result), [
     { text: "Review & Sign", url: reviewUrl(token) }
@@ -356,11 +463,25 @@ async function runStrategy(
     return;
   }
 
+  const classification = await classifyPilotInput(intent, {
+    conversationContext: await sessionConversationContext(session)
+  });
+
+  if (await askClarificationIfMissing(chatId, session, "strategy", intent, classification.missing)) {
+    return;
+  }
+
   const review = await compileStrategy(intent, {
     walletAddress: session.walletAddress,
     managerId: session.managerId,
     conversationContext: await sessionConversationContext(session)
   });
+
+  if (review.plan.missing.length > 0) {
+    await askClarification(chatId, session, "strategy", intent, review.plan.missing);
+    return;
+  }
+
   const token = encodeReviewSeed(createReviewSeed({
     source: "telegram",
     message: intent,
@@ -371,6 +492,7 @@ async function runStrategy(
   await writeAgentMemory(session.profileId!, {
     lastTradeShape: summarizeStrategyShape(review)
   });
+  await clearPendingTelegramIntent(session.telegramHash);
 
   await sendMessage(chatId, formatStrategyReview(review), [
     { text: "Review Strategy", url: reviewUrl(token) }
@@ -397,9 +519,19 @@ async function runVaultLp(
     return;
   }
 
+  if (await askClarificationIfMissing(chatId, session, "vault_lp", intent, [])) {
+    return;
+  }
+
   const review = await compileVaultLpIntent(intent, {
     wallet: session.walletAddress
   });
+
+  if (review.intent.status === "needs_clarification") {
+    await askClarification(chatId, session, "vault_lp", intent, review.intent.missing);
+    return;
+  }
+
   const token = encodeReviewSeed(createReviewSeed({
     source: "telegram",
     message: intent,
@@ -410,6 +542,7 @@ async function runVaultLp(
   await writeAgentMemory(session.profileId!, {
     lastTradeShape: summarizeVaultLpShape(review)
   });
+  await clearPendingTelegramIntent(session.telegramHash);
 
   await sendMessage(chatId, formatVaultLpReview(review), [
     { text: "Review Vault LP", url: vaultLpReviewUrl(token) }
@@ -686,6 +819,158 @@ function summarizeMarketThesis(answer: string) {
     .slice(0, 500);
 }
 
+function telegramMissingFields(mode: ClarifiableMode, intent: string, upstreamMissing: string[]) {
+  const missing = new Set(normalizeMissingFields(mode, upstreamMissing));
+
+  if (referencesStoredShape(intent)) {
+    return [...missing];
+  }
+
+  if (mode === "trade") {
+    if (!hasCurrencyAmount(intent)) {
+      missing.add("amount");
+    }
+
+    if (!hasTradeDirection(intent)) {
+      missing.add("direction");
+    }
+
+    if (!hasExpiryPlan(intent) && !hasObjectId(intent)) {
+      missing.add("expiry");
+    }
+  }
+
+  if (mode === "strategy") {
+    if (!hasCurrencyAmount(intent)) {
+      missing.add("amount");
+    }
+
+    if (!hasStrategyShape(intent)) {
+      missing.add("strategy_shape");
+    }
+
+    if (!hasStrategyDirection(intent)) {
+      missing.add("direction");
+    }
+
+    if (!hasExpiryPlan(intent)) {
+      missing.add("expiry");
+    }
+  }
+
+  if (mode === "vault_lp") {
+    const infoOnly = /\b(show|check|info|status|performance)\b|查看|看看|表现|信息|状态/.test(intent.toLowerCase());
+    const hasAction = /\b(deposit|supply|mint|add|provide|withdraw|remove|exit|redeem)\b|存入|充值|放进|提供|加入|做|取出|赎回|退出/i.test(intent);
+
+    if (!infoOnly && !hasAction) {
+      missing.add("action");
+    }
+
+    if (!infoOnly && !hasCurrencyAmount(intent)) {
+      missing.add("amount");
+    }
+  }
+
+  return [...missing];
+}
+
+function normalizeMissingFields(mode: ClarifiableMode, missing: string[]) {
+  const aliases: Record<string, string> = {
+    budget: "amount",
+    quote: "amount",
+    payment: "amount",
+    side: "direction",
+    expiryPreference: "expiry",
+    oracle: "expiry",
+    oracleId: "expiry",
+    settlement: "expiry",
+    method: mode === "vault_lp" ? "action" : "strategy_shape",
+    shape: "strategy_shape"
+  };
+
+  return [...new Set(missing
+    .map((item) => aliases[item] ?? item)
+    .filter((item) => item === "amount" || item === "direction" || item === "expiry" || item === "strategy_shape" || item === "action"))];
+}
+
+function formatClarificationQuestion(mode: ClarifiableMode, missing: string[]) {
+  const questions = missing.map((field) => {
+    if (mode === "vault_lp" && field === "action") {
+      return "Do you want to deposit to Vault LP or withdraw from Vault LP?";
+    }
+
+    if (field === "amount") {
+      return mode === "strategy"
+        ? "What total budget should DeepPilot allocate? Example: 1 DUSDC."
+        : "How much DUSDC do you want to use? Example: 1 DUSDC.";
+    }
+
+    if (field === "direction") {
+      return mode === "strategy"
+        ? "Should the strategy lean UP, DOWN, or market-neutral hedge?"
+        : "Which side do you want: BTC UP or BTC DOWN?";
+    }
+
+    if (field === "strategy_shape") {
+      return "Do you want a hedge, split ladder, or single directional plan?";
+    }
+
+    if (field === "expiry") {
+      return mode === "strategy"
+        ? "Use nearest settlement, 1h/2h/3h ladder, or a specific expiry?"
+        : "Which settlement do you want: nearest active, 1h, 2h, or a specific time?";
+    }
+
+    return "Please clarify the missing field.";
+  });
+
+  return [
+    "I need one more detail before creating a Web Review link.",
+    ...questions,
+    "",
+    "Reply with the missing detail, or send /cancel to discard this request."
+  ].join("\n");
+}
+
+function mergePendingIntentText(pendingIntent: PendingTelegramIntent, clarification: string) {
+  return `${pendingIntent.originalText}\nClarification: ${clarification.trim()}`;
+}
+
+function hasCurrencyAmount(raw: string) {
+  return (
+    /(\d+(?:\.\d+)?)\s*(?:d?usdc|usdc|u|\$)/i.test(normalizeCurrencyText(raw)) ||
+    /\b(a|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:d?usdc|usdc|u)\b/i.test(raw)
+  );
+}
+
+function hasTradeDirection(raw: string) {
+  return /\b(up|down|call|put|long|short)\b|涨|跌|做多|做空|看涨|看跌/i.test(raw);
+}
+
+function hasStrategyDirection(raw: string) {
+  return hasTradeDirection(raw) || /\b(market-neutral|neutral|balanced|mostly|overweight)\b|中性|双向|对冲|大头/i.test(raw);
+}
+
+function hasStrategyShape(raw: string) {
+  return /\b(strategy|hedge|split|ladder|multi-leg|multi leg|single directional|directional)\b|策略|对冲|分批|阶梯|多笔|多腿|一小时|两小时|二小时|三小时|1h|2h|3h|1小时|2小时|3小时/i.test(raw);
+}
+
+function hasExpiryPlan(raw: string) {
+  return /\b(next|nearest|fastest|earliest|settlement|expiry|today|tonight|tomorrow|1h|2h|3h|one hour|two hour|three hour|\d{1,2}\s*(am|pm)|\d{1,2}:\d{2})\b|最近|最快|结算|到期|今天|今晚|明天|一小时|两小时|二小时|三小时|[0-2]?\d点/i.test(raw);
+}
+
+function hasObjectId(raw: string) {
+  return /0x[a-fA-F0-9]{16,64}/.test(raw);
+}
+
+function referencesStoredShape(raw: string) {
+  return /\b(same|repeat|again|last time|previous|as before)\b|跟上一次|和上次一样|照旧|同样/i.test(raw);
+}
+
+function normalizeCurrencyText(raw: string) {
+  return raw.replace(/([a-z])\s+(?=[a-z])/gi, "$1");
+}
+
 function reviewUrl(token: string) {
   return `${appBaseUrl().replace(/\/$/, "")}/trade?review=${encodeURIComponent(token)}`;
 }
@@ -829,3 +1114,9 @@ function formatRawDusdc(value: string | number | bigint | null | undefined) {
 function shortAddress(value: string | null | undefined) {
   return value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "--";
 }
+
+export const telegramClarificationTestHooks = {
+  telegramMissingFields,
+  formatClarificationQuestion,
+  mergePendingIntentText
+};

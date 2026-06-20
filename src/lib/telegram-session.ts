@@ -1,7 +1,8 @@
 import { redisDelete, redisGetJson, redisSetJson } from "./redis-store";
-import type { DeepPilotPlanName, TelegramSession } from "./types";
+import type { DeepPilotPlanName, PendingTelegramIntent, TelegramSession } from "./types";
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+const PENDING_INTENT_TTL_SECONDS = 10 * 60;
 
 export async function getTelegramSession(telegramHash: string) {
   return await redisGetJson<TelegramSession>(sessionKey(telegramHash));
@@ -71,6 +72,18 @@ export async function clearTelegramMemoryFallback(profileId: string) {
   await redisDelete(`memory:last:${profileId}`);
 }
 
+export async function getPendingTelegramIntent(telegramHash: string) {
+  return await redisGetJson<PendingTelegramIntent>(pendingIntentKey(telegramHash));
+}
+
+export async function setPendingTelegramIntent(telegramHash: string, pendingIntent: PendingTelegramIntent) {
+  await redisSetJson(pendingIntentKey(telegramHash), pendingIntent, PENDING_INTENT_TTL_SECONDS);
+}
+
+export async function clearPendingTelegramIntent(telegramHash: string) {
+  await redisDelete(pendingIntentKey(telegramHash));
+}
+
 export function sessionKey(telegramHash: string) {
   return `tg:session:${telegramHash}`;
 }
@@ -81,4 +94,8 @@ export function walletSessionKey(walletAddress: string) {
 
 export function profileSessionKey(profileId: string) {
   return `profile:telegram:${profileId.toLowerCase()}`;
+}
+
+function pendingIntentKey(telegramHash: string) {
+  return `tg:pending_intent:${telegramHash}`;
 }

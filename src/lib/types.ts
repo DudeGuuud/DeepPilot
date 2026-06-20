@@ -611,6 +611,13 @@ export interface TelegramSession {
   updatedAt: string;
 }
 
+export interface PendingTelegramIntent {
+  mode: "trade" | "strategy" | "vault_lp";
+  originalText: string;
+  missing: string[];
+  createdAt: string;
+}
+
 export type CompileStreamEvent =
   | {
       type: "stage";
@@ -662,6 +669,13 @@ export type PilotStreamEvent =
       label: string;
       state: "complete" | "blocked" | "pending";
       detail?: string;
+    }
+  | {
+      type: "clarification";
+      mode: Exclude<PilotMode, "chat">;
+      missing: string[];
+      question: string;
+      originalText: string;
     }
   | {
       type: "compiled";

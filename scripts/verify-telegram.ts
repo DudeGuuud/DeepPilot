@@ -4,7 +4,14 @@ import { consumeQuota, getQuotaStatus } from "../src/lib/quota";
 import { authorizeRequestQuota, consumeRequestQuota, isQuotaIdentityRequiredError } from "../src/lib/request-quota";
 import { createReviewSeed, decodeReviewSeed, encodeReviewSeed } from "../src/lib/review-seed";
 import { createTelegramLoginToken, decodeTelegramLoginToken, telegramHashForUserId } from "../src/lib/telegram-auth";
-import { getTelegramSessionByWallet, upsertTelegramSession } from "../src/lib/telegram-session";
+import { telegramClarificationTestHooks } from "../src/lib/telegram-bot";
+import {
+  clearPendingTelegramIntent,
+  getPendingTelegramIntent,
+  getTelegramSessionByWallet,
+  setPendingTelegramIntent,
+  upsertTelegramSession
+} from "../src/lib/telegram-session";
 
 process.env.UPSTASH_REDIS_REST_URL = "";
 process.env.UPSTASH_REDIS_REST_TOKEN = "";
@@ -41,6 +48,72 @@ const vaultLpReviewSeed = decodeReviewSeed(vaultLpReviewToken);
 
 if (vaultLpReviewSeed.modeHint !== "vault_lp") {
   throw new Error("Telegram Vault LP review seed did not preserve modeHint.");
+}
+
+const buyBtcMissing = telegramClarificationTestHooks.telegramMissingFields("trade", "buy BTC", []);
+
+if (!buyBtcMissing.includes("amount") || !buyBtcMissing.includes("direction") || !buyBtcMissing.includes("expiry")) {
+  throw new Error("Incomplete Telegram trade intent should ask for amount, direction, and expiry.");
+}
+
+const partialTradeMissing = telegramClarificationTestHooks.telegramMissingFields("trade", "Bet 1 DUSDC BTC", []);
+
+if (!partialTradeMissing.includes("direction") || !partialTradeMissing.includes("expiry") || partialTradeMissing.includes("amount")) {
+  throw new Error("Partial Telegram trade intent should ask only for missing direction/expiry.");
+}
+
+const strategyMissing = telegramClarificationTestHooks.telegramMissingFields("strategy", "hedge BTC", []);
+
+if (!strategyMissing.includes("amount") || !strategyMissing.includes("expiry")) {
+  throw new Error("Incomplete Telegram strategy intent should ask for budget and expiry plan.");
+}
+
+const lpMissing = telegramClarificationTestHooks.telegramMissingFields("vault_lp", "deposit", []);
+
+if (!lpMissing.includes("amount")) {
+  throw new Error("Incomplete Telegram Vault LP intent should ask for amount.");
+}
+
+const lpReady = telegramClarificationTestHooks.telegramMissingFields("vault_lp", "deposit 1 DUSDC", []);
+
+if (lpReady.length !== 0) {
+  throw new Error("Complete Telegram Vault LP intent should not ask clarification.");
+}
+
+const clarification = telegramClarificationTestHooks.formatClarificationQuestion("trade", buyBtcMissing);
+
+if (clarification.includes("Review & Sign") || !clarification.includes("How much DUSDC")) {
+  throw new Error("Clarification response should ask a question without review link language.");
+}
+
+const mergedIntent = telegramClarificationTestHooks.mergePendingIntentText({
+  mode: "trade",
+  originalText: "Bet 1 DUSDC BTC",
+  missing: ["direction", "expiry"],
+  createdAt: new Date().toISOString()
+}, "DOWN nearest settlement");
+
+if (!mergedIntent.includes("Clarification: DOWN nearest settlement")) {
+  throw new Error("Pending Telegram intent should merge user clarification.");
+}
+
+await setPendingTelegramIntent(telegramHash, {
+  mode: "trade",
+  originalText: "Bet 1 DUSDC BTC",
+  missing: ["direction", "expiry"],
+  createdAt: new Date().toISOString()
+});
+
+const pendingIntent = await getPendingTelegramIntent(telegramHash);
+
+if (pendingIntent?.mode !== "trade" || pendingIntent.originalText !== "Bet 1 DUSDC BTC") {
+  throw new Error("Pending Telegram intent was not stored.");
+}
+
+await clearPendingTelegramIntent(telegramHash);
+
+if (await getPendingTelegramIntent(telegramHash)) {
+  throw new Error("Pending Telegram intent was not cleared.");
 }
 
 const profileId = `0x${randomUUID().replace(/-/g, "").padEnd(64, "0").slice(0, 64)}`;
