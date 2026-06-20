@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
+
 import { memWalConfig, profilePackageConfig } from "./deep-pilot-config";
 import { predictDeployment } from "./predict-config";
 import { getPredictBinaryTradeAmounts, normalizeDusdc, normalizePrice } from "./predict";
-import { readDeepPilotProfileMemoryPointer } from "./profile-execution";
+import { findDeepPilotProfileInRegistry, readDeepPilotProfileMemoryPointer } from "./profile-execution";
 import { getTelegramSessionByWallet } from "./telegram-session";
 import type {
   KeeperSnapshot,
@@ -23,10 +25,10 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
   const normalizedWallet = normalizeObjectId(wallet);
   const discoveredManager = await discoverManager(normalizedWallet, managerId);
   const normalizedManager = discoveredManager.managerId;
-  const deepPilotProfileId = normalizedWallet
-    ? (await getTelegramSessionByWallet(normalizedWallet).catch(() => null))?.profileId ?? null
-    : null;
-  const deepPilotProfilePackageId = profilePackageConfig().packageId || null;
+  const profileConfig = profilePackageConfig();
+  const deepPilotProfilePackageId = profileConfig.packageId || null;
+  const deepPilotProfileRegistryId = profileConfig.registryId || null;
+  const deepPilotProfileId = await resolveDeepPilotProfileId(normalizedWallet, deepPilotProfileRegistryId);
   const memory = await resolveProfileMemoryStatus(normalizedWallet, normalizedManager, deepPilotProfileId);
 
   if (!normalizedManager) {
@@ -34,6 +36,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
       normalizedWallet,
       deepPilotProfileId,
       deepPilotProfilePackageId,
+      deepPilotProfileRegistryId,
       null,
       "No PredictManager is linked yet. DeepPilot will not invent PnL or positions without a manager object.",
       Boolean(normalizedWallet),
@@ -52,6 +55,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
       normalizedWallet,
       deepPilotProfileId,
       deepPilotProfilePackageId,
+      deepPilotProfileRegistryId,
       normalizedManager,
       "Manager created, waiting for Predict indexer. Refresh after the public Predict server indexes the manager.",
       false,
@@ -68,6 +72,7 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
     wallet: managerSummary.owner ?? normalizedWallet ?? discoveredManager.owner,
     deepPilotProfileId,
     deepPilotProfilePackageId,
+    deepPilotProfileRegistryId,
     managerId: normalizedManager,
     managerLinked: true,
     managerNeedsCreation: false,
@@ -97,10 +102,36 @@ export async function getProfileSummary({ wallet, managerId }: ProfileInput): Pr
   };
 }
 
+async function resolveDeepPilotProfileId(wallet: string | null, registryId: string | null) {
+  if (!wallet) {
+    return null;
+  }
+
+  const sessionProfileId = (await getTelegramSessionByWallet(wallet).catch(() => null))?.profileId ?? null;
+
+  if (sessionProfileId || !registryId) {
+    return sessionProfileId;
+  }
+
+  return await findDeepPilotProfileInRegistry({
+    registryId,
+    telegramHash: webProfileHash(wallet),
+    walletAddress: wallet,
+    network: predictDeployment.network === "devnet" ? "devnet" : "testnet"
+  }).catch(() => null);
+}
+
+function webProfileHash(walletAddress: string) {
+  return createHash("sha256")
+    .update(`deeppilot:web-profile:${walletAddress.toLowerCase()}`)
+    .digest("hex");
+}
+
 function emptyProfile(
   wallet: string | null,
   deepPilotProfileId: string | null,
   deepPilotProfilePackageId: string | null,
+  deepPilotProfileRegistryId: string | null,
   managerId: string | null,
   message: string,
   managerNeedsCreation = false,
@@ -110,6 +141,7 @@ function emptyProfile(
     wallet,
     deepPilotProfileId,
     deepPilotProfilePackageId,
+    deepPilotProfileRegistryId,
     managerId,
     managerLinked: false,
     managerNeedsCreation,

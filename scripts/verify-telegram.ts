@@ -7,7 +7,10 @@ import { createTelegramLoginToken, decodeTelegramLoginToken, telegramHashForUser
 import { telegramClarificationTestHooks } from "../src/lib/telegram-bot";
 import {
   clearPendingTelegramIntent,
+  clearTelegramSession,
   getPendingTelegramIntent,
+  getTelegramSession,
+  getTelegramSessionByProfile,
   getTelegramSessionByWallet,
   setPendingTelegramIntent,
   upsertTelegramSession
@@ -111,6 +114,12 @@ if (!mergedIntent.includes("Clarification: DOWN nearest settlement")) {
   throw new Error("Pending Telegram intent should merge user clarification.");
 }
 
+const helpText = telegramClarificationTestHooks.helpText();
+
+if (!helpText.includes("/unbind") || !helpText.includes("without a signature")) {
+  throw new Error("Telegram help should document wallet unbind.");
+}
+
 await setPendingTelegramIntent(telegramHash, {
   mode: "trade",
   originalText: "Bet 1 DUSDC BTC",
@@ -165,6 +174,38 @@ const walletSession = await getTelegramSessionByWallet(walletB);
 if (walletSession?.profileId !== profileId) {
   throw new Error("New wallet reverse session index was not written.");
 }
+
+await setPendingTelegramIntent(telegramHash, {
+  mode: "trade",
+  originalText: "Bet 1 DUSDC BTC",
+  missing: ["direction"],
+  createdAt: new Date().toISOString()
+});
+
+await clearTelegramSession(telegramHash);
+
+if (await getTelegramSession(telegramHash)) {
+  throw new Error("Telegram unbind did not clear the primary session.");
+}
+
+if (await getTelegramSessionByWallet(walletB)) {
+  throw new Error("Telegram unbind did not clear wallet reverse index.");
+}
+
+if (await getTelegramSessionByProfile(profileId)) {
+  throw new Error("Telegram unbind did not clear profile reverse index.");
+}
+
+if (await getPendingTelegramIntent(telegramHash)) {
+  throw new Error("Telegram unbind did not clear pending intent.");
+}
+
+await upsertTelegramSession({
+  telegramHash,
+  chatId: "654321",
+  walletAddress: walletB,
+  profileId
+});
 
 try {
   await consumeRequestQuota({ profileId });

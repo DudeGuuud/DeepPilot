@@ -72,6 +72,22 @@ export async function clearTelegramMemoryFallback(profileId: string) {
   await redisDelete(`memory:last:${profileId}`);
 }
 
+export async function clearTelegramSession(telegramHash: string) {
+  const existing = await getTelegramSession(telegramHash);
+
+  if (existing?.walletAddress) {
+    await redisDelete(walletSessionKey(existing.walletAddress.toLowerCase()));
+  }
+
+  if (existing?.profileId) {
+    await redisDelete(profileSessionKey(existing.profileId));
+    await clearTelegramMemoryFallback(existing.profileId);
+  }
+
+  await clearPendingTelegramIntent(telegramHash);
+  await redisDelete(sessionKey(telegramHash));
+}
+
 export async function getPendingTelegramIntent(telegramHash: string) {
   return await redisGetJson<PendingTelegramIntent>(pendingIntentKey(telegramHash));
 }

@@ -18,7 +18,11 @@ import {
   buildWithdrawFromManagerTransaction,
   getExecutedDigest
 } from "@/src/lib/predict-execution";
-import { buildSetProfileMemoryPointerTransaction } from "@/src/lib/profile-execution";
+import {
+  buildCreateDeepPilotProfileTransaction,
+  buildSetProfileMemoryPointerTransaction,
+  extractDeepPilotProfileId
+} from "@/src/lib/profile-execution";
 import { readPreviewReceipts, storePreviewReceipt } from "@/src/lib/receipts";
 import { readCoinBalanceRaw, readSuiBalanceRaw } from "@/src/lib/sui-balances";
 import type { ProfileActivityItem, ProfilePosition, ProfileSummary } from "@/src/lib/types";
@@ -44,6 +48,7 @@ export function ProfilePage() {
   const urlManagerId = searchParams.get("managerId");
   const highlightFunding = searchParams.get("fund") === "1";
   const highlightPlans = searchParams.get("plans") === "1";
+  const highlightProfile = searchParams.get("profile") === "1";
   const [localManagerId, setLocalManagerId] = useState<string | null>(urlManagerId);
   const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const [receipts, setReceipts] = useState<ProfileActivityItem[]>([]);
@@ -63,7 +68,9 @@ export function ProfilePage() {
   const [settlingPositionId, setSettlingPositionId] = useState<string | null>(null);
   const [settleError, setSettleError] = useState<string | null>(null);
   const [memoryBusy, setMemoryBusy] = useState(false);
+  const [profileCreateBusy, setProfileCreateBusy] = useState(false);
   const profileLoadedRef = useRef(false);
+  const profileCreateToastShownRef = useRef(false);
   const effectiveManagerId = localManagerId ?? urlManagerId;
 
   useEffect(() => {
@@ -77,6 +84,19 @@ export function ProfilePage() {
   useEffect(() => {
     setManagerPromptDismissed(false);
   }, [account?.address]);
+
+  useEffect(() => {
+    if (!highlightProfile || account?.address || profileCreateToastShownRef.current) {
+      return;
+    }
+
+    profileCreateToastShownRef.current = true;
+    toast({
+      variant: "destructive",
+      title: "Please connect your wallet first",
+      description: "Please connect your wallet first to create your Profile."
+    });
+  }, [account?.address, highlightProfile, toast]);
 
   useEffect(() => {
     profileLoadedRef.current = false;
@@ -233,6 +253,107 @@ export function ProfilePage() {
     setLocalManagerId(managerId);
     updateManagerInUrl(managerId);
     setReloadNonce((current) => current + 1);
+  }
+
+  async function handleCreateDeepPilotProfile() {
+    if (profileCreateBusy) {
+      return;
+    }
+
+    setProfileCreateBusy(true);
+
+    try {
+      if (!account?.address) {
+        throw new Error("Please connect your wallet first to create your Profile.");
+      }
+
+      if (!profile) {
+        throw new Error("Profile summary is still loading.");
+      }
+
+      if (profile.deepPilotProfileId) {
+        toast({
+          variant: "success",
+          title: "Profile already exists",
+          description: shortAddress(profile.deepPilotProfileId)
+        });
+        return;
+      }
+
+      if (!profile.deepPilotProfilePackageId || !profile.deepPilotProfileRegistryId) {
+        throw new Error("DeepPilot Profile contract is not configured for this deployment.");
+      }
+
+      const targetNetwork = profile.network === "devnet" ? "devnet" : "testnet";
+
+      if (network && network !== targetNetwork) {
+        throw new Error(`Switch wallet network to ${targetNetwork} before creating your Profile.`);
+      }
+
+      const client = dAppKit.getClient(targetNetwork);
+      const suiBalance = await readSuiBalanceRaw(client, account.address);
+
+      if (suiBalance < MIN_SUI_GAS_BALANCE_MIST) {
+        throw new Error(`Need testnet SUI for gas. Wallet ${shortAddress(account.address)} has ${formatRawSui(suiBalance)} SUI on ${targetNetwork}; keep at least ${formatRawSui(MIN_SUI_GAS_BALANCE_MIST)} SUI available.`);
+      }
+
+      const telegramHash = await webProfileHash(account.address);
+      const transaction = buildCreateDeepPilotProfileTransaction({
+        packageId: profile.deepPilotProfilePackageId,
+        registryId: profile.deepPilotProfileRegistryId,
+        telegramHash,
+        memoryNamespace: `web:${account.address.toLowerCase().slice(2, 18)}`
+      });
+      const signed = await dAppKit.signAndExecuteTransaction({ transaction });
+      const digest = getExecutedDigest(signed);
+      const confirmed = await client.waitForTransaction({
+        digest,
+        include: {
+          effects: true,
+          events: true,
+          objectTypes: true
+        }
+      });
+      assertExecuted(confirmed);
+
+      const profileId = extractDeepPilotProfileId(confirmed, profile.deepPilotProfilePackageId);
+      const receipt: ProfileActivityItem & {
+        walletAddress: string;
+        network: "devnet" | "testnet";
+        status: string;
+        note: string;
+      } = {
+        id: digest,
+        time: new Date().toISOString(),
+        type: "profile_create",
+        digest,
+        summary: "DeepPilot Profile NFT created",
+        walletAddress: account.address,
+        network: targetNetwork,
+        status: "success",
+        note: profileId
+          ? `Created DeepPilot Profile ${shortAddress(profileId)}.`
+          : "Created DeepPilot Profile. The profile index may need a short refresh."
+      };
+
+      storePreviewReceipt(receipt);
+      setReceipts(readPreviewReceipts(account.address));
+      setReloadNonce((current) => current + 1);
+      toast({
+        variant: "success",
+        title: "DeepPilot Profile created",
+        description: profileId ? shortAddress(profileId) : digest
+      });
+    } catch (profileIssue) {
+      const message = explainWalletExecutionError(profileIssue);
+      toast({
+        variant: "destructive",
+        title: "Profile creation failed",
+        description: message
+      });
+    } finally {
+      setProfileCreateBusy(false);
+    }
   }
 
   async function handleManagerFunding() {
@@ -671,6 +792,13 @@ export function ProfilePage() {
         </section>
 
         <aside className="profile-funding-column space-y-3">
+          <DeepPilotProfileCard
+            profile={profile}
+            accountAddress={account?.address}
+            busy={profileCreateBusy}
+            highlighted={highlightProfile}
+            onCreate={handleCreateDeepPilotProfile}
+          />
           <TradingBalanceFundingCard
             profile={profile}
             accountAddress={account?.address}
@@ -709,6 +837,56 @@ export function ProfilePage() {
         </aside>
       </div>
     </AppShell>
+  );
+}
+
+function DeepPilotProfileCard({
+  profile,
+  accountAddress,
+  busy,
+  highlighted,
+  onCreate
+}: {
+  profile: ProfileSummary | null;
+  accountAddress?: string;
+  busy: boolean;
+  highlighted: boolean;
+  onCreate: () => void;
+}) {
+  const hasProfile = Boolean(profile?.deepPilotProfileId);
+
+  return (
+    <Card className={`glass-line ${highlighted ? "border-foreground/45 shadow-[0_0_0_1px_rgba(250,250,250,0.18)]" : ""}`}>
+      <CardHeader>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <CardTitle>DeepPilot Profile</CardTitle>
+            <CardDescription>Profile NFT for quota, plan, Telegram binding, and memory namespace.</CardDescription>
+          </div>
+          <LockKeyhole className="h-5 w-5 text-muted-foreground" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <StatusRow label="Wallet connected" active={Boolean(accountAddress)} />
+        <StatusRow label="Profile NFT" active={hasProfile} />
+        <div className="rounded-md border border-border bg-background/60 p-3 text-sm leading-6 text-muted-foreground">
+          {hasProfile
+            ? `Profile linked: ${profile?.deepPilotProfileId ? shortAddress(profile.deepPilotProfileId) : "--"}`
+            : "Create this once before Telegram AI, quota tracking, and portable memory can use your wallet profile."}
+        </div>
+        {!hasProfile ? (
+          <Button
+            type="button"
+            className="w-full"
+            onClick={onCreate}
+            disabled={busy || !accountAddress || !profile}
+          >
+            {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <LockKeyhole className="h-4 w-4" />}
+            Create Profile NFT
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1532,6 +1710,15 @@ function formatQuoteStatus(status: ProfilePosition["quoteStatus"]) {
 
 function shortAddress(address: string) {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
+async function webProfileHash(walletAddress: string) {
+  const payload = new TextEncoder().encode(`deeppilot:web-profile:${walletAddress.toLowerCase()}`);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", payload);
+
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function updateManagerInUrl(managerId: string) {

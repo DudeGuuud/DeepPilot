@@ -9,6 +9,7 @@ import { compileStrategy } from "./strategy";
 import { createTelegramLoginToken, telegramHashForUserId, telegramLoginUrl } from "./telegram-auth";
 import {
   clearPendingTelegramIntent,
+  clearTelegramSession,
   clearTelegramMemoryFallback,
   getPendingTelegramIntent,
   getTelegramSession,
@@ -138,6 +139,12 @@ export async function handleTelegramUpdate(update: TelegramUpdate) {
 
   if (text === "/login") {
     await sendLogin(chatId, userId);
+    return;
+  }
+
+  if (text === "/unbind" || text === "/logout") {
+    await clearTelegramSession(telegramHash);
+    await sendMessage(chatId, "Telegram wallet link removed. Use /login to connect another wallet.");
     return;
   }
 
@@ -660,6 +667,7 @@ async function sendWelcome(chatId: number | string, session: TelegramSession) {
     "5. Deposit or withdraw Vault LP through a Web Review link.",
     "",
     "Trading never signs inside Telegram. The bot sends a Web Review link, then you confirm with your Sui wallet.",
+    "Use /unbind if you need to remove this Telegram wallet link without a wallet signature.",
     "",
     "Tap a shortcut below or send natural language like:",
     "buy 1 DUSDC BTC DOWN nearest settlement"
@@ -733,7 +741,9 @@ async function sendProfile(chatId: number | string, session: TelegramSession) {
     `Profile NFT: ${shortAddress(session.profileId)}`,
     `PredictManager: ${shortAddress(session.managerId)}`,
     `Plan: ${session.plan}`,
-    `Quota: ${quota.remaining}/${quota.limit} left today`
+    `Quota: ${quota.remaining}/${quota.limit} left today`,
+    "",
+    "Need to switch wallets? Use /unbind to remove this Telegram link without a signature."
   ].join("\n"));
 }
 
@@ -1079,6 +1089,8 @@ function helpText() {
     "",
     "Setup",
     "/login - connect wallet",
+    "/unbind - remove wallet/Profile binding without a signature",
+    "/logout - same as /unbind",
     "/start - show shortcuts and account state",
     "/ideas - prompt examples and shortcuts",
     "/profile - profile and quota",
@@ -1274,5 +1286,6 @@ export const telegramClarificationTestHooks = {
   mergePendingIntentText,
   formatTelegramHtml,
   isStoredVaultLpReplay,
-  vaultLpSeedMessage
+  vaultLpSeedMessage,
+  helpText
 };

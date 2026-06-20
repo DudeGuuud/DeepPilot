@@ -766,7 +766,7 @@ export interface PredictOracleHistory {
 export interface ProfileActivityItem {
   id: string;
   time: string;
-  type: "compile" | "sponsor_preview" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper" | "memory_pointer" | "vault_lp_supply" | "vault_lp_withdraw";
+  type: "compile" | "sponsor_preview" | "profile_create" | "manager_create" | "manager_funding" | "predict_mint" | "mint" | "redeem" | "keeper" | "memory_pointer" | "vault_lp_supply" | "vault_lp_withdraw";
   oracleId?: string;
   digest?: string;
   guardianDecision?: GuardianResult["decision"];
@@ -860,6 +860,7 @@ export interface ProfileSummary {
   wallet: string | null;
   deepPilotProfileId: string | null;
   deepPilotProfilePackageId: string | null;
+  deepPilotProfileRegistryId: string | null;
   network: PredictDeployment["network"];
   predictPackageId: string;
   predictObjectId: string;

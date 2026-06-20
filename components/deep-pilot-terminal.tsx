@@ -154,9 +154,10 @@ type PilotMessage = {
   content: string;
   mode?: PilotMode;
   reviewAction?: {
-    kind: "trade" | "strategy" | "vault_lp";
+    kind: "trade" | "strategy" | "vault_lp" | "profile";
     label: string;
     description: string;
+    href?: string;
   };
   sources?: RagSource[];
   pending?: boolean;
@@ -698,6 +699,7 @@ function TerminalExperience() {
     if (event.type === "compiled") {
       const result = event.result as CompileApiResult;
       const compiledManagerId = result.profile?.managerId ?? result.ptb?.execution.managerId ?? null;
+      const needsProfile = needsDeepPilotProfile(result);
 
       if (compiledManagerId) {
         setManagerId(compiledManagerId);
@@ -711,19 +713,21 @@ function TerminalExperience() {
       setSelectedStrategyLegIds([]);
       setPilotMode("trade");
       setPendingClarification(null);
-      setTradeModalOpen(true);
+      setTradeModalOpen(!needsProfile);
       setTradeModalStatus(tradeStatusForCompiled(result));
       setTradeDetailsExpanded(false);
-      setActiveReviewMessageId(assistantId);
+      setActiveReviewMessageId(needsProfile ? null : assistantId);
       updateAssistantMessage(assistantId, {
         mode: "trade",
         pending: false,
         content: tradeAssistantCopy(result),
-        reviewAction: {
-          kind: "trade",
-          label: "Open Review & Sign",
-          description: "Resume the prepared Predict trade review."
-        }
+        reviewAction: needsProfile
+          ? profileReviewAction()
+          : {
+              kind: "trade",
+              label: "Open Review & Sign",
+              description: "Resume the prepared Predict trade review."
+            }
       });
       return;
     }
@@ -731,6 +735,7 @@ function TerminalExperience() {
     if (event.type === "strategy_compiled") {
       const review = event.review as StrategyApiReview;
       const compiledManagerId = review.aggregateReadiness.managerId ?? null;
+      const needsProfile = strategyNeedsDeepPilotProfile(review);
 
       if (compiledManagerId) {
         setManagerId(compiledManagerId);
@@ -744,19 +749,21 @@ function TerminalExperience() {
       setSelectedStrategyLegIds(defaultSelectedStrategyLegIds(review));
       setPilotMode("strategy");
       setPendingClarification(null);
-      setTradeModalOpen(true);
+      setTradeModalOpen(!needsProfile);
       setTradeModalStatus(strategyStatusForReview(review));
       setTradeDetailsExpanded(false);
-      setActiveReviewMessageId(assistantId);
+      setActiveReviewMessageId(needsProfile ? null : assistantId);
       updateAssistantMessage(assistantId, {
         mode: "strategy",
         pending: false,
         content: strategyAssistantCopy(review),
-        reviewAction: {
-          kind: "strategy",
-          label: "Open Strategy Review",
-          description: "Resume the prepared multi-leg review."
-        }
+        reviewAction: needsProfile
+          ? profileReviewAction()
+          : {
+              kind: "strategy",
+              label: "Open Strategy Review",
+              description: "Resume the prepared multi-leg review."
+            }
       });
       return;
     }
@@ -834,6 +841,15 @@ function TerminalExperience() {
     if (tradeModalStatus === "idle") {
       setTradeModalStatus(effectiveStrategyReview ? strategyStatusForReview(effectiveStrategyReview) : tradeStatusForCompiled(compiled!));
     }
+  }
+
+  function profileReviewAction(): PilotMessage["reviewAction"] {
+    return {
+      kind: "profile",
+      label: "Create Profile",
+      description: "Create your DeepPilot Profile NFT before continuing this review.",
+      href: "/profile?profile=1"
+    };
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -1727,9 +1743,16 @@ function MessageBubble({
               type="button"
               size="sm"
               className="h-8 w-full justify-center gap-2 rounded-md sm:w-auto"
-              onClick={() => onOpenReview(message.id)}
+              onClick={() => {
+                if (reviewAction.href) {
+                  window.location.assign(reviewAction.href);
+                  return;
+                }
+
+                onOpenReview(message.id);
+              }}
             >
-              <ClipboardCheck className="h-4 w-4" />
+              {reviewAction.kind === "profile" ? <UserRound className="h-4 w-4" /> : <ClipboardCheck className="h-4 w-4" />}
               {reviewAction.label}
             </Button>
             <p className="mt-2 text-xs leading-5 text-muted-foreground">{reviewAction.description}</p>
@@ -3134,6 +3157,14 @@ function profileFundingHrefForManager(managerId?: string | null) {
   }
 
   return `/profile?${params.toString()}`;
+}
+
+function needsDeepPilotProfile(result: CompileResult | null | undefined) {
+  return Boolean(result?.profile?.wallet && !result.profile.deepPilotProfileId);
+}
+
+function strategyNeedsDeepPilotProfile(review: StrategyReview | null | undefined) {
+  return Boolean(review?.compiledLegs.some((leg) => needsDeepPilotProfile(leg.result)));
 }
 
 function reviewSummaryRows(compiled: CompileApiResult | null, busy: boolean): Array<[string, string]> {
