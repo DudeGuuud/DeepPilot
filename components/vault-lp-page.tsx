@@ -164,6 +164,7 @@ export function VaultLpPage() {
       if (loadedReviewTokenRef.current !== pendingWalletKey) {
         loadedReviewTokenRef.current = pendingWalletKey;
         toast({
+          variant: "destructive",
           title: "Connect wallet",
           description: "Please connect your wallet first to open this Vault LP review."
         });
